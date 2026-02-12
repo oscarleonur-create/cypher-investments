@@ -1,0 +1,8 @@
+*.pyc
+*.parquet
+*.txt
+*.data
+*.json
+.env
+.env.*
+!.env.example
