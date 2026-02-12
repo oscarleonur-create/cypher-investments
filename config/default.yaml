@@ -1,0 +1,16 @@
+broker:
+  initial_cash: 100000.0
+  commission: 0.001  # 0.1% per trade
+  options_commission: 0.65  # Per contract
+
+data:
+  cache_dir: data/cache
+  cache_ttl_hours: 24
+  default_interval: 1d
+
+backtest:
+  results_dir: data/results
+  risk_free_rate: 0.04  # 4% for Sharpe ratio
+
+strategies:
+  user_dir: strategies  # Auto-discover user strategies from this directory

@@ -1,0 +1,22 @@
+{
+  "run_id": "86a8b555",
+  "strategy_name": "buy_hold",
+  "symbol": "SPY",
+  "start_date": "2023-01-01",
+  "end_date": "2024-01-01",
+  "created_at": "2026-02-12T06:45:08.403232",
+  "initial_cash": 100000.0,
+  "final_value": 124640.56919509356,
+  "total_return": 24640.569195093558,
+  "total_return_pct": 24.64056919509356,
+  "sharpe_ratio": null,
+  "max_drawdown": 11453.99203491211,
+  "max_drawdown_pct": 9.597776646779314,
+  "total_trades": 0,
+  "winning_trades": 0,
+  "losing_trades": 0,
+  "win_rate": null,
+  "avg_trade_pnl": null,
+  "trades": [],
+  "params": {}
+}
