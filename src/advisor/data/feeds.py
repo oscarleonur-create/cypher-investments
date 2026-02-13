@@ -32,6 +32,7 @@ def create_feed(
     start: date,
     end: date,
     provider: YahooDataProvider | None = None,
+    interval: str = "1d",
 ) -> PandasFeed:
     """Create a Backtrader data feed for a symbol.
 
@@ -40,7 +41,7 @@ def create_feed(
     if provider is None:
         provider = YahooDataProvider()
 
-    df = provider.get_stock_history(symbol, start, end)
+    df = provider.get_stock_history(symbol, start, end, interval=interval)
     # Ensure the index is tz-naive for Backtrader compatibility
     if hasattr(df.index, "tz") and df.index.tz is not None:
         df.index = df.index.tz_localize(None)

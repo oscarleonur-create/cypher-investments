@@ -15,8 +15,24 @@ from advisor.strategies.registry import StrategyRegistry
 
 logger = logging.getLogger(__name__)
 
-# Number of calendar days to fetch (gives ~200 trading days after weekends/holidays)
-_LOOKBACK_DAYS = 300
+# Lookback in calendar days per interval, respecting yfinance limits.
+# Goal: ~200 bars of data so indicators (e.g. SMA-50) warm up properly.
+_LOOKBACK_BY_INTERVAL = {
+    "1m": 5,
+    "2m": 5,
+    "5m": 30,
+    "15m": 55,
+    "30m": 55,
+    "60m": 55,
+    "1h": 55,
+    "90m": 55,
+    "1d": 300,
+    "5d": 600,
+    "1wk": 1000,
+    "1mo": 2500,
+    "3mo": 5000,
+}
+_DEFAULT_LOOKBACK_DAYS = 300
 
 
 class _SignalTracker(bt.Analyzer):
@@ -57,12 +73,14 @@ class SignalScanner:
         self,
         symbol: str,
         strategy_names: list[str] | None = None,
+        interval: str = "1d",
     ) -> ScanResult:
         """Run strategies on recent data and return signals.
 
         Args:
             symbol: Ticker symbol to scan.
             strategy_names: Specific strategies to run. Defaults to all EQUITY strategies.
+            interval: Data interval (1m, 5m, 15m, 1h, 1d, 1wk, etc.).
         """
         registry = StrategyRegistry()
         registry.discover()
@@ -83,7 +101,7 @@ class SignalScanner:
         scanned_at = datetime.now()
 
         for name, strat_cls in strat_classes:
-            signal = self._run_strategy(symbol, name, strat_cls, scanned_at)
+            signal = self._run_strategy(symbol, name, strat_cls, scanned_at, interval)
             signals.append(signal)
 
         return ScanResult(symbol=symbol, scanned_at=scanned_at, signals=signals)
@@ -94,12 +112,14 @@ class SignalScanner:
         strategy_name: str,
         strategy_cls: type,
         scanned_at: datetime,
+        interval: str = "1d",
     ) -> StrategySignal:
         """Run a single strategy through a mini-backtest and infer the signal."""
+        lookback = _LOOKBACK_BY_INTERVAL.get(interval, _DEFAULT_LOOKBACK_DAYS)
         end = date.today() + timedelta(days=1)
-        start = end - timedelta(days=_LOOKBACK_DAYS)
+        start = end - timedelta(days=lookback)
 
-        feed = create_feed(symbol, start, end, provider=self.provider)
+        feed = create_feed(symbol, start, end, provider=self.provider, interval=interval)
 
         cerebro = bt.Cerebro()
         cerebro.adddata(feed, name=symbol)
