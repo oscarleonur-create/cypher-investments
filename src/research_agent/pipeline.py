@@ -8,7 +8,7 @@ from research_agent.agent import run_loop
 from research_agent.config import ResearchConfig
 from research_agent.evidence import SourceRegistry
 from research_agent.llm import ClaudeLLM
-from research_agent.models import AgentState, InputMode, OpportunityCard, ResearchInput
+from research_agent.models import AgentState, OpportunityCard, ResearchInput
 from research_agent.search import TavilyClient
 from research_agent.store import Store
 
@@ -16,12 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def run(input: ResearchInput, config: ResearchConfig) -> OpportunityCard:
-    """Run the full research pipeline for a given input.
-
-    For MVP, only ticker mode is supported.
-    """
-    if input.mode != InputMode.TICKER:
-        raise NotImplementedError(f"Mode '{input.mode}' is not yet supported. Use ticker mode.")
+    """Run the full research pipeline for a given input."""
 
     store = Store(config.db_path)
     search = TavilyClient(config, store)

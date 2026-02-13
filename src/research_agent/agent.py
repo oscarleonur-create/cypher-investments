@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
 
 from pydantic import BaseModel, Field
 
@@ -26,6 +25,7 @@ from research_agent.models import (
     TriggerResult,
     Verdict,
 )
+from research_agent.queries import step1_queries, step3_queries, subject_label
 from research_agent.search import SearchResult, TavilyClient
 
 logger = logging.getLogger(__name__)
@@ -64,6 +64,8 @@ class _FactExtractionResponse(BaseModel):
 
 class _CardSynthesisResponse(BaseModel):
     verdict: str = "WATCH"
+    catalyst_summary: str = ""
+    catalyst_date: str = ""
     bull_case: list[str] = Field(default_factory=list)
     bear_case: list[str] = Field(default_factory=list)
     key_metrics: dict = Field(default_factory=dict)
@@ -127,11 +129,7 @@ def step1_detect_trigger(
     config: ResearchConfig,
 ) -> None:
     """Search for the trigger/catalyst behind the price dip."""
-    ticker = state.input.value.upper()
-    queries = [
-        f"{ticker} stock price drop reason {date.today().year}",
-        f"{ticker} earnings catalyst decline recent",
-    ]
+    queries = step1_queries(state.input)
 
     all_results: list[SearchResult] = []
     for q in queries[: config.max_queries_per_iteration]:
@@ -153,7 +151,7 @@ def step1_detect_trigger(
     try:
         resp: _TriggerResponse = llm.complete(
             system_prompt=TRIGGER_DETECTION_PROMPT,
-            user_prompt=f"Ticker: {ticker}\n\nSearch Results:\n{context}",
+            user_prompt=f"{subject_label(state.input)}\n\nSearch Results:\n{context}",
             response_model=_TriggerResponse,
         )
         state.trigger = TriggerResult(
@@ -179,7 +177,7 @@ def step2_classify_dip(
     try:
         resp: _ClassificationResponse = llm.complete(
             system_prompt=DIP_CLASSIFICATION_PROMPT,
-            user_prompt=f"Ticker: {state.input.value.upper()}\n\nEvidence:\n{evidence}",
+            user_prompt=f"{subject_label(state.input)}\n\nEvidence:\n{evidence}",
             response_model=_ClassificationResponse,
         )
         dip_type = DipType.UNCLEAR
@@ -210,18 +208,7 @@ def step3_research_facts(
     config: ResearchConfig,
 ) -> None:
     """Generate targeted queries and extract structured facts."""
-    ticker = state.input.value.upper()
-    year = date.today().year
-
-    # Targeted queries per category
-    category_queries = {
-        "earnings": f"{ticker} earnings results revenue EPS {year}",
-        "guidance": f"{ticker} forward guidance outlook forecast {year}",
-        "competitive": f"{ticker} competitive position market share industry",
-        "balance_sheet": f"{ticker} balance sheet cash debt free cash flow",
-        "valuation": f"{ticker} valuation PE ratio compared peers historical",
-        "bear_case": f"{ticker} risks bear case concerns problems {year}",
-    }
+    category_queries = step3_queries(state.input)
 
     all_results: list[SearchResult] = []
     queries_this_step = 0
@@ -246,7 +233,7 @@ def step3_research_facts(
     try:
         resp: _FactExtractionResponse = llm.complete(
             system_prompt=FACT_EXTRACTION_PROMPT,
-            user_prompt=f"Ticker: {ticker}\n\nSearch Results:\n{context}",
+            user_prompt=f"{subject_label(state.input)}\n\nSearch Results:\n{context}",
             response_model=_FactExtractionResponse,
         )
         # Convert raw items to EvidenceItems with proper source IDs
@@ -279,7 +266,7 @@ def step4_generate_card(
         resp: _CardSynthesisResponse = llm.complete(
             system_prompt=CARD_SYNTHESIS_PROMPT,
             user_prompt=(
-                f"Ticker: {state.input.value.upper()}\n\n"
+                f"{subject_label(state.input)}\n\n"
                 f"Research Evidence:\n{evidence}"
             ),
             response_model=_CardSynthesisResponse,

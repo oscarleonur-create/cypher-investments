@@ -94,3 +94,41 @@ def print_results_list(results: list[dict[str, Any]]) -> None:
         )
 
     console.print(table)
+
+
+_SIGNAL_COLORS = {
+    "BUY": "green",
+    "SELL": "red",
+    "HOLD": "yellow",
+    "NEUTRAL": "dim",
+}
+
+
+def print_signal_scan(result: Any) -> None:
+    """Print a rich table for a signal scan result."""
+    from advisor.engine.signals import ScanResult
+
+    if not isinstance(result, ScanResult):
+        output_json(result)
+        return
+
+    if not result.signals:
+        console.print("[dim]No signals generated.[/dim]")
+        return
+
+    price = result.signals[0].price
+    table = Table(title=f"Signal Scan: {result.symbol} — ${price:,.2f}")
+    table.add_column("Strategy", style="cyan")
+    table.add_column("Signal")
+    table.add_column("Reason")
+
+    for sig in result.signals:
+        color = _SIGNAL_COLORS.get(sig.action.value, "white")
+        table.add_row(
+            sig.strategy_name,
+            f"[{color}]{sig.action.value}[/{color}]",
+            sig.reason,
+        )
+
+    console.print(table)
+    console.print(f"  Summary: {result.summary}")

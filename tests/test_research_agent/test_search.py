@@ -114,6 +114,36 @@ class TestTavilyClient:
         finally:
             store.close()
 
+    @patch("research_agent.search.httpx.post")
+    def test_offline_mode_skips_api_on_cache_miss(self, mock_post, tmp_path):
+        """In offline mode, return empty list when no cache hit — no API call."""
+        config = _make_config(offline_mode=True)
+        store = Store(tmp_path / "test.db")
+        try:
+            client = TavilyClient(config, store)
+            results = client.search("AAPL earnings")
+
+            assert results == []
+            mock_post.assert_not_called()
+        finally:
+            store.close()
+
+    def test_offline_mode_returns_cached_results(self, tmp_path):
+        """In offline mode, cached results are still returned."""
+        config = _make_config(offline_mode=True)
+        store = Store(tmp_path / "test.db")
+        try:
+            cached_data = _mock_tavily_response()
+            store.cache_search("AAPL stock", cached_data)
+
+            client = TavilyClient(config, store)
+            results = client.search("AAPL stock")
+
+            assert len(results) == 1
+            assert results[0].title == "Test Article"
+        finally:
+            store.close()
+
     def test_parse_results_empty(self):
         results = TavilyClient._parse_results({"results": []})
         assert results == []

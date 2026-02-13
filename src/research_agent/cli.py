@@ -32,14 +32,27 @@ class OutputFormat(StrEnum):
 
 @app.command()
 def run(
-    ticker: Annotated[str, typer.Option("--ticker", "-t", help="Stock ticker to research")],
+    ticker: Annotated[
+        str | None, typer.Option("--ticker", "-t", help="Stock ticker to research")
+    ] = None,
+    sector: Annotated[
+        str | None, typer.Option("--sector", "-s", help="Market sector to research")
+    ] = None,
+    thesis: Annotated[
+        str | None, typer.Option("--thesis", help="Investment thesis to research")
+    ] = None,
     output: Annotated[
         OutputFormat, typer.Option("--output", "-o", help="Output format")
     ] = OutputFormat.BOTH,
     offline: Annotated[bool, typer.Option("--offline", help="Use cached data only")] = False,
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Verbose logging")] = False,
 ) -> None:
-    """Run the research pipeline for a ticker."""
+    """Run the research pipeline for a ticker, sector, or thesis."""
+    provided = sum(x is not None for x in (ticker, sector, thesis))
+    if provided != 1:
+        console.print("[red]Error: Provide exactly one of --ticker, --sector, or --thesis.[/red]")
+        raise typer.Exit(1)
+
     if verbose:
         logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     else:
@@ -49,9 +62,17 @@ def run(
     if offline:
         config.offline_mode = True
 
-    research_input = ResearchInput(mode=InputMode.TICKER, value=ticker.upper())
+    if ticker:
+        research_input = ResearchInput(mode=InputMode.TICKER, value=ticker.upper())
+        display_label = ticker.upper()
+    elif sector:
+        research_input = ResearchInput(mode=InputMode.SECTOR, value=sector)
+        display_label = sector
+    else:
+        research_input = ResearchInput(mode=InputMode.THESIS, value=thesis)
+        display_label = thesis
 
-    with console.status(f"[bold green]Researching {ticker.upper()}...", spinner="dots"):
+    with console.status(f"[bold green]Researching {display_label}...", spinner="dots"):
         from research_agent.pipeline import run as run_pipeline
 
         card = run_pipeline(research_input, config)
@@ -95,13 +116,14 @@ def show(
 @app.command()
 def history(
     ticker: Annotated[str | None, typer.Option("--ticker", "-t", help="Filter by ticker")] = None,
+    mode: Annotated[str | None, typer.Option("--mode", "-m", help="Filter by mode")] = None,
     limit: Annotated[int, typer.Option("--limit", "-n", help="Max results")] = 20,
 ) -> None:
     """List past research runs."""
     config = ResearchConfig()
     store = Store(config.db_path)
     try:
-        runs = store.list_runs(ticker=ticker, limit=limit)
+        runs = store.list_runs(ticker=ticker, mode=mode, limit=limit)
     finally:
         store.close()
 

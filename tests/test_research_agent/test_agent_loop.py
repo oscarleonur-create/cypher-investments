@@ -42,6 +42,14 @@ def _make_state(ticker="AAPL") -> AgentState:
     return AgentState(input=ResearchInput(mode=InputMode.TICKER, value=ticker))
 
 
+def _make_sector_state(sector="Technology") -> AgentState:
+    return AgentState(input=ResearchInput(mode=InputMode.SECTOR, value=sector))
+
+
+def _make_thesis_state(thesis="AI infrastructure spending") -> AgentState:
+    return AgentState(input=ResearchInput(mode=InputMode.THESIS, value=thesis))
+
+
 class TestStep1DetectTrigger:
     def test_sets_trigger_on_success(self):
         state = _make_state()
@@ -147,9 +155,18 @@ class TestRunLoop:
         )
         card_resp = _CardSynthesisResponse(
             verdict="BUY_THE_DIP",
+            catalyst_summary="Q1 earnings missed estimates, shares fell 10%",
+            catalyst_date="2025-01-30",
             bull_case=["Strong earnings", "Growing revenue"],
             bear_case=["Macro risk"],
-            key_metrics={"revenue_growth": "5%", "margins": "40%"},
+            key_metrics={
+                "revenue_growth": "5%",
+                "margins": "40%",
+                "fcf": "Unknown",
+                "cash": "Unknown",
+                "debt": "Unknown",
+                "guidance_notes": "Guidance reiterated",
+            },
             risks=["Market downturn"],
             invalidation=["Revenue decline"],
             validation_checklist=["Q2 results"],
@@ -170,3 +187,95 @@ class TestRunLoop:
         assert card.verdict == Verdict.BUY_THE_DIP
         assert len(card.bull_case) > 0
         assert card.id == state.input.run_id()
+
+
+class TestStep1DetectTriggerSector:
+    def test_uses_sector_queries(self):
+        state = _make_sector_state("Technology")
+        config = _make_config()
+        registry = SourceRegistry()
+
+        mock_search = MagicMock()
+        mock_search.search.return_value = [
+            SearchResult(
+                url="https://reuters.com/tech",
+                title="Tech sector selloff",
+                content="Technology sector declined on rate fears",
+            )
+        ]
+
+        mock_llm = MagicMock()
+        mock_llm.complete.return_value = _TriggerResponse(
+            found=True,
+            trigger_type="macro",
+            summary="Technology sector fell on rising rate concerns",
+            source_urls=["https://reuters.com/tech"],
+        )
+
+        step1_detect_trigger(state, mock_search, mock_llm, registry, config)
+
+        assert state.trigger is not None
+        assert state.trigger.found is True
+        # Verify search was called with sector-appropriate queries
+        search_queries = [call.args[0] for call in mock_search.search.call_args_list]
+        assert all("Technology" in q for q in search_queries)
+        assert not any("stock price drop" in q for q in search_queries)
+
+
+class TestRunLoopSector:
+    def test_full_loop_with_sector_produces_card(self):
+        state = _make_sector_state("Technology")
+        config = _make_config()
+        registry = SourceRegistry()
+
+        mock_search = MagicMock()
+        mock_search.search.return_value = [
+            SearchResult(
+                url="https://reuters.com/tech",
+                title="Tech sector",
+                content="Tech sector overview",
+            )
+        ]
+
+        trigger_resp = _TriggerResponse(
+            found=True,
+            trigger_type="macro",
+            summary="Sector decline on macro fears",
+            source_urls=["https://reuters.com/tech"],
+        )
+        classification_resp = _ClassificationResponse(
+            dip_type="TEMPORARY",
+            confidence=0.75,
+            reasoning="Cyclical downturn",
+        )
+        facts_resp = _FactExtractionResponse(
+            earnings_highlights=[
+                _EvidenceItemRaw(text="Sector revenue grew 8%", source_urls=[]),
+                _EvidenceItemRaw(text="Margins stable", source_urls=[]),
+            ],
+            guidance_changes=[
+                _EvidenceItemRaw(text="Mixed guidance", source_urls=[]),
+            ],
+        )
+        card_resp = _CardSynthesisResponse(
+            verdict="WATCH",
+            catalyst_summary="Rate hike fears drove tech selloff",
+            bull_case=["Strong fundamentals"],
+            bear_case=["Rate sensitivity"],
+            key_metrics={"revenue_growth": "8%"},
+            risks=["Continued rate hikes"],
+        )
+
+        mock_llm = MagicMock()
+        mock_llm.complete.side_effect = [
+            trigger_resp,
+            classification_resp,
+            facts_resp,
+            card_resp,
+        ]
+
+        card = run_loop(state, mock_search, mock_llm, registry, config)
+
+        assert card is not None
+        assert card.verdict == Verdict.WATCH
+        assert card.input.mode == InputMode.SECTOR

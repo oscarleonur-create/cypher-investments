@@ -1,12 +1,14 @@
-"""Tests for research_agent.card (Markdown rendering)."""
+"""Tests for research_agent.card (Markdown rendering and card building)."""
 
 from __future__ import annotations
 
-from research_agent.card import build_partial_card, render_markdown
+from research_agent.agent import _CardSynthesisResponse
+from research_agent.card import build_card, build_partial_card, render_markdown
 from research_agent.evidence import SourceRegistry
 from research_agent.models import (
     AgentState,
     Catalyst,
+    ClassificationResult,
     DipType,
     InputMode,
     KeyMetrics,
@@ -132,3 +134,41 @@ class TestBuildPartialCard:
         registry = SourceRegistry()
         card = build_partial_card(state, registry)
         assert card.catalyst.summary == "Earnings miss"
+
+
+class TestBuildCard:
+    def _make_state(self) -> AgentState:
+        return AgentState(
+            input=ResearchInput(mode=InputMode.TICKER, value="AAPL"),
+            trigger=TriggerResult(found=True, summary="Step1 trigger summary"),
+            classification=ClassificationResult(
+                dip_type=DipType.TEMPORARY, confidence=0.8, reasoning="test"
+            ),
+        )
+
+    def test_prefers_synthesis_catalyst_over_trigger(self):
+        state = self._make_state()
+        registry = SourceRegistry()
+        synthesis = _CardSynthesisResponse(
+            verdict="BUY_THE_DIP",
+            catalyst_summary="Q1 revenue missed by 3%, sending shares down 12%",
+            catalyst_date="2025-01-30",
+            bull_case=["Strong growth"],
+            bear_case=["Macro risk"],
+            key_metrics={"revenue_growth": "5%"},
+        )
+        card = build_card(state, registry, Verdict.BUY_THE_DIP, synthesis)
+        assert card.catalyst.summary == "Q1 revenue missed by 3%, sending shares down 12%"
+        assert card.catalyst.date == "2025-01-30"
+
+    def test_falls_back_to_trigger_when_synthesis_empty(self):
+        state = self._make_state()
+        registry = SourceRegistry()
+        synthesis = _CardSynthesisResponse(
+            verdict="WATCH",
+            catalyst_summary="",
+            catalyst_date="",
+        )
+        card = build_card(state, registry, Verdict.WATCH, synthesis)
+        assert card.catalyst.summary == "Step1 trigger summary"
+        assert card.catalyst.date == ""

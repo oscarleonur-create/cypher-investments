@@ -96,13 +96,20 @@ class Store:
     def list_runs(
         self,
         ticker: str | None = None,
+        mode: str | None = None,
         limit: int = 20,
     ) -> list[dict]:
         query = "SELECT id, mode, input_value, verdict, dip_type, created_at FROM runs"
         params: list = []
+        conditions: list[str] = []
         if ticker:
-            query += " WHERE mode = 'ticker' AND input_value = ?"
+            conditions.append("mode = 'ticker' AND input_value = ?")
             params.append(ticker.upper())
+        if mode:
+            conditions.append("mode = ?")
+            params.append(mode)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
         rows = self._conn.execute(query, params).fetchall()

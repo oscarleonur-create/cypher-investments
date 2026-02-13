@@ -72,6 +72,10 @@ class TavilyClient:
         if cached is not None:
             return self._parse_results(cached)
 
+        # In offline mode, return empty if no cache hit — skip all API calls
+        if self._config.offline_mode:
+            return []
+
         results: list[SearchResult] = []
 
         # Curated-first strategy

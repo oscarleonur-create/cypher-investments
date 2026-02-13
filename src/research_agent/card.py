@@ -7,6 +7,7 @@ from research_agent.models import (
     AgentState,
     Catalyst,
     DipType,
+    InputMode,
     KeyMetrics,
     OpportunityCard,
     Verdict,
@@ -22,13 +23,19 @@ def build_card(
     """Assemble an OpportunityCard from agent state and LLM synthesis."""
     metrics_data = synthesis.key_metrics if isinstance(synthesis.key_metrics, dict) else {}
 
+    # Prefer synthesis catalyst (richer, from full evidence) over step1 trigger summary
+    catalyst_summary = synthesis.catalyst_summary or (
+        state.trigger.summary if state.trigger else ""
+    )
+    catalyst_date = synthesis.catalyst_date or ""
+
     return OpportunityCard(
         id=state.input.run_id(),
         input=state.input,
         verdict=verdict,
         catalyst=Catalyst(
-            summary=state.trigger.summary if state.trigger else "",
-            date=state.trigger.trigger_type if state.trigger else "",
+            summary=catalyst_summary,
+            date=catalyst_date,
         ),
         dip_type=state.classification.dip_type if state.classification else DipType.UNCLEAR,
         bull_case=synthesis.bull_case[:3],
@@ -72,9 +79,9 @@ def build_partial_card(state: AgentState, registry: SourceRegistry) -> Opportuni
 
 def render_markdown(card: OpportunityCard) -> str:
     """Render an OpportunityCard as human-readable Markdown."""
-    ticker = card.input.value.upper()
+    label = card.input.value.upper() if card.input.mode == InputMode.TICKER else card.input.value
     lines = [
-        f"# Opportunity Card: {ticker}",
+        f"# Opportunity Card: {label}",
         "",
         f"**Setup**: {card.verdict.value} | **Dip Type**: {card.dip_type.value}",
         "",

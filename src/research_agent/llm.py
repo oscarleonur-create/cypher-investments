@@ -118,14 +118,25 @@ You are a senior financial analyst. Synthesize the research evidence into an \
 Opportunity Card for a "buy-the-dip" analysis.
 
 Based on ALL the evidence provided, generate:
-1. verdict: BUY_THE_DIP (strong case for buying), WATCH (wait for more data), \
+1. catalyst_summary: A concise 1-2 sentence summary of what triggered the dip \
+(e.g. "Q1 revenue missed by 3%, sending shares down 12%"). Never leave empty.
+2. catalyst_date: The approximate date of the catalyst in YYYY-MM-DD format, \
+or empty string if unknown.
+3. verdict: BUY_THE_DIP (strong case for buying), WATCH (wait for more data), \
 or AVOID (fundamental problems)
-2. bull_case: Top 3 reasons to buy (with source citations like [s1], [s2])
-3. bear_case: Top 3 risks or reasons against (with source citations)
-4. key_metrics: Revenue growth, margins, FCF, cash, debt, guidance notes
-5. risks: Key risk factors
-6. invalidation: Conditions that would invalidate the thesis
-7. validation_checklist: Things to monitor over next 1-4 weeks
-8. next_actions: Concrete next steps for the investor
+4. bull_case: Top 3 reasons to buy (with source citations like [s1], [s2])
+5. bear_case: Top 3 risks or reasons against (with source citations)
+6. key_metrics: A JSON object with exactly these keys — provide a short string \
+value for each, or "Unknown" if the data is not available. NEVER use null:
+   - revenue_growth: e.g. "6% YoY" or "Unknown"
+   - margins: e.g. "44% gross, 30% operating" or "Unknown"
+   - fcf: e.g. "$28B TTM" or "Unknown"
+   - cash: e.g. "$62B" or "Unknown"
+   - debt: e.g. "$108B long-term" or "Unknown"
+   - guidance_notes: e.g. "Full-year guidance reiterated" or "Unknown"
+7. risks: Key risk factors
+8. invalidation: Conditions that would invalidate the thesis
+9. validation_checklist: Things to monitor over next 1-4 weeks
+10. next_actions: Concrete next steps for the investor
 
 Be balanced and evidence-based. Every claim should be traceable to a source."""
