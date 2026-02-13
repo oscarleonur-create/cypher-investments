@@ -39,6 +39,7 @@ class BacktestRunner:
         start: date,
         end: date,
         params: dict[str, Any] | None = None,
+        interval: str = "1d",
     ) -> BacktestResult:
         """Execute a backtest and return results."""
         registry = StrategyRegistry()
@@ -47,7 +48,7 @@ class BacktestRunner:
         cerebro = bt.Cerebro()
 
         # Add data feed
-        feed = create_feed(symbol, start, end, provider=self.provider)
+        feed = create_feed(symbol, start, end, provider=self.provider, interval=interval)
         cerebro.adddata(feed, name=symbol)
 
         # Add strategy with params
@@ -77,6 +78,7 @@ class BacktestRunner:
             start=start,
             end=end,
             params=kwargs,
+            interval=interval,
         )
 
     def _build_result(
@@ -87,6 +89,7 @@ class BacktestRunner:
         start: date,
         end: date,
         params: dict[str, Any],
+        interval: str = "1d",
     ) -> BacktestResult:
         """Extract analyzer data into a BacktestResult."""
         final_value = strat.broker.getvalue()
@@ -133,6 +136,7 @@ class BacktestRunner:
             losing_trades=lost,
             avg_trade_pnl=avg_pnl,
             trades=trade_records,
+            interval=interval,
             params=params,
         )
         result.compute_derived()

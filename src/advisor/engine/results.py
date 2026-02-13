@@ -51,7 +51,8 @@ class BacktestResult(BaseModel):
     # Detailed records
     trades: list[TradeRecord] = Field(default_factory=list)
 
-    # Strategy params used
+    # Run config
+    interval: str = "1d"
     params: dict[str, Any] = Field(default_factory=dict)
 
     def compute_derived(self) -> None:

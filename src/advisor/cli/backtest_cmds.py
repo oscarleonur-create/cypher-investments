@@ -45,6 +45,7 @@ def backtest_run(
     start: Annotated[str, typer.Option("--start", help="Start date (YYYY-MM-DD)")],
     end: Annotated[str, typer.Option("--end", help="End date (YYYY-MM-DD)")],
     cash: Annotated[float, typer.Option("--cash", help="Initial cash")] = 100_000.0,
+    interval: Annotated[str, typer.Option("--interval", "-i", help="Data interval (1m, 5m, 15m, 1h, 1d, 1wk)")] = "1d",
     param: Annotated[Optional[list[str]], typer.Option("--param", help="Strategy params (k=v)")] = None,
     output: Annotated[Optional[str], typer.Option("--output", help="Output format")] = None,
 ) -> None:
@@ -74,6 +75,7 @@ def backtest_run(
             start=start_date,
             end=end_date,
             params=params,
+            interval=interval,
         )
     except KeyError as e:
         output_error(str(e))

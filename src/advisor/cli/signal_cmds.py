@@ -18,6 +18,10 @@ def signal_scan(
         Optional[str],
         typer.Option("--strategy", "-s", help="Specific strategy to run"),
     ] = None,
+    interval: Annotated[
+        str,
+        typer.Option("--interval", "-i", help="Data interval (1m, 5m, 15m, 1h, 1d, 1wk)"),
+    ] = "1d",
     output: Annotated[
         Optional[str], typer.Option("--output", help="Output format (json)")
     ] = None,
@@ -29,7 +33,9 @@ def signal_scan(
 
     try:
         scanner = SignalScanner()
-        result = scanner.scan(symbol.upper(), strategy_names=strategy_names)
+        result = scanner.scan(
+            symbol.upper(), strategy_names=strategy_names, interval=interval,
+        )
     except KeyError as e:
         output_error(str(e))
         return
