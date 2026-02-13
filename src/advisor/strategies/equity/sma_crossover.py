@@ -44,11 +44,14 @@ class SMACrossover(StrategyBase):
             return
 
         if self.crossover > 0 and not self.position:
-            cash = self.broker.getcash()
-            price = self.data.close[0]
-            size = int((cash * self.p.pct_invest) / price)
-            if size > 0:
-                self.order = self.buy(size=size)
+            if self.p.use_sizer:
+                self.order = self.buy()
+            else:
+                cash = self.broker.getcash()
+                price = self.data.close[0]
+                size = int((cash * self.p.pct_invest) / price)
+                if size > 0:
+                    self.order = self.buy(size=size)
 
         elif self.crossover < 0 and self.position:
             self.order = self.close()

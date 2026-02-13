@@ -12,6 +12,7 @@ from advisor.cli.formatters import (
     output_json,
     print_result_summary,
     print_results_list,
+    print_walk_forward_summary,
 )
 
 app = typer.Typer(name="backtest", help="Run and manage backtests")
@@ -46,6 +47,8 @@ def backtest_run(
     end: Annotated[str, typer.Option("--end", help="End date (YYYY-MM-DD)")],
     cash: Annotated[float, typer.Option("--cash", help="Initial cash")] = 100_000.0,
     interval: Annotated[str, typer.Option("--interval", "-i", help="Data interval (1m, 5m, 15m, 1h, 1d, 1wk)")] = "1d",
+    slippage: Annotated[float, typer.Option("--slippage", help="Slippage percentage")] = 0.001,
+    sizer: Annotated[Optional[str], typer.Option("--sizer", help="Position sizer (atr)")] = None,
     param: Annotated[Optional[list[str]], typer.Option("--param", help="Strategy params (k=v)")] = None,
     output: Annotated[Optional[str], typer.Option("--output", help="Output format")] = None,
 ) -> None:
@@ -68,7 +71,7 @@ def backtest_run(
     params = _parse_params(param)
 
     try:
-        runner = BacktestRunner(initial_cash=cash)
+        runner = BacktestRunner(initial_cash=cash, slippage_perc=slippage, sizer=sizer)
         result = runner.run(
             strategy_name=strategy,
             symbol=symbol,
@@ -134,3 +137,61 @@ def backtest_show(
         output_json(result)
     else:
         print_result_summary(result.model_dump())
+
+
+@app.command("walk-forward")
+def backtest_walk_forward(
+    strategy: Annotated[str, typer.Argument(help="Strategy name")],
+    symbol: Annotated[str, typer.Option("--symbol", help="Ticker symbol")],
+    start: Annotated[str, typer.Option("--start", help="Start date (YYYY-MM-DD)")],
+    end: Annotated[str, typer.Option("--end", help="End date (YYYY-MM-DD)")],
+    windows: Annotated[int, typer.Option("--windows", help="Number of windows")] = 3,
+    train_pct: Annotated[float, typer.Option("--train-pct", help="Train fraction per window")] = 0.7,
+    cash: Annotated[float, typer.Option("--cash", help="Initial cash")] = 100_000.0,
+    interval: Annotated[str, typer.Option("--interval", "-i", help="Data interval")] = "1d",
+    slippage: Annotated[float, typer.Option("--slippage", help="Slippage percentage")] = 0.001,
+    sizer: Annotated[Optional[str], typer.Option("--sizer", help="Position sizer (atr)")] = None,
+    param: Annotated[Optional[list[str]], typer.Option("--param", help="Strategy params (k=v)")] = None,
+    output: Annotated[Optional[str], typer.Option("--output", help="Output format")] = None,
+) -> None:
+    """Run walk-forward analysis with rolling train/test windows."""
+    from advisor.engine.runner import BacktestRunner
+    from advisor.engine.walk_forward import WalkForwardRunner
+    from advisor.strategies.registry import StrategyRegistry
+
+    registry = StrategyRegistry()
+    registry.discover()
+
+    try:
+        start_date = date.fromisoformat(start)
+        end_date = date.fromisoformat(end)
+    except ValueError as e:
+        output_error(f"Invalid date format: {e}")
+        return
+
+    params = _parse_params(param)
+
+    try:
+        runner = BacktestRunner(initial_cash=cash, slippage_perc=slippage, sizer=sizer)
+        wf_runner = WalkForwardRunner(runner)
+        result = wf_runner.run(
+            strategy_name=strategy,
+            symbol=symbol,
+            start=start_date,
+            end=end_date,
+            n_windows=windows,
+            train_pct=train_pct,
+            params=params,
+            interval=interval,
+        )
+    except KeyError as e:
+        output_error(str(e))
+        return
+    except Exception as e:
+        output_error(f"Walk-forward failed: {e}")
+        return
+
+    if output == "json":
+        output_json(result)
+    else:
+        print_walk_forward_summary(result)

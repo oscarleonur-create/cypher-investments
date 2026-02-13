@@ -30,12 +30,16 @@ class BuyAndHold(StrategyBase):
             return
 
         if not self.bought:
-            cash = self.broker.getcash()
-            price = self.data.close[0]
-            size = int((cash * self.p.pct_invest) / price)
-            if size > 0:
-                self.order = self.buy(size=size)
+            if self.p.use_sizer:
+                self.order = self.buy()
                 self.bought = True
+            else:
+                cash = self.broker.getcash()
+                price = self.data.close[0]
+                size = int((cash * self.p.pct_invest) / price)
+                if size > 0:
+                    self.order = self.buy(size=size)
+                    self.bought = True
 
     def notify_order(self, order):
         if order.status in [order.Completed, order.Canceled, order.Margin, order.Rejected]:

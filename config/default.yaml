@@ -2,15 +2,26 @@ broker:
   initial_cash: 100000.0
   commission: 0.001  # 0.1% per trade
   options_commission: 0.65  # Per contract
+  slippage_perc: 0.001  # 0.1% slippage per trade
 
 data:
   cache_dir: data/cache
   cache_ttl_hours: 24
   default_interval: 1d
 
+sizer:
+  atr:
+    atr_period: 14
+    risk_pct: 0.02
+    atr_multiplier: 2.0
+
 backtest:
   results_dir: data/results
   risk_free_rate: 0.04  # 4% for Sharpe ratio
+
+walk_forward:
+  default_windows: 3
+  default_train_pct: 0.7
 
 strategies:
   user_dir: strategies  # Auto-discover user strategies from this directory
