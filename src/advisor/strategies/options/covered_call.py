@@ -43,6 +43,9 @@ class CoveredCall(StrategyBase):
 
         # Step 1: Buy underlying shares if we don't have them
         if self.shares_held == 0:
+            if self.p.use_sizer:
+                self.order = self.buy()
+                return
             cash = self.broker.getcash()
             target_shares = self.p.lots * 100
             cost = target_shares * price

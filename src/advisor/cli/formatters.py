@@ -96,6 +96,60 @@ def print_results_list(results: list[dict[str, Any]]) -> None:
     console.print(table)
 
 
+def print_walk_forward_summary(result: Any) -> None:
+    """Print a rich summary of walk-forward analysis results."""
+    # Header table with aggregate metrics
+    header = Table(title=f"Walk-Forward Analysis: {result.strategy} on {result.symbol}")
+    header.add_column("Metric", style="cyan")
+    header.add_column("Value", justify="right")
+
+    header.add_row("Run ID", result.run_id)
+    header.add_row("Period", f"{result.start_date} to {result.end_date}")
+    header.add_row("Windows", str(result.n_windows))
+    header.add_row("Train %", f"{result.train_pct * 100:.0f}%")
+    header.add_row("", "")
+
+    color = "green" if result.oos_avg_return_pct >= 0 else "red"
+    header.add_row("OOS Avg Return", f"[{color}]{result.oos_avg_return_pct:+.2f}%[/{color}]")
+    if result.oos_avg_sharpe is not None:
+        header.add_row("OOS Avg Sharpe", f"{result.oos_avg_sharpe:.4f}")
+    header.add_row("OOS Avg Max DD", f"{result.oos_avg_max_dd_pct:.2f}%")
+    header.add_row("", "")
+
+    gap_color = "green" if result.is_vs_oos_gap <= 5.0 else "yellow" if result.is_vs_oos_gap <= 15.0 else "red"
+    header.add_row("IS Avg Return", f"{result.is_avg_return_pct:+.2f}%")
+    header.add_row("IS-vs-OOS Gap", f"[{gap_color}]{result.is_vs_oos_gap:+.2f}pp[/{gap_color}]")
+
+    console.print(header)
+
+    # Per-window table
+    windows_table = Table(title="Per-Window Results")
+    windows_table.add_column("#", style="dim")
+    windows_table.add_column("Train Period")
+    windows_table.add_column("Test Period")
+    windows_table.add_column("IS Return %", justify="right")
+    windows_table.add_column("OOS Return %", justify="right")
+    windows_table.add_column("OOS Sharpe", justify="right")
+
+    for w in result.windows:
+        is_ret = w.in_sample.total_return_pct
+        oos_ret = w.out_of_sample.total_return_pct
+        is_color = "green" if is_ret >= 0 else "red"
+        oos_color = "green" if oos_ret >= 0 else "red"
+        sharpe = f"{w.out_of_sample.sharpe_ratio:.4f}" if w.out_of_sample.sharpe_ratio is not None else "N/A"
+
+        windows_table.add_row(
+            str(w.window_index + 1),
+            f"{w.train_start} to {w.train_end}",
+            f"{w.test_start} to {w.test_end}",
+            f"[{is_color}]{is_ret:+.2f}%[/{is_color}]",
+            f"[{oos_color}]{oos_ret:+.2f}%[/{oos_color}]",
+            sharpe,
+        )
+
+    console.print(windows_table)
+
+
 _SIGNAL_COLORS = {
     "BUY": "green",
     "SELL": "red",

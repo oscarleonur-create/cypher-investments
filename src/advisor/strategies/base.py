@@ -27,7 +27,9 @@ class StrategyBase(bt.Strategy):
     description: ClassVar[str] = ""
     version: ClassVar[str] = "1.0.0"
 
-    params: ClassVar[tuple] = ()
+    params: ClassVar[tuple] = (
+        ("use_sizer", False),
+    )
 
     def get_info(self) -> dict[str, Any]:
         """Return strategy metadata for the registry."""

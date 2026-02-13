@@ -54,6 +54,8 @@ class BacktestResult(BaseModel):
     # Run config
     interval: str = "1d"
     params: dict[str, Any] = Field(default_factory=dict)
+    slippage_perc: float = 0.0
+    sizer: str | None = None
 
     def compute_derived(self) -> None:
         """Compute derived metrics from base values."""

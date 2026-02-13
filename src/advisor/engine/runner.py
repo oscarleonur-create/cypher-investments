@@ -27,10 +27,16 @@ class BacktestRunner:
         initial_cash: float = 100_000.0,
         commission: float = 0.001,
         provider: YahooDataProvider | None = None,
+        slippage_perc: float = 0.001,
+        sizer: str | None = None,
+        sizer_params: dict[str, Any] | None = None,
     ):
         self.initial_cash = initial_cash
         self.commission = commission
         self.provider = provider or YahooDataProvider()
+        self.slippage_perc = slippage_perc
+        self.sizer = sizer
+        self.sizer_params = sizer_params or {}
 
     def run(
         self,
@@ -58,6 +64,19 @@ class BacktestRunner:
         # Configure broker
         cerebro.broker.setcash(self.initial_cash)
         cerebro.broker.setcommission(commission=self.commission)
+        cerebro.broker.set_slippage_perc(
+            perc=self.slippage_perc,
+            slip_open=True,
+            slip_match=True,
+            slip_out=False,
+        )
+
+        # Add sizer
+        if self.sizer == "atr":
+            from advisor.engine.sizers import ATRSizer
+
+            cerebro.addsizer(ATRSizer, **self.sizer_params)
+            kwargs["use_sizer"] = True
 
         # Add analyzers
         cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe", riskfreerate=0.04)
@@ -79,6 +98,8 @@ class BacktestRunner:
             end=end,
             params=kwargs,
             interval=interval,
+            slippage_perc=self.slippage_perc,
+            sizer=self.sizer,
         )
 
     def _build_result(
@@ -90,6 +111,8 @@ class BacktestRunner:
         end: date,
         params: dict[str, Any],
         interval: str = "1d",
+        slippage_perc: float = 0.0,
+        sizer: str | None = None,
     ) -> BacktestResult:
         """Extract analyzer data into a BacktestResult."""
         final_value = strat.broker.getvalue()
@@ -138,6 +161,8 @@ class BacktestRunner:
             trades=trade_records,
             interval=interval,
             params=params,
+            slippage_perc=slippage_perc,
+            sizer=sizer,
         )
         result.compute_derived()
         return result
