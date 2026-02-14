@@ -133,9 +133,7 @@ def render_markdown(card: OpportunityCard) -> str:
     # Risk Plan
     if card.invalidation:
         lines.append("## Risk Plan")
-        lines.append(
-            "**Invalidation**: " + "; ".join(card.invalidation)
-        )
+        lines.append("**Invalidation**: " + "; ".join(card.invalidation))
         lines.append("")
 
     # Risks

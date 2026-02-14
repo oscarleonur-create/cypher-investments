@@ -10,7 +10,10 @@ check would skip them.
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    from advisor.confluence.models import ConfluenceResult
 
 import backtrader as bt
 
@@ -45,12 +48,8 @@ class BuyTheDip(StrategyBase):
         super().__init__()
         self.order = None
         self.rsi = bt.indicators.RSI(self.data.close, period=self.p.rsi_period)
-        self.sma_short = bt.indicators.SimpleMovingAverage(
-            self.data.close, period=self.p.sma_short
-        )
-        self.sma_long = bt.indicators.SimpleMovingAverage(
-            self.data.close, period=self.p.sma_long
-        )
+        self.sma_short = bt.indicators.SimpleMovingAverage(self.data.close, period=self.p.sma_short)
+        self.sma_long = bt.indicators.SimpleMovingAverage(self.data.close, period=self.p.sma_long)
 
     def next(self):
         if self.order:
@@ -73,10 +72,7 @@ class BuyTheDip(StrategyBase):
                         self.order = self.buy(size=size)
         else:
             # SELL: RSI overbought (take profit) OR uptrend broken (cut loss)
-            if (
-                self.rsi[0] > self.p.rsi_overbought
-                or self.data.close[0] < self.sma_long[0]
-            ):
+            if self.rsi[0] > self.p.rsi_overbought or self.data.close[0] < self.sma_long[0]:
                 self.order = self.close()
 
     def notify_order(self, order):

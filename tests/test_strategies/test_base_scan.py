@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from advisor.confluence.models import (
     ConfluenceResult,
@@ -19,16 +19,24 @@ def _make_result(strategy_name: str) -> ConfluenceResult:
         strategy_name=strategy_name,
         verdict=ConfluenceVerdict.PASS,
         technical=TechnicalResult(
-            signal="NEUTRAL", price=0.0, sma_20=0.0,
-            volume_ratio=0.0, is_bullish=False,
+            signal="NEUTRAL",
+            price=0.0,
+            sma_20=0.0,
+            volume_ratio=0.0,
+            is_bullish=False,
         ),
         sentiment=SentimentResult(
-            score=0.0, positive_pct=0.0,
-            key_headlines=[], sources=[], is_bullish=False,
+            score=0.0,
+            positive_pct=0.0,
+            key_headlines=[],
+            sources=[],
+            is_bullish=False,
         ),
         fundamental=FundamentalResult(
-            earnings_within_7_days=False, earnings_date=None,
-            insider_buying_detected=False, is_clear=False,
+            earnings_within_7_days=False,
+            earnings_date=None,
+            insider_buying_detected=False,
+            is_clear=False,
         ),
         reasoning="test",
     )
@@ -61,7 +69,7 @@ class TestBaseScan:
 
     @patch("advisor.confluence.orchestrator.run_confluence")
     def test_momentum_breakout_scan_classmethod(self, mock_run):
-        """MomentumBreakout.scan() should call run_confluence with strategy_name='momentum_breakout'."""
+        """MomentumBreakout.scan() calls run_confluence with momentum_breakout."""
         from advisor.strategies.equity.momentum_breakout import MomentumBreakout
 
         mock_run.return_value = _make_result("momentum_breakout")

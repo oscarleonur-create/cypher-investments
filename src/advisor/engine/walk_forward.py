@@ -61,10 +61,7 @@ class WalkForwardResult(BaseModel):
         ]
         self.oos_avg_sharpe = sum(oos_sharpes) / len(oos_sharpes) if oos_sharpes else None
 
-        oos_dds = [
-            w.out_of_sample.max_drawdown_pct or 0.0
-            for w in self.windows
-        ]
+        oos_dds = [w.out_of_sample.max_drawdown_pct or 0.0 for w in self.windows]
         self.oos_avg_max_dd_pct = sum(oos_dds) / n
 
         is_returns = [w.in_sample.total_return_pct for w in self.windows]
@@ -93,7 +90,6 @@ class WalkForwardRunner:
         total_days = (end - start).days
         window_days = total_days / n_windows
         train_days = int(window_days * train_pct)
-        test_days = int(window_days * (1 - train_pct))
 
         result = WalkForwardResult(
             run_id=str(uuid.uuid4())[:8],

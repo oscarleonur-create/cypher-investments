@@ -51,4 +51,4 @@ def test_greeks_signs():
     assert result.delta > 0  # Call delta positive
     assert result.gamma > 0  # Gamma always positive
     assert result.theta < 0  # Theta negative (time decay)
-    assert result.vega > 0   # Vega positive
+    assert result.vega > 0  # Vega positive

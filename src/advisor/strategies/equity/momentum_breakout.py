@@ -15,7 +15,6 @@ from advisor.core.enums import StrategyType
 from advisor.strategies.base import StrategyBase
 from advisor.strategies.registry import StrategyRegistry
 
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # Backtrader strategy (for backtesting)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -42,9 +41,7 @@ class MomentumBreakout(StrategyBase):
     def __init__(self):
         super().__init__()
         self.order = None
-        self.sma = bt.indicators.SimpleMovingAverage(
-            self.data.close, period=self.p.sma_period
-        )
+        self.sma = bt.indicators.SimpleMovingAverage(self.data.close, period=self.p.sma_period)
         self.avg_volume = bt.indicators.SimpleMovingAverage(
             self.data.volume, period=self.p.sma_period
         )

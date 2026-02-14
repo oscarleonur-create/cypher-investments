@@ -5,8 +5,6 @@ from __future__ import annotations
 from datetime import datetime
 from unittest.mock import patch
 
-from typer.testing import CliRunner
-
 from advisor.cli.app import app
 from advisor.confluence.models import (
     ConfluenceResult,
@@ -16,6 +14,7 @@ from advisor.confluence.models import (
     SourceInfo,
     TechnicalResult,
 )
+from typer.testing import CliRunner
 
 runner = CliRunner()
 
@@ -42,7 +41,12 @@ def _make_result(
             positive_pct=80.0,
             key_headlines=["Stock surges on earnings beat"],
             sources=[
-                SourceInfo(source_id="s1", url="https://reuters.com/article1", title="Reuters: AAPL surges", tier=2),
+                SourceInfo(
+                    source_id="s1",
+                    url="https://reuters.com/article1",
+                    title="Reuters: AAPL surges",
+                    tier=2,
+                ),
             ],
             is_bullish=True,
         ),

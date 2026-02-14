@@ -5,11 +5,11 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from research_agent.agent import (
-    _TriggerResponse,
-    _ClassificationResponse,
-    _FactExtractionResponse,
     _CardSynthesisResponse,
+    _ClassificationResponse,
     _EvidenceItemRaw,
+    _FactExtractionResponse,
+    _TriggerResponse,
     run_loop,
     step1_detect_trigger,
     step2_classify_dip,

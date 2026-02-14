@@ -2,24 +2,21 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date
 from typing import ClassVar
-from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
-import pytest
-
 from advisor.core.enums import StrategyType
-from advisor.engine.scanner import SignalScanner, _SignalTracker
+from advisor.engine.scanner import SignalScanner
 from advisor.engine.signals import SignalAction
 from advisor.strategies.base import StrategyBase
 from advisor.strategies.registry import StrategyRegistry
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_ohlcv(n: int = 100, start_price: float = 100.0, trend: str = "flat") -> pd.DataFrame:
     """Generate synthetic OHLCV data."""
@@ -62,6 +59,7 @@ def _mock_provider(df: pd.DataFrame):
 # ---------------------------------------------------------------------------
 # Test strategies (registered per-test via the autouse reset_registry fixture)
 # ---------------------------------------------------------------------------
+
 
 def _register_always_buy():
     """Register a strategy that buys on the first bar and holds."""
@@ -190,6 +188,7 @@ def _register_options_strategy():
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestSignalInference:
     """Test the static _infer_signal logic."""

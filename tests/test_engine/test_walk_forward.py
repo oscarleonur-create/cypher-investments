@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from advisor.engine.results import BacktestResult
 from advisor.engine.walk_forward import WalkForwardResult, WalkForwardRunner, WindowResult

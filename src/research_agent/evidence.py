@@ -7,7 +7,6 @@ from urllib.parse import urlparse
 
 from research_agent.models import Source
 
-
 # ── Tier classification ──────────────────────────────────────────────────────
 
 _TIER_1_PATTERNS = [

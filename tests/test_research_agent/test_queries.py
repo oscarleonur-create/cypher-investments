@@ -5,7 +5,14 @@ from __future__ import annotations
 from research_agent.models import InputMode, ResearchInput
 from research_agent.queries import step1_queries, step3_queries, subject_label
 
-EXPECTED_STEP3_KEYS = {"earnings", "guidance", "competitive", "balance_sheet", "valuation", "bear_case"}
+EXPECTED_STEP3_KEYS = {
+    "earnings",
+    "guidance",
+    "competitive",
+    "balance_sheet",
+    "valuation",
+    "bear_case",
+}
 
 
 class TestStep1Queries:

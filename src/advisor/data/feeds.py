@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import date
 
 import backtrader as bt
-import pandas as pd
 
 from advisor.data.yahoo import YahooDataProvider
 

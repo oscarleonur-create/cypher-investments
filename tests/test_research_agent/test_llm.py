@@ -5,7 +5,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from pydantic import BaseModel
-
 from research_agent.config import ResearchConfig
 from research_agent.llm import ClaudeLLM
 

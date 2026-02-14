@@ -12,7 +12,7 @@ description = "Options financial advisor - backtesting and strategy system"
 authors = [
     {name = "oscarleonur-create", email = "oscar.leon.ur@gmail.com"}
 ]
-requires-python = "^3.12"
+requires-python = ">=3.12,<4.0"
 dependencies = [
     "typer[all]>=0.12,<1.0",
     "rich>=13.0",
@@ -39,6 +39,7 @@ research_agent = "research_agent.cli:app"
 pytest = "^8.0"
 pytest-cov = "^5.0"
 ruff = "^0.5"
+pre-commit = "^4.5.1"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
@@ -47,6 +48,12 @@ build-backend = "poetry.core.masonry.api"
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["F841"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

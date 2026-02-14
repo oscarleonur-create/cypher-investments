@@ -46,10 +46,14 @@ def backtest_run(
     start: Annotated[str, typer.Option("--start", help="Start date (YYYY-MM-DD)")],
     end: Annotated[str, typer.Option("--end", help="End date (YYYY-MM-DD)")],
     cash: Annotated[float, typer.Option("--cash", help="Initial cash")] = 100_000.0,
-    interval: Annotated[str, typer.Option("--interval", "-i", help="Data interval (1m, 5m, 15m, 1h, 1d, 1wk)")] = "1d",
+    interval: Annotated[
+        str, typer.Option("--interval", "-i", help="Data interval (1m, 5m, 15m, 1h, 1d, 1wk)")
+    ] = "1d",
     slippage: Annotated[float, typer.Option("--slippage", help="Slippage percentage")] = 0.001,
     sizer: Annotated[Optional[str], typer.Option("--sizer", help="Position sizer (atr)")] = None,
-    param: Annotated[Optional[list[str]], typer.Option("--param", help="Strategy params (k=v)")] = None,
+    param: Annotated[
+        Optional[list[str]], typer.Option("--param", help="Strategy params (k=v)")
+    ] = None,
     output: Annotated[Optional[str], typer.Option("--output", help="Output format")] = None,
 ) -> None:
     """Run a backtest for a strategy."""
@@ -99,7 +103,9 @@ def backtest_run(
 
 @app.command("results")
 def backtest_results(
-    strategy: Annotated[Optional[str], typer.Option("--strategy", help="Filter by strategy")] = None,
+    strategy: Annotated[
+        Optional[str], typer.Option("--strategy", help="Filter by strategy")
+    ] = None,
     limit: Annotated[int, typer.Option("--limit", help="Max results")] = 20,
     output: Annotated[Optional[str], typer.Option("--output", help="Output format")] = None,
 ) -> None:
@@ -146,12 +152,16 @@ def backtest_walk_forward(
     start: Annotated[str, typer.Option("--start", help="Start date (YYYY-MM-DD)")],
     end: Annotated[str, typer.Option("--end", help="End date (YYYY-MM-DD)")],
     windows: Annotated[int, typer.Option("--windows", help="Number of windows")] = 3,
-    train_pct: Annotated[float, typer.Option("--train-pct", help="Train fraction per window")] = 0.7,
+    train_pct: Annotated[
+        float, typer.Option("--train-pct", help="Train fraction per window")
+    ] = 0.7,
     cash: Annotated[float, typer.Option("--cash", help="Initial cash")] = 100_000.0,
     interval: Annotated[str, typer.Option("--interval", "-i", help="Data interval")] = "1d",
     slippage: Annotated[float, typer.Option("--slippage", help="Slippage percentage")] = 0.001,
     sizer: Annotated[Optional[str], typer.Option("--sizer", help="Position sizer (atr)")] = None,
-    param: Annotated[Optional[list[str]], typer.Option("--param", help="Strategy params (k=v)")] = None,
+    param: Annotated[
+        Optional[list[str]], typer.Option("--param", help="Strategy params (k=v)")
+    ] = None,
     output: Annotated[Optional[str], typer.Option("--output", help="Output format")] = None,
 ) -> None:
     """Run walk-forward analysis with rolling train/test windows."""

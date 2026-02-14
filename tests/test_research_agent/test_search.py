@@ -149,11 +149,13 @@ class TestTavilyClient:
         assert results == []
 
     def test_parse_results_filters_empty_urls(self):
-        results = TavilyClient._parse_results({
-            "results": [
-                {"url": "", "title": "No URL", "content": "test"},
-                {"url": "https://example.com", "title": "Has URL", "content": "test"},
-            ]
-        })
+        results = TavilyClient._parse_results(
+            {
+                "results": [
+                    {"url": "", "title": "No URL", "content": "test"},
+                    {"url": "https://example.com", "title": "Has URL", "content": "test"},
+                ]
+            }
+        )
         assert len(results) == 1
         assert results[0].url == "https://example.com"

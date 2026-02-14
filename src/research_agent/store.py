@@ -10,7 +10,6 @@ from pathlib import Path
 
 from research_agent.models import OpportunityCard
 
-
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
@@ -86,9 +85,7 @@ class Store:
         self._conn.commit()
 
     def load_run(self, run_id: str) -> OpportunityCard | None:
-        row = self._conn.execute(
-            "SELECT card_json FROM runs WHERE id = ?", (run_id,)
-        ).fetchone()
+        row = self._conn.execute("SELECT card_json FROM runs WHERE id = ?", (run_id,)).fetchone()
         if row is None:
             return None
         return OpportunityCard.model_validate_json(row["card_json"])

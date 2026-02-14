@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
+
+if TYPE_CHECKING:
+    from advisor.confluence.models import ConfluenceResult
 
 import backtrader as bt
 
@@ -11,6 +14,7 @@ from advisor.core.enums import StrategyType
 
 class StrategyParams(bt.MetaParams):
     """Metaclass that merges params from StrategyBase and subclasses."""
+
     pass
 
 
@@ -27,9 +31,7 @@ class StrategyBase(bt.Strategy):
     description: ClassVar[str] = ""
     version: ClassVar[str] = "1.0.0"
 
-    params: ClassVar[tuple] = (
-        ("use_sizer", False),
-    )
+    params: ClassVar[tuple] = (("use_sizer", False),)
 
     def get_info(self) -> dict[str, Any]:
         """Return strategy metadata for the registry."""

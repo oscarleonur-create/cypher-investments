@@ -5,8 +5,6 @@ from __future__ import annotations
 from datetime import date
 
 import backtrader as bt
-import pytest
-
 from advisor.engine.sizers import ATRSizer
 from advisor.strategies.base import StrategyBase
 from advisor.strategies.registry import StrategyRegistry
@@ -85,9 +83,9 @@ def test_high_vol_smaller_positions():
     size_low = _run_sizer_test(low_vol)
     size_high = _run_sizer_test(high_vol)
 
-    assert size_low > size_high, (
-        f"Low-vol size ({size_low}) should exceed high-vol size ({size_high})"
-    )
+    assert (
+        size_low > size_high
+    ), f"Low-vol size ({size_low}) should exceed high-vol size ({size_high})"
 
 
 def test_flat_prices_zero_size():
@@ -98,8 +96,13 @@ def test_flat_prices_zero_size():
     dates = pd.bdate_range(start=date(2023, 1, 1), periods=days)
     p = 100.0
     df = pd.DataFrame(
-        {"open": [p] * days, "high": [p] * days, "low": [p] * days,
-         "close": [p] * days, "volume": [1_000_000] * days},
+        {
+            "open": [p] * days,
+            "high": [p] * days,
+            "low": [p] * days,
+            "close": [p] * days,
+            "volume": [1_000_000] * days,
+        },
         index=dates,
     )
     cerebro = bt.Cerebro()

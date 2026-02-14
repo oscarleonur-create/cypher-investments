@@ -9,7 +9,6 @@ from unittest.mock import MagicMock
 import backtrader as bt
 import numpy as np
 import pandas as pd
-
 from advisor.engine.results import BacktestResult
 from advisor.engine.runner import BacktestRunner
 from advisor.strategies.equity.momentum_breakout import MomentumBreakout
