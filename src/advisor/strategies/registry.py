@@ -63,13 +63,21 @@ class StrategyRegistry:
 
     def discover(self) -> None:
         """Auto-discover strategies in advisor.strategies subpackages."""
+        import sys
+
         import advisor.strategies as pkg
+
+        _SKIP = {"advisor.strategies.base", "advisor.strategies.registry"}
 
         for _importer, modname, _ispkg in pkgutil.walk_packages(
             pkg.__path__, prefix="advisor.strategies."
         ):
+            if modname in _SKIP:
+                continue
             try:
-                importlib.import_module(modname)
+                mod = importlib.import_module(modname)
+                if modname in sys.modules:
+                    importlib.reload(mod)
             except Exception as e:
                 logger.warning(f"Failed to import {modname}: {e}")
 

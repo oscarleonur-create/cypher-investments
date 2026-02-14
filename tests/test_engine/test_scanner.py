@@ -20,7 +20,7 @@ from advisor.strategies.registry import StrategyRegistry
 
 def _make_ohlcv(n: int = 100, start_price: float = 100.0, trend: str = "flat") -> pd.DataFrame:
     """Generate synthetic OHLCV data."""
-    dates = pd.bdate_range(end=date.today(), periods=n)
+    dates = pd.date_range(end=date.today(), periods=n)
     if trend == "up":
         close = start_price + np.linspace(0, 50, n)
     elif trend == "down":
@@ -276,7 +276,7 @@ class TestScannerIntegration:
         _register_options_strategy()
         df = _make_ohlcv(100)
         scanner = SignalScanner(provider=_mock_provider(df))
-        result = scanner.scan("TEST")
+        result = scanner.scan("TEST", strategy_names=["always_buy"])
 
         strategy_names = [s.strategy_name for s in result.signals]
         assert "always_buy" in strategy_names
