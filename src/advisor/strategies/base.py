@@ -67,3 +67,14 @@ class StrategyBase(bt.Strategy):
             "version": cls.version,
             "params": cls._get_param_defaults(),
         }
+
+    @classmethod
+    def scan(cls, symbol: str) -> "ConfluenceResult":
+        """Run the full confluence pipeline for this strategy.
+
+        Returns:
+            ConfluenceResult with verdict, all agent results, and reasoning.
+        """
+        from advisor.confluence.orchestrator import run_confluence
+
+        return run_confluence(symbol, strategy_name=cls.strategy_name)
