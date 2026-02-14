@@ -3,17 +3,14 @@
 Entry: RSI(14) < 30, price < SMA(50), price > SMA(200)
 Exit:  RSI(14) > 70  OR  price < SMA(200)
 
-The scan() override passes force_all=True to the confluence pipeline
-because dip stocks are below SMAs by design — the normal breakout
-check would skip them.
+Sets force_all_confluence=True so the confluence pipeline runs sentiment
+and fundamental checks even without a technical breakout — dip stocks
+are below SMAs by design.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar
-
-if TYPE_CHECKING:
-    from advisor.confluence.models import ConfluenceResult
+from typing import ClassVar
 
 import backtrader as bt
 
@@ -34,6 +31,7 @@ class BuyTheDip(StrategyBase):
         "Exits on RSI overbought (>70) or uptrend break (price < SMA 200)."
     )
     version: ClassVar[str] = "1.0.0"
+    force_all_confluence: ClassVar[bool] = True
 
     params: ClassVar[tuple] = (
         ("rsi_period", 14),
@@ -78,13 +76,6 @@ class BuyTheDip(StrategyBase):
     def notify_order(self, order):
         if order.status in [order.Completed, order.Canceled, order.Margin, order.Rejected]:
             self.order = None
-
-    @classmethod
-    def scan(cls, symbol: str) -> "ConfluenceResult":
-        """Run confluence with force_all=True (dip stocks are below SMAs by design)."""
-        from advisor.confluence.orchestrator import run_confluence
-
-        return run_confluence(symbol, strategy_name=cls.strategy_name, force_all=True)
 
 
 def scan(symbol: str):

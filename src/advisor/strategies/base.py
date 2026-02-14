@@ -30,6 +30,7 @@ class StrategyBase(bt.Strategy):
     strategy_type: ClassVar[StrategyType] = StrategyType.EQUITY
     description: ClassVar[str] = ""
     version: ClassVar[str] = "1.0.0"
+    force_all_confluence: ClassVar[bool] = False
 
     params: ClassVar[tuple] = (("use_sizer", False),)
 
@@ -79,4 +80,6 @@ class StrategyBase(bt.Strategy):
         """
         from advisor.confluence.orchestrator import run_confluence
 
-        return run_confluence(symbol, strategy_name=cls.strategy_name)
+        return run_confluence(
+            symbol, strategy_name=cls.strategy_name, force_all=cls.force_all_confluence
+        )

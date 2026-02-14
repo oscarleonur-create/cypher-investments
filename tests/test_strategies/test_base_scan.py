@@ -52,7 +52,7 @@ class TestBaseScan:
 
         result = SMACrossover.scan("AAPL")
 
-        mock_run.assert_called_once_with("AAPL", strategy_name="sma_crossover")
+        mock_run.assert_called_once_with("AAPL", strategy_name="sma_crossover", force_all=False)
         assert result.strategy_name == "sma_crossover"
 
     @patch("advisor.confluence.orchestrator.run_confluence")
@@ -64,7 +64,7 @@ class TestBaseScan:
 
         result = BuyAndHold.scan("MSFT")
 
-        mock_run.assert_called_once_with("MSFT", strategy_name="buy_hold")
+        mock_run.assert_called_once_with("MSFT", strategy_name="buy_hold", force_all=False)
         assert result.strategy_name == "buy_hold"
 
     @patch("advisor.confluence.orchestrator.run_confluence")
@@ -76,7 +76,7 @@ class TestBaseScan:
 
         result = MomentumBreakout.scan("TSLA")
 
-        mock_run.assert_called_once_with("TSLA", strategy_name="momentum_breakout")
+        mock_run.assert_called_once_with("TSLA", strategy_name="momentum_breakout", force_all=False)
         assert result.strategy_name == "momentum_breakout"
 
     @patch("advisor.confluence.orchestrator.run_confluence")
@@ -88,5 +88,5 @@ class TestBaseScan:
 
         result = scan("AAPL")
 
-        mock_run.assert_called_once_with("AAPL", strategy_name="momentum_breakout")
+        mock_run.assert_called_once_with("AAPL", strategy_name="momentum_breakout", force_all=False)
         assert result.strategy_name == "momentum_breakout"
