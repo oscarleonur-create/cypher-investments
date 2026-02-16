@@ -31,6 +31,9 @@ def market_scan(
         typer.Option("--exclude-sector", help="Exclude these sectors (repeatable)"),
     ] = None,
     workers: Annotated[int, typer.Option("--workers", help="Parallel confluence workers")] = 4,
+    universe: Annotated[
+        str, typer.Option("--universe", "-u", help="Universe to scan (sp500, semiconductors)")
+    ] = "sp500",
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Filters only, skip confluence (no API cost)")
     ] = False,
@@ -39,7 +42,7 @@ def market_scan(
         bool, typer.Option("--verbose", "-v", help="Show filter rejection details")
     ] = False,
 ) -> None:
-    """Scan the S&P 500 through layered filters, then run confluence on qualifiers."""
+    """Scan a universe through layered filters, then run confluence on qualifiers."""
     from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn
 
     from advisor.data.cache import DiskCache
@@ -69,7 +72,7 @@ def market_scan(
     def on_progress(phase: str, advance: int = 1) -> None:
         if phase == "universe":
             task_ids["universe"] = progress.add_task(
-                "[cyan]Loading S&P 500 universe...", total=None
+                f"[cyan]Loading {universe} universe...", total=None
             )
         elif phase == "universe_done":
             if "universe" in task_ids:
@@ -110,6 +113,7 @@ def market_scan(
                 max_workers=workers,
                 dry_run=dry_run,
                 on_progress=on_progress,
+                universe=universe,
             )
     except KeyError as e:
         output_error(str(e))

@@ -9,7 +9,7 @@ from typing import Callable
 
 from advisor.confluence.models import ConfluenceResult, ConfluenceVerdict
 from advisor.data.cache import DiskCache
-from advisor.data.universe import fetch_sp500
+from advisor.data.universe import fetch_universe
 from advisor.market.filters import FilterConfig, apply_filters
 from advisor.market.models import FilterStatsModel, MarketScanResult
 from advisor.strategies.registry import StrategyRegistry
@@ -36,6 +36,7 @@ class MarketScanner:
         max_workers: int = 4,
         dry_run: bool = False,
         on_progress: Callable[[str, int], None] | None = None,
+        universe: str = "sp500",
     ) -> MarketScanResult:
         """Run a full market scan.
 
@@ -55,9 +56,9 @@ class MarketScanner:
         # ── Load universe ─────────────────────────────────────────────────
         if on_progress:
             on_progress("universe", 0)
-        universe = fetch_sp500(cache=self.cache)
-        symbols = [s.symbol for s in universe]
-        sector_map = {s.symbol: s.sector for s in universe}
+        stocks = fetch_universe(universe, cache=self.cache)
+        symbols = [s.symbol for s in stocks]
+        sector_map = {s.symbol: s.sector for s in stocks}
         if on_progress:
             on_progress("universe_done", len(symbols))
 
