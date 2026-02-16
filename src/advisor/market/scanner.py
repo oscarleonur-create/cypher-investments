@@ -5,7 +5,10 @@ from __future__ import annotations
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date
 from typing import Callable
+
+import yfinance as yf
 
 from advisor.confluence.models import ConfluenceResult, ConfluenceVerdict
 from advisor.data.cache import DiskCache
@@ -16,11 +19,80 @@ from advisor.strategies.registry import StrategyRegistry
 
 logger = logging.getLogger(__name__)
 
+_PEAD_EARNINGS_WINDOW = 7  # calendar days
+
 _VERDICT_ORDER = {
     ConfluenceVerdict.ENTER: 0,
     ConfluenceVerdict.CAUTION: 1,
     ConfluenceVerdict.PASS: 2,
 }
+
+
+def _pead_has_recent_earnings(symbol: str) -> bool:
+    """Quick check: did this stock report earnings within the PEAD window?
+
+    This is a cheap pre-screen to avoid sending stocks without recent
+    earnings into the full (expensive) confluence pipeline.
+    """
+    try:
+        ticker = yf.Ticker(symbol)
+        earnings_dates = ticker.earnings_dates
+        if earnings_dates is None or earnings_dates.empty:
+            return False
+
+        if "Reported EPS" not in earnings_dates.columns:
+            return False
+
+        reported = earnings_dates[earnings_dates["Reported EPS"].notna()]
+        if reported.empty:
+            return False
+
+        report_idx = reported.index[0]
+        if hasattr(report_idx, "date"):
+            report_date = report_idx.date()
+        elif isinstance(report_idx, date):
+            report_date = report_idx
+        else:
+            return False
+
+        days_since = (date.today() - report_date).days
+        return 0 <= days_since <= _PEAD_EARNINGS_WINDOW
+    except Exception:
+        logger.debug("PEAD earnings pre-screen failed for %s", symbol)
+        return False
+
+
+def _pead_prescreen(
+    qualifiers: list[str],
+    max_workers: int,
+    on_progress: Callable[[str, int], None] | None = None,
+) -> list[str]:
+    """Filter qualifiers to only those with recent earnings reports.
+
+    Runs in parallel to keep the pre-screen fast. This avoids wasting
+    sentiment API calls on stocks that the PEAD screener would immediately
+    reject for "no recent earnings."
+    """
+    passed: list[str] = []
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_pead_has_recent_earnings, sym): sym for sym in qualifiers}
+        for future in as_completed(futures):
+            sym = futures[future]
+            try:
+                if future.result():
+                    passed.append(sym)
+            except Exception:
+                pass
+            if on_progress:
+                on_progress("pead_prescreen_tick", 1)
+
+    logger.info(
+        "PEAD earnings pre-screen: %d/%d have recent earnings",
+        len(passed),
+        len(qualifiers),
+    )
+    return passed
 
 
 class MarketScanner:
@@ -92,6 +164,28 @@ class MarketScanner:
                 errors=[],
                 elapsed_seconds=time.time() - start,
             )
+
+        # ── PEAD earnings pre-screen (before expensive confluence) ────────
+        if strategy_name == "pead" and qualifiers:
+            if on_progress:
+                on_progress("pead_prescreen_start", len(qualifiers))
+            qualifiers = _pead_prescreen(
+                qualifiers,
+                max_workers=max_workers,
+                on_progress=on_progress,
+            )
+            if on_progress:
+                on_progress("pead_prescreen_done", len(qualifiers))
+            if not qualifiers:
+                return MarketScanResult(
+                    strategy_name=strategy_name,
+                    universe_size=len(symbols),
+                    filter_stats=stats_model,
+                    qualifiers=[],
+                    results=[],
+                    errors=[],
+                    elapsed_seconds=time.time() - start,
+                )
 
         # ── Run confluence on qualifiers ──────────────────────────────────
         registry = StrategyRegistry()

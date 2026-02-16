@@ -92,6 +92,39 @@ class DipScreenerResult(BaseModel):
     rejection_reason: str | None = None
 
 
+class EarningsSurpriseResult(BaseModel):
+    """Layer 1: Earnings surprise detection for PEAD strategy."""
+
+    reported_date: date | None = None
+    eps_estimate: float | None = None
+    eps_actual: float | None = None
+    eps_surprise_pct: float | None = None
+    revenue_surprise: bool | None = None
+    days_since_report: int | None = None
+    passes: bool = False
+
+
+class FadeSetupResult(BaseModel):
+    """Layer 2: Post-earnings fade detection for PEAD strategy."""
+
+    pre_earnings_high: float | None = None
+    current_price: float | None = None
+    fade_pct: float | None = None
+    has_faded: bool = False
+    gap_and_fade: bool = False
+    days_since_earnings: int | None = None
+    passes: bool = False
+
+
+class PeadScreenerResult(BaseModel):
+    """Combined PEAD screener result."""
+
+    earnings_surprise: EarningsSurpriseResult
+    fade_setup: FadeSetupResult | None = None
+    overall_score: str = "FAIL"
+    rejection_reason: str | None = None
+
+
 class FundamentalResult(BaseModel):
     """Result from the fundamental risk check."""
 
@@ -100,6 +133,7 @@ class FundamentalResult(BaseModel):
     insider_buying_detected: bool
     is_clear: bool
     dip_screener: DipScreenerResult | None = None
+    pead_screener: PeadScreenerResult | None = None
 
 
 class ConfluenceResult(BaseModel):
