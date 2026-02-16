@@ -6,7 +6,6 @@ from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
-
 from advisor.confluence.fundamental import check_fundamental
 
 
@@ -17,9 +16,7 @@ class TestCheckFundamental:
         # Earnings date far in the future
         future_date = date.today() + timedelta(days=30)
         ticker.calendar = {"Earnings Date": [future_date]}
-        ticker.insider_transactions = pd.DataFrame(
-            {"Transaction": ["Purchase"], "Shares": [1000]}
-        )
+        ticker.insider_transactions = pd.DataFrame({"Transaction": ["Purchase"], "Shares": [1000]})
         mock_yf.Ticker.return_value = ticker
 
         result = check_fundamental("AAPL")
@@ -127,7 +124,9 @@ class TestCheckFundamental:
         ticker = MagicMock()
         ticker.calendar = property(lambda self: (_ for _ in ()).throw(RuntimeError("API down")))
         # Make .calendar raise
-        type(ticker).calendar = property(lambda self: (_ for _ in ()).throw(RuntimeError("API down")))
+        type(ticker).calendar = property(
+            lambda self: (_ for _ in ()).throw(RuntimeError("API down"))
+        )
         ticker.insider_transactions = None
         mock_yf.Ticker.return_value = ticker
 

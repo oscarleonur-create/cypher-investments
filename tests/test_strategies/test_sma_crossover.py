@@ -9,7 +9,6 @@ from unittest.mock import MagicMock
 import backtrader as bt
 import numpy as np
 import pandas as pd
-
 from advisor.engine.results import BacktestResult
 from advisor.engine.runner import BacktestRunner
 from advisor.strategies.equity.sma_crossover import SMACrossover
@@ -33,6 +32,7 @@ def _fresh_discover() -> StrategyRegistry:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_price_df(prices: list[float], start: str = "2024-01-02") -> pd.DataFrame:
     """Build an OHLCV DataFrame from a list of close prices."""
@@ -126,9 +126,9 @@ class TestSMACrossoverLogic:
         # Start high so short SMA < long SMA during decline,
         # then rise to trigger short SMA crossing above long SMA.
         prices = (
-            [120.0] * 15          # initial plateau
+            [120.0] * 15  # initial plateau
             + [120 - i * 2 for i in range(1, 16)]  # decline to 90
-            + [90 + i * 2 for i in range(1, 51)]   # rise to 190
+            + [90 + i * 2 for i in range(1, 51)]  # rise to 190
         )
         strat = _run_cerebro(prices, short_period=5, long_period=15)
         # Should have entered a position
@@ -140,7 +140,7 @@ class TestSMACrossoverLogic:
         # The short SMA must be strictly below the long SMA before the rise
         # so that the CrossOver indicator detects an actual crossing event.
         prices = (
-            [150.0] * 20                           # flat start - SMAs converge
+            [150.0] * 20  # flat start - SMAs converge
             + [150 - i * 2 for i in range(1, 16)]  # decline (short < long)
             + [120 + i * 3 for i in range(1, 21)]  # rise (golden cross → buy)
             + [180 - i * 3 for i in range(1, 31)]  # decline (death cross → sell)
@@ -155,8 +155,8 @@ class TestSMACrossoverLogic:
         # Initial dip then sustained rise to trigger one golden cross only.
         prices = (
             [100] * 20
-            + [100 - i for i in range(1, 11)]   # dip to 90
-            + [90 + i for i in range(1, 61)]     # sustained rise to 150
+            + [100 - i for i in range(1, 11)]  # dip to 90
+            + [90 + i for i in range(1, 61)]  # sustained rise to 150
         )
         strat = _run_cerebro(prices, short_period=5, long_period=15)
         trade_analysis = strat.analyzers.trades.get_analysis()

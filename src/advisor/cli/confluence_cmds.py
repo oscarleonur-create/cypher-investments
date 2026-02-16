@@ -29,14 +29,17 @@ def confluence_scan(
     strategy: Annotated[
         str, typer.Option("--strategy", "-s", help="Strategy to use for the technical check")
     ] = "momentum_breakout",
-    output: Annotated[
-        Optional[str], typer.Option("--output", help="Output format (json)")
-    ] = None,
+    output: Annotated[Optional[str], typer.Option("--output", help="Output format (json)")] = None,
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Show detailed agent results")
     ] = False,
     force: Annotated[
-        bool, typer.Option("--force", "-f", help="Run sentiment + fundamental even without breakout (for dip analysis)")
+        bool,
+        typer.Option(
+            "--force",
+            "-f",
+            help="Run sentiment + fundamental even without breakout (for dip analysis)",
+        ),
     ] = False,
 ) -> None:
     """Run all three confluence checks (technical, sentiment, fundamental) on a symbol."""
@@ -75,26 +78,38 @@ def confluence_scan(
 
     # Technical
     tech_color = "green" if result.technical.is_bullish else "red"
-    tech_status = f"[{tech_color}]{'BULLISH' if result.technical.is_bullish else 'BEARISH'}[/{tech_color}]"
+    tech_status = (
+        f"[{tech_color}]{'BULLISH' if result.technical.is_bullish else 'BEARISH'}[/{tech_color}]"
+    )
     tech_detail = f"Signal: {result.technical.signal}, Price: ${result.technical.price:,.2f}"
     table.add_row("Technical", tech_status, tech_detail)
 
     # Sentiment
     sent_color = "green" if result.sentiment.is_bullish else "red"
-    sent_status = f"[{sent_color}]{'BULLISH' if result.sentiment.is_bullish else 'BEARISH'}[/{sent_color}]"
-    sent_detail = f"Score: {result.sentiment.score:.0f}/100, Positive: {result.sentiment.positive_pct:.0f}%"
+    sent_status = (
+        f"[{sent_color}]{'BULLISH' if result.sentiment.is_bullish else 'BEARISH'}[/{sent_color}]"
+    )
+    sent_detail = (
+        f"Score: {result.sentiment.score:.0f}/100, Positive: {result.sentiment.positive_pct:.0f}%"
+    )
     table.add_row("Sentiment", sent_status, sent_detail)
 
     # Fundamental
     ds = result.fundamental.dip_screener
     fund_color = "green" if result.fundamental.is_clear else "red"
-    fund_status = f"[{fund_color}]{'CLEAR' if result.fundamental.is_clear else 'RISK'}[/{fund_color}]"
+    fund_status = (
+        f"[{fund_color}]{'CLEAR' if result.fundamental.is_clear else 'RISK'}[/{fund_color}]"
+    )
 
     if ds is not None:
         # Dip screener: show overall score instead of simple detail
         score_colors = {
-            "STRONG_BUY": "bold green", "BUY": "green", "LEAN_BUY": "cyan",
-            "WATCH": "yellow", "WEAK": "dim", "FAIL": "red",
+            "STRONG_BUY": "bold green",
+            "BUY": "green",
+            "LEAN_BUY": "cyan",
+            "WATCH": "yellow",
+            "WEAK": "dim",
+            "FAIL": "red",
         }
         sc = score_colors.get(ds.overall_score, "white")
         fund_detail = f"Dip Score: [{sc}]{ds.overall_score}[/{sc}]"
@@ -141,7 +156,9 @@ def confluence_scan(
             elif ff.insider_buying:
                 f_parts.append("Insider buying")
             if ff.analyst_upside_pct is not None:
-                f_parts.append(f"Analyst upside: {ff.analyst_upside_pct:+.1f}% ({ff.n_analysts} analysts)")
+                f_parts.append(
+                    f"Analyst upside: {ff.analyst_upside_pct:+.1f}% ({ff.n_analysts} analysts)"
+                )
             if not f_parts:
                 f_parts.append("No timing signal")
             table.add_row(
@@ -194,21 +211,45 @@ def confluence_scan(
             s = ds.safety
             _dip_row(dip_table, "Current Ratio", s.current_ratio, "> 1.5", s.current_ratio_ok)
             _dip_row(dip_table, "Debt/Equity", s.debt_to_equity, "< 2.0", s.debt_to_equity_ok)
-            _dip_row(dip_table, "FCF (4Q positive)", len([v for v in s.fcf_values if v > 0]), "4/4", s.fcf_ok)
+            _dip_row(
+                dip_table,
+                "FCF (4Q positive)",
+                len([v for v in s.fcf_values if v > 0]),
+                "4/4",
+                s.fcf_ok,
+            )
 
             if ds.value_trap is not None:
                 vt = ds.value_trap
                 _dip_row(dip_table, "Current P/E", vt.current_pe, "-", None)
                 _dip_row(dip_table, "5yr Avg P/E", vt.five_year_avg_pe, "-", None)
-                _dip_row(dip_table, "P/E Discount", f"{vt.pe_discount_pct}%" if vt.pe_discount_pct else "N/A", ">= 20%", vt.pe_on_sale)
-                _dip_row(dip_table, "Price Change", f"{vt.price_change_pct}%" if vt.price_change_pct else "N/A", "<= -10%", None)
+                _dip_row(
+                    dip_table,
+                    "P/E Discount",
+                    f"{vt.pe_discount_pct}%" if vt.pe_discount_pct else "N/A",
+                    ">= 20%",
+                    vt.pe_on_sale,
+                )
+                _dip_row(
+                    dip_table,
+                    "Price Change",
+                    f"{vt.price_change_pct}%" if vt.price_change_pct else "N/A",
+                    "<= -10%",
+                    None,
+                )
                 _dip_row(dip_table, "RSI Divergence", vt.rsi_divergence, "True", vt.rsi_divergence)
 
             if ds.fast_fundamentals is not None:
                 ff = ds.fast_fundamentals
                 _dip_row(dip_table, "Insider Buying", ff.insider_buying, "True", ff.insider_buying)
                 _dip_row(dip_table, "C-Suite Buying", ff.c_suite_buying, "True", ff.c_suite_buying)
-                _dip_row(dip_table, "Analyst Upside", f"{ff.analyst_upside_pct}%" if ff.analyst_upside_pct else "N/A", ">= 15%", ff.analyst_bullish)
+                _dip_row(
+                    dip_table,
+                    "Analyst Upside",
+                    f"{ff.analyst_upside_pct}%" if ff.analyst_upside_pct else "N/A",
+                    ">= 15%",
+                    ff.analyst_bullish,
+                )
                 _dip_row(dip_table, "# Analysts", ff.n_analysts, ">= 3", ff.n_analysts >= 3)
 
                 if ff.insider_details:

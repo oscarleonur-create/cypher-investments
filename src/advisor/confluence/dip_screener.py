@@ -140,9 +140,7 @@ def _check_fast_fundamentals(ticker: yf.Ticker) -> FastFundamentalsResult:
             # Detect purchases
             if "Transaction" in transactions.columns:
                 buys = transactions[
-                    transactions["Transaction"].str.contains(
-                        "Purchase|Buy", case=False, na=False
-                    )
+                    transactions["Transaction"].str.contains("Purchase|Buy", case=False, na=False)
                 ]
             elif "Shares" in transactions.columns:
                 buys = transactions[transactions["Shares"] > 0]
@@ -177,9 +175,7 @@ def _check_fast_fundamentals(ticker: yf.Ticker) -> FastFundamentalsResult:
 
                     # C-suite detection
                     text = " ".join(
-                        str(row.get(c, "")).lower()
-                        for c in [title_col, name_col]
-                        if c is not None
+                        str(row.get(c, "")).lower() for c in [title_col, name_col] if c is not None
                     )
                     if any(t in text for t in C_SUITE_TITLES):
                         result.c_suite_buying = True
@@ -197,9 +193,7 @@ def _check_fast_fundamentals(ticker: yf.Ticker) -> FastFundamentalsResult:
     if target_price and current_price and current_price > 0:
         upside = (target_price - current_price) / current_price
         result.analyst_upside_pct = round(upside * 100, 1)
-        result.analyst_bullish = (
-            upside >= ANALYST_UPSIDE_MIN and n_analysts >= ANALYST_COUNT_MIN
-        )
+        result.analyst_bullish = upside >= ANALYST_UPSIDE_MIN and n_analysts >= ANALYST_COUNT_MIN
 
     result.has_confirmation = result.insider_buying or result.analyst_bullish
     return result
@@ -283,13 +277,9 @@ def check_dip_fundamental(symbol: str) -> FundamentalResult:
         # Build rejection reason
         failures = []
         if not safety.current_ratio_ok:
-            failures.append(
-                f"Current ratio {safety.current_ratio or 'N/A'} < {CURRENT_RATIO_MIN}"
-            )
+            failures.append(f"Current ratio {safety.current_ratio or 'N/A'} < {CURRENT_RATIO_MIN}")
         if not safety.debt_to_equity_ok:
-            failures.append(
-                f"D/E {safety.debt_to_equity or 'N/A'} > {DEBT_TO_EQUITY_MAX}"
-            )
+            failures.append(f"D/E {safety.debt_to_equity or 'N/A'} > {DEBT_TO_EQUITY_MAX}")
         if not safety.fcf_ok:
             failures.append("FCF not positive for 4 consecutive quarters")
         rejection_reason = "; ".join(failures)
@@ -311,9 +301,7 @@ def check_dip_fundamental(symbol: str) -> FundamentalResult:
     )
 
     # Map back to standard FundamentalResult fields
-    insider_buying = (
-        fast_fund.insider_buying if fast_fund is not None else False
-    )
+    insider_buying = fast_fund.insider_buying if fast_fund is not None else False
     is_clear = safety.passes and not earnings_within_7
 
     return FundamentalResult(

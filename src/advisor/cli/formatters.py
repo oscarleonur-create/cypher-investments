@@ -116,7 +116,13 @@ def print_walk_forward_summary(result: Any) -> None:
     header.add_row("OOS Avg Max DD", f"{result.oos_avg_max_dd_pct:.2f}%")
     header.add_row("", "")
 
-    gap_color = "green" if result.is_vs_oos_gap <= 5.0 else "yellow" if result.is_vs_oos_gap <= 15.0 else "red"
+    gap_color = (
+        "green"
+        if result.is_vs_oos_gap <= 5.0
+        else "yellow"
+        if result.is_vs_oos_gap <= 15.0
+        else "red"
+    )
     header.add_row("IS Avg Return", f"{result.is_avg_return_pct:+.2f}%")
     header.add_row("IS-vs-OOS Gap", f"[{gap_color}]{result.is_vs_oos_gap:+.2f}pp[/{gap_color}]")
 
@@ -136,7 +142,11 @@ def print_walk_forward_summary(result: Any) -> None:
         oos_ret = w.out_of_sample.total_return_pct
         is_color = "green" if is_ret >= 0 else "red"
         oos_color = "green" if oos_ret >= 0 else "red"
-        sharpe = f"{w.out_of_sample.sharpe_ratio:.4f}" if w.out_of_sample.sharpe_ratio is not None else "N/A"
+        sharpe = (
+            f"{w.out_of_sample.sharpe_ratio:.4f}"
+            if w.out_of_sample.sharpe_ratio is not None
+            else "N/A"
+        )
 
         windows_table.add_row(
             str(w.window_index + 1),

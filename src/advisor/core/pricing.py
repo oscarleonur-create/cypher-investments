@@ -73,17 +73,13 @@ def bsm_price(
     if option_type == OptionType.CALL:
         price = S * nd1 - K * math.exp(-r * T) * nd2
         delta = nd1
-        theta = (
-            -(S * npd1 * sigma) / (2 * sqrt_T)
-            - r * K * math.exp(-r * T) * nd2
-        ) / 365.0
+        theta = (-(S * npd1 * sigma) / (2 * sqrt_T) - r * K * math.exp(-r * T) * nd2) / 365.0
         rho = K * T * math.exp(-r * T) * nd2 / 100.0
     else:
         price = K * math.exp(-r * T) * norm.cdf(-_d2) - S * norm.cdf(-_d1)
         delta = nd1 - 1.0
         theta = (
-            -(S * npd1 * sigma) / (2 * sqrt_T)
-            + r * K * math.exp(-r * T) * norm.cdf(-_d2)
+            -(S * npd1 * sigma) / (2 * sqrt_T) + r * K * math.exp(-r * T) * norm.cdf(-_d2)
         ) / 365.0
         rho = -K * T * math.exp(-r * T) * norm.cdf(-_d2) / 100.0
 

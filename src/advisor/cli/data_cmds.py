@@ -38,13 +38,15 @@ def data_fetch(
 
     if output == "json":
         records = df.reset_index().to_dict(orient="records")
-        output_json({
-            "symbol": symbol,
-            "start": str(start_date),
-            "end": str(end_date),
-            "rows": len(df),
-            "data": records,
-        })
+        output_json(
+            {
+                "symbol": symbol,
+                "start": str(start_date),
+                "end": str(end_date),
+                "rows": len(df),
+                "data": records,
+            }
+        )
     else:
         console.print(f"[green]Fetched {len(df)} rows for {symbol}[/green]")
         console.print(f"Period: {df.index[0].date()} to {df.index[-1].date()}")
@@ -56,7 +58,9 @@ def data_fetch(
 @app.command("options")
 def data_options(
     symbol: Annotated[str, typer.Argument(help="Ticker symbol")],
-    expiration: Annotated[Optional[str], typer.Option("--expiration", help="Expiration date")] = None,
+    expiration: Annotated[
+        Optional[str], typer.Option("--expiration", help="Expiration date")
+    ] = None,
     output: Annotated[Optional[str], typer.Option("--output", help="Output format")] = None,
 ) -> None:
     """Fetch current options chain for a symbol."""
@@ -71,11 +75,13 @@ def data_options(
         return
 
     if output == "json":
-        output_json({
-            "symbol": symbol,
-            "calls": chain["calls"].to_dict(orient="records"),
-            "puts": chain["puts"].to_dict(orient="records"),
-        })
+        output_json(
+            {
+                "symbol": symbol,
+                "calls": chain["calls"].to_dict(orient="records"),
+                "puts": chain["puts"].to_dict(orient="records"),
+            }
+        )
     else:
         console.print(f"[cyan]Calls ({len(chain['calls'])}):[/cyan]")
         console.print(chain["calls"].head(10).to_string())
@@ -100,9 +106,16 @@ def data_inspect(
 
     # Select key fields for display
     key_fields = [
-        "shortName", "sector", "industry", "marketCap",
-        "currentPrice", "fiftyTwoWeekHigh", "fiftyTwoWeekLow",
-        "dividendYield", "beta", "trailingPE",
+        "shortName",
+        "sector",
+        "industry",
+        "marketCap",
+        "currentPrice",
+        "fiftyTwoWeekHigh",
+        "fiftyTwoWeekLow",
+        "dividendYield",
+        "beta",
+        "trailingPE",
     ]
     summary = {k: info.get(k) for k in key_fields if info.get(k) is not None}
 
@@ -110,6 +123,7 @@ def data_inspect(
         output_json(info)
     else:
         from rich.table import Table
+
         table = Table(title=f"Ticker Info: {symbol}")
         table.add_column("Field", style="cyan")
         table.add_column("Value")
@@ -137,7 +151,6 @@ def data_cache(
             console.print(f"[green]{msg}[/green]")
     else:
         # Show cache stats
-        from pathlib import Path
         cache_dir = cache.cache_dir
         files = list(cache_dir.glob("*"))
         total_size = sum(f.stat().st_size for f in files if f.is_file())

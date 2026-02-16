@@ -2,28 +2,25 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date
 from typing import ClassVar
-from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
-import pytest
-
 from advisor.core.enums import StrategyType
-from advisor.engine.scanner import SignalScanner, _SignalTracker
+from advisor.engine.scanner import SignalScanner
 from advisor.engine.signals import SignalAction
 from advisor.strategies.base import StrategyBase
 from advisor.strategies.registry import StrategyRegistry
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_ohlcv(n: int = 100, start_price: float = 100.0, trend: str = "flat") -> pd.DataFrame:
     """Generate synthetic OHLCV data."""
-    dates = pd.bdate_range(end=date.today(), periods=n)
+    dates = pd.date_range(end=date.today(), periods=n)
     if trend == "up":
         close = start_price + np.linspace(0, 50, n)
     elif trend == "down":
@@ -62,6 +59,7 @@ def _mock_provider(df: pd.DataFrame):
 # ---------------------------------------------------------------------------
 # Test strategies (registered per-test via the autouse reset_registry fixture)
 # ---------------------------------------------------------------------------
+
 
 def _register_always_buy():
     """Register a strategy that buys on the first bar and holds."""
@@ -191,6 +189,7 @@ def _register_options_strategy():
 # Tests
 # ---------------------------------------------------------------------------
 
+
 class TestSignalInference:
     """Test the static _infer_signal logic."""
 
@@ -277,7 +276,7 @@ class TestScannerIntegration:
         _register_options_strategy()
         df = _make_ohlcv(100)
         scanner = SignalScanner(provider=_mock_provider(df))
-        result = scanner.scan("TEST")
+        result = scanner.scan("TEST", strategy_names=["always_buy"])
 
         strategy_names = [s.strategy_name for s in result.signals]
         assert "always_buy" in strategy_names

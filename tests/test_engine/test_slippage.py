@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 from unittest.mock import MagicMock
 
 import backtrader as bt
-import pytest
-
 from advisor.engine.results import BacktestResult
 from advisor.engine.runner import BacktestRunner
 from advisor.strategies.base import StrategyBase
@@ -65,9 +63,7 @@ def _run_with_slippage(slippage: float) -> float:
     cerebro.addstrategy(_SimpleBuy)
     cerebro.broker.setcash(100_000)
     cerebro.broker.setcommission(commission=0.0)
-    cerebro.broker.set_slippage_perc(
-        perc=slippage, slip_open=True, slip_match=True, slip_out=False
-    )
+    cerebro.broker.set_slippage_perc(perc=slippage, slip_open=True, slip_match=True, slip_out=False)
     results = cerebro.run()
     return cerebro.broker.getvalue()
 
@@ -98,7 +94,5 @@ def test_runner_passes_slippage_to_result():
     """BacktestRunner should propagate slippage_perc into BacktestResult."""
     # Create runner and mock out the actual run to check plumbing
     provider = MagicMock()
-    runner = BacktestRunner(
-        initial_cash=100_000, slippage_perc=0.005, provider=provider
-    )
+    runner = BacktestRunner(initial_cash=100_000, slippage_perc=0.005, provider=provider)
     assert runner.slippage_perc == 0.005

@@ -86,9 +86,7 @@ class SignalScanner:
         registry.discover()
 
         if strategy_names:
-            strat_classes = [
-                (name, registry.get_strategy(name)) for name in strategy_names
-            ]
+            strat_classes = [(name, registry.get_strategy(name)) for name in strategy_names]
         else:
             # Default: equity strategies only
             strat_classes = [
@@ -138,9 +136,7 @@ class SignalScanner:
 
         price = strat.data.close[0]
 
-        action, reason = self._infer_signal(
-            has_position, last_action, last_action_bar, total_bars
-        )
+        action, reason = self._infer_signal(has_position, last_action, last_action_bar, total_bars)
 
         return StrategySignal(
             strategy_name=strategy_name,

@@ -94,7 +94,10 @@ class TestCheckTechnical:
         assert result.signal == "NEUTRAL"
         assert result.price == 0.0
 
-    @patch("advisor.confluence.technical._compute_indicators", return_value={"price": 0.0, "sma_20": 0.0, "volume_ratio": 0.0})
+    @patch(
+        "advisor.confluence.technical._compute_indicators",
+        return_value={"price": 0.0, "sma_20": 0.0, "volume_ratio": 0.0},
+    )
     @patch("advisor.confluence.technical.SignalScanner")
     def test_indicator_failure_returns_zeros(self, mock_scanner_cls, mock_indicators):
         """If indicator computation fails, we still get the signal."""

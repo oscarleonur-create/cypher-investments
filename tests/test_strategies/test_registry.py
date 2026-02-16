@@ -3,7 +3,6 @@
 from typing import ClassVar
 
 import pytest
-
 from advisor.core.enums import StrategyType
 from advisor.strategies.base import StrategyBase
 from advisor.strategies.registry import StrategyRegistry
@@ -26,6 +25,7 @@ def test_register_strategy():
 
 def test_register_requires_name():
     with pytest.raises(ValueError, match="must define 'strategy_name'"):
+
         @StrategyRegistry.register
         class BadStrat(StrategyBase):
             def next(self):

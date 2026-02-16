@@ -37,9 +37,7 @@ class StrategyRegistry:
         instance = cls()
         name = strategy_cls.strategy_name
         if not name:
-            raise ValueError(
-                f"Strategy {strategy_cls.__name__} must define 'strategy_name'"
-            )
+            raise ValueError(f"Strategy {strategy_cls.__name__} must define 'strategy_name'")
         if name in instance._strategies:
             logger.warning(f"Overwriting existing strategy: {name}")
         instance._strategies[name] = strategy_cls
@@ -56,9 +54,7 @@ class StrategyRegistry:
         cls = self._strategies.get(name)
         if cls is None:
             available = ", ".join(sorted(self._strategies.keys()))
-            raise KeyError(
-                f"Strategy '{name}' not found. Available: {available}"
-            )
+            raise KeyError(f"Strategy '{name}' not found. Available: {available}")
         return cls
 
     @property
@@ -67,13 +63,21 @@ class StrategyRegistry:
 
     def discover(self) -> None:
         """Auto-discover strategies in advisor.strategies subpackages."""
+        import sys
+
         import advisor.strategies as pkg
+
+        _SKIP = {"advisor.strategies.base", "advisor.strategies.registry"}
 
         for _importer, modname, _ispkg in pkgutil.walk_packages(
             pkg.__path__, prefix="advisor.strategies."
         ):
+            if modname in _SKIP:
+                continue
             try:
-                importlib.import_module(modname)
+                mod = importlib.import_module(modname)
+                if modname in sys.modules:
+                    importlib.reload(mod)
             except Exception as e:
                 logger.warning(f"Failed to import {modname}: {e}")
 

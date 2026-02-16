@@ -56,13 +56,17 @@ def run_confluence(
             verdict=ConfluenceVerdict.PASS,
             technical=technical,
             sentiment=SentimentResult(
-                score=0.0, positive_pct=0.0,
+                score=0.0,
+                positive_pct=0.0,
                 key_headlines=["Skipped — no technical breakout"],
-                sources=[], is_bullish=False,
+                sources=[],
+                is_bullish=False,
             ),
             fundamental=FundamentalResult(
-                earnings_within_7_days=False, earnings_date=None,
-                insider_buying_detected=False, is_clear=False,
+                earnings_within_7_days=False,
+                earnings_date=None,
+                insider_buying_detected=False,
+                is_clear=False,
             ),
             reasoning=(
                 f"No breakout for {symbol} via {strategy_name} "
@@ -160,9 +164,7 @@ def run_confluence(
         if ds.overall_score == "FAIL":
             reasoning += f" Dip screener FAIL: {ds.rejection_reason}."
         elif ds.overall_score == "STRONG_BUY":
-            reasoning += (
-                " Dip screener STRONG_BUY: RSI divergence with C-suite insider buying."
-            )
+            reasoning += " Dip screener STRONG_BUY: RSI divergence with C-suite insider buying."
         elif ds.overall_score in ("BUY", "LEAN_BUY", "WATCH", "WEAK"):
             reasoning += f" Dip screener score: {ds.overall_score}."
 

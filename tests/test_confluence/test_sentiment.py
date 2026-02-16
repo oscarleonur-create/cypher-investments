@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from advisor.confluence.sentiment import SentimentResult, _SentimentScore, check_sentiment
+from advisor.confluence.sentiment import _SentimentScore, check_sentiment
 from research_agent.search import SearchResult
 
 
@@ -13,7 +13,9 @@ class TestCheckSentiment:
     @patch("advisor.confluence.sentiment.ClaudeLLM")
     @patch("advisor.confluence.sentiment.TavilyClient")
     @patch("advisor.confluence.sentiment.ResearchConfig")
-    def test_bullish_sentiment(self, mock_config_cls, mock_tavily_cls, mock_llm_cls, mock_store_cls):
+    def test_bullish_sentiment(
+        self, mock_config_cls, mock_tavily_cls, mock_llm_cls, mock_store_cls
+    ):
         mock_config = MagicMock()
         mock_config.db_path = MagicMock()
         mock_config_cls.return_value = mock_config
@@ -23,7 +25,9 @@ class TestCheckSentiment:
 
         mock_tavily = MagicMock()
         mock_tavily.search.return_value = [
-            SearchResult(url="https://reuters.com/article1", title="Good news", content="Stock soars"),
+            SearchResult(
+                url="https://reuters.com/article1", title="Good news", content="Stock soars"
+            ),
         ]
         mock_tavily_cls.return_value = mock_tavily
 
@@ -50,7 +54,9 @@ class TestCheckSentiment:
     @patch("advisor.confluence.sentiment.ClaudeLLM")
     @patch("advisor.confluence.sentiment.TavilyClient")
     @patch("advisor.confluence.sentiment.ResearchConfig")
-    def test_bullish_llm_receives_formatted_context(self, mock_config_cls, mock_tavily_cls, mock_llm_cls, mock_store_cls):
+    def test_bullish_llm_receives_formatted_context(
+        self, mock_config_cls, mock_tavily_cls, mock_llm_cls, mock_store_cls
+    ):
         """Verify the LLM receives [sN]-formatted search results."""
         mock_config = MagicMock()
         mock_config.db_path = MagicMock()
@@ -68,7 +74,10 @@ class TestCheckSentiment:
 
         mock_llm = MagicMock()
         mock_llm.complete.return_value = _SentimentScore(
-            score=60.0, positive_pct=55.0, key_headlines=[], reasoning="Mixed",
+            score=60.0,
+            positive_pct=55.0,
+            key_headlines=[],
+            reasoning="Mixed",
         )
         mock_llm_cls.return_value = mock_llm
 
@@ -87,7 +96,9 @@ class TestCheckSentiment:
     @patch("advisor.confluence.sentiment.ClaudeLLM")
     @patch("advisor.confluence.sentiment.TavilyClient")
     @patch("advisor.confluence.sentiment.ResearchConfig")
-    def test_bearish_sentiment(self, mock_config_cls, mock_tavily_cls, mock_llm_cls, mock_store_cls):
+    def test_bearish_sentiment(
+        self, mock_config_cls, mock_tavily_cls, mock_llm_cls, mock_store_cls
+    ):
         mock_config = MagicMock()
         mock_config.db_path = MagicMock()
         mock_config_cls.return_value = mock_config
@@ -120,7 +131,9 @@ class TestCheckSentiment:
     @patch("advisor.confluence.sentiment.ClaudeLLM")
     @patch("advisor.confluence.sentiment.TavilyClient")
     @patch("advisor.confluence.sentiment.ResearchConfig")
-    def test_no_search_results_returns_neutral(self, mock_config_cls, mock_tavily_cls, mock_llm_cls, mock_store_cls):
+    def test_no_search_results_returns_neutral(
+        self, mock_config_cls, mock_tavily_cls, mock_llm_cls, mock_store_cls
+    ):
         mock_config = MagicMock()
         mock_config.db_path = MagicMock()
         mock_config_cls.return_value = mock_config
@@ -143,7 +156,9 @@ class TestCheckSentiment:
     @patch("advisor.confluence.sentiment.ClaudeLLM")
     @patch("advisor.confluence.sentiment.TavilyClient")
     @patch("advisor.confluence.sentiment.ResearchConfig")
-    def test_exception_returns_neutral(self, mock_config_cls, mock_tavily_cls, mock_llm_cls, mock_store_cls):
+    def test_exception_returns_neutral(
+        self, mock_config_cls, mock_tavily_cls, mock_llm_cls, mock_store_cls
+    ):
         mock_config = MagicMock()
         mock_config.db_path = MagicMock()
         mock_config_cls.return_value = mock_config
@@ -165,7 +180,9 @@ class TestCheckSentiment:
     @patch("advisor.confluence.sentiment.ClaudeLLM")
     @patch("advisor.confluence.sentiment.TavilyClient")
     @patch("advisor.confluence.sentiment.ResearchConfig")
-    def test_source_tiers_populated(self, mock_config_cls, mock_tavily_cls, mock_llm_cls, mock_store_cls):
+    def test_source_tiers_populated(
+        self, mock_config_cls, mock_tavily_cls, mock_llm_cls, mock_store_cls
+    ):
         """Sources from tier-2 domains should get tier=2 classification."""
         mock_config = MagicMock()
         mock_config.db_path = MagicMock()
@@ -176,14 +193,19 @@ class TestCheckSentiment:
 
         mock_tavily = MagicMock()
         mock_tavily.search.return_value = [
-            SearchResult(url="https://reuters.com/news/1", title="Reuters article", content="Content"),
+            SearchResult(
+                url="https://reuters.com/news/1", title="Reuters article", content="Content"
+            ),
             SearchResult(url="https://randomsite.com/blog", title="Blog post", content="Opinion"),
         ]
         mock_tavily_cls.return_value = mock_tavily
 
         mock_llm = MagicMock()
         mock_llm.complete.return_value = _SentimentScore(
-            score=70.0, positive_pct=65.0, key_headlines=[], reasoning="Moderate",
+            score=70.0,
+            positive_pct=65.0,
+            key_headlines=[],
+            reasoning="Moderate",
         )
         mock_llm_cls.return_value = mock_llm
 

@@ -9,13 +9,13 @@ from __future__ import annotations
 import logging
 
 from pydantic import BaseModel, Field
-
-from advisor.confluence.models import SentimentResult, SourceInfo
 from research_agent.config import ResearchConfig
 from research_agent.evidence import SourceRegistry
 from research_agent.llm import ClaudeLLM
 from research_agent.search import SearchResult, TavilyClient
 from research_agent.store import Store
+
+from advisor.confluence.models import SentimentResult, SourceInfo
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +28,7 @@ class _SentimentScore(BaseModel):
 
     score: float = Field(description="Overall sentiment score 0-100")
     positive_pct: float = Field(description="Percentage of positive articles 0-100")
-    key_headlines: list[str] = Field(
-        default_factory=list, description="Top 3-5 notable headlines"
-    )
+    key_headlines: list[str] = Field(default_factory=list, description="Top 3-5 notable headlines")
     reasoning: str = ""
 
 
@@ -85,9 +83,7 @@ def check_sentiment(symbol: str) -> SentimentResult:
     try:
         # Run two searches: general news + analyst outlook
         news_results = search.search(f"{symbol} stock news latest", max_results=5)
-        analyst_results = search.search(
-            f"{symbol} stock analyst outlook rating", max_results=3
-        )
+        analyst_results = search.search(f"{symbol} stock analyst outlook rating", max_results=3)
 
         all_results = news_results + analyst_results
 
@@ -108,8 +104,7 @@ def check_sentiment(symbol: str) -> SentimentResult:
         context = _format_search_results(all_results, registry)
 
         user_prompt = (
-            f"Analyze the sentiment of these recent articles about {symbol}:\n\n"
-            f"{context}"
+            f"Analyze the sentiment of these recent articles about {symbol}:\n\n" f"{context}"
         )
 
         result: _SentimentScore = llm.complete(

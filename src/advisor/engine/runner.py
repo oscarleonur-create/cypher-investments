@@ -139,9 +139,7 @@ class BacktestRunner:
 
         # Trade records
         recorder_analysis = strat.analyzers.trade_recorder.get_analysis()
-        trade_records = [
-            TradeRecord(**t) for t in recorder_analysis.get("trades", [])
-        ]
+        trade_records = [TradeRecord(**t) for t in recorder_analysis.get("trades", [])]
 
         result = BacktestResult(
             run_id=str(uuid.uuid4())[:8],

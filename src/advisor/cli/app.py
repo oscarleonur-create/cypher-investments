@@ -9,6 +9,7 @@ import typer
 from advisor.cli.backtest_cmds import app as backtest_app
 from advisor.cli.confluence_cmds import app as confluence_app
 from advisor.cli.data_cmds import app as data_app
+from advisor.cli.market_cmds import app as market_app
 from advisor.cli.signal_cmds import app as signal_app
 from advisor.cli.strategy_cmds import app as strategy_app
 
@@ -23,6 +24,7 @@ app.add_typer(backtest_app, name="backtest")
 app.add_typer(data_app, name="data")
 app.add_typer(signal_app, name="signal")
 app.add_typer(confluence_app, name="confluence")
+app.add_typer(market_app, name="market")
 
 
 @app.callback()

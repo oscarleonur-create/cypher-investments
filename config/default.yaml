@@ -25,3 +25,9 @@ walk_forward:
 
 strategies:
   user_dir: strategies  # Auto-discover user strategies from this directory
+
+market:
+  min_avg_volume: 500000
+  min_market_cap_billions: 2.0
+  technical_lookback_days: 300
+  default_workers: 4

@@ -265,10 +265,7 @@ def step4_generate_card(
     try:
         resp: _CardSynthesisResponse = llm.complete(
             system_prompt=CARD_SYNTHESIS_PROMPT,
-            user_prompt=(
-                f"{subject_label(state.input)}\n\n"
-                f"Research Evidence:\n{evidence}"
-            ),
+            user_prompt=(f"{subject_label(state.input)}\n\n" f"Research Evidence:\n{evidence}"),
             response_model=_CardSynthesisResponse,
         )
         verdict = Verdict.WATCH

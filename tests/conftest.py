@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from advisor.strategies.registry import StrategyRegistry
 
 

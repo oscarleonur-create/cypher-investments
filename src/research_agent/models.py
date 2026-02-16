@@ -8,7 +8,6 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-
 # ── Enums ────────────────────────────────────────────────────────────────────
 
 
@@ -102,10 +101,7 @@ class FactPack(BaseModel):
 
     @property
     def total_items(self) -> int:
-        return sum(
-            len(getattr(self, f))
-            for f in FactPack.model_fields
-        )
+        return sum(len(getattr(self, f)) for f in FactPack.model_fields)
 
 
 # ── Final output ─────────────────────────────────────────────────────────────

@@ -5,8 +5,6 @@ from __future__ import annotations
 from datetime import datetime
 from unittest.mock import patch
 
-from typer.testing import CliRunner
-
 from advisor.cli.app import app
 from advisor.confluence.models import (
     ConfluenceResult,
@@ -16,6 +14,7 @@ from advisor.confluence.models import (
     SourceInfo,
     TechnicalResult,
 )
+from typer.testing import CliRunner
 
 runner = CliRunner()
 
@@ -42,7 +41,12 @@ def _make_result(
             positive_pct=80.0,
             key_headlines=["Stock surges on earnings beat"],
             sources=[
-                SourceInfo(source_id="s1", url="https://reuters.com/article1", title="Reuters: AAPL surges", tier=2),
+                SourceInfo(
+                    source_id="s1",
+                    url="https://reuters.com/article1",
+                    title="Reuters: AAPL surges",
+                    tier=2,
+                ),
             ],
             is_bullish=True,
         ),
@@ -137,7 +141,7 @@ class TestConfluenceCLI:
 
         runner.invoke(app, ["confluence", "scan", "AAPL"])
 
-        mock_run.assert_called_once_with("AAPL", strategy_name="momentum_breakout")
+        mock_run.assert_called_once_with("AAPL", strategy_name="momentum_breakout", force_all=False)
 
     @patch(_MOCK_TARGET)
     def test_scan_with_strategy_flag(self, mock_run):
@@ -147,7 +151,7 @@ class TestConfluenceCLI:
         result = runner.invoke(app, ["confluence", "scan", "AAPL", "--strategy", "sma_crossover"])
 
         assert result.exit_code == 0
-        mock_run.assert_called_once_with("AAPL", strategy_name="sma_crossover")
+        mock_run.assert_called_once_with("AAPL", strategy_name="sma_crossover", force_all=False)
 
     @patch(_MOCK_TARGET)
     def test_scan_with_strategy_short_flag(self, mock_run):
@@ -157,7 +161,7 @@ class TestConfluenceCLI:
         result = runner.invoke(app, ["confluence", "scan", "AAPL", "-s", "buy_hold"])
 
         assert result.exit_code == 0
-        mock_run.assert_called_once_with("AAPL", strategy_name="buy_hold")
+        mock_run.assert_called_once_with("AAPL", strategy_name="buy_hold", force_all=False)
 
     @patch(_MOCK_TARGET)
     def test_scan_shows_strategy_in_panel_title(self, mock_run):
