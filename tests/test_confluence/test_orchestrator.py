@@ -210,3 +210,130 @@ class TestRunConfluence:
         result = run_confluence("AAPL", strategy_name="sma_crossover")
 
         assert "sma_crossover" in result.reasoning
+
+    # ── PEAD strategy routing and verdict ────────────────────────────────
+
+    @patch("advisor.confluence.orchestrator.check_pead_fundamental")
+    @patch("advisor.confluence.orchestrator.check_sentiment")
+    @patch("advisor.confluence.orchestrator.check_technical")
+    def test_pead_strategy_uses_pead_screener(self, mock_tech, mock_sent, mock_pead):
+        """PEAD strategy should route to check_pead_fundamental."""
+        from advisor.confluence.models import (
+            EarningsSurpriseResult,
+            PeadScreenerResult,
+        )
+
+        mock_tech.return_value = _tech(False)
+        mock_sent.return_value = _sent(True)
+        mock_pead.return_value = FundamentalResult(
+            earnings_within_7_days=False,
+            earnings_date=None,
+            insider_buying_detected=False,
+            is_clear=True,
+            pead_screener=PeadScreenerResult(
+                earnings_surprise=EarningsSurpriseResult(passes=False),
+                overall_score="FAIL",
+                rejection_reason="No recent earnings",
+            ),
+        )
+
+        result = run_confluence("AAPL", strategy_name="pead", force_all=True)
+
+        mock_pead.assert_called_once_with("AAPL")
+        assert result.strategy_name == "pead"
+
+    @patch("advisor.confluence.orchestrator.check_pead_fundamental")
+    @patch("advisor.confluence.orchestrator.check_sentiment")
+    @patch("advisor.confluence.orchestrator.check_technical")
+    def test_pead_strong_buy_with_sentiment_returns_enter(self, mock_tech, mock_sent, mock_pead):
+        """PEAD STRONG_BUY + bullish sentiment → ENTER."""
+        from advisor.confluence.models import (
+            EarningsSurpriseResult,
+            FadeSetupResult,
+            PeadScreenerResult,
+        )
+
+        mock_tech.return_value = _tech(False)
+        mock_sent.return_value = _sent(True)
+        mock_pead.return_value = FundamentalResult(
+            earnings_within_7_days=True,
+            earnings_date=None,
+            insider_buying_detected=False,
+            is_clear=True,
+            pead_screener=PeadScreenerResult(
+                earnings_surprise=EarningsSurpriseResult(
+                    passes=True, eps_surprise_pct=15.0, revenue_surprise=True
+                ),
+                fade_setup=FadeSetupResult(passes=True, gap_and_fade=True, fade_pct=-0.08),
+                overall_score="STRONG_BUY",
+            ),
+        )
+
+        result = run_confluence("AAPL", strategy_name="pead", force_all=True)
+
+        assert result.verdict == ConfluenceVerdict.ENTER
+        assert result.suggested_hold_days == 45
+        assert "PEAD STRONG_BUY" in result.reasoning
+
+    @patch("advisor.confluence.orchestrator.check_pead_fundamental")
+    @patch("advisor.confluence.orchestrator.check_sentiment")
+    @patch("advisor.confluence.orchestrator.check_technical")
+    def test_pead_strong_buy_bearish_sentiment_returns_caution(
+        self, mock_tech, mock_sent, mock_pead
+    ):
+        """PEAD STRONG_BUY + bearish sentiment → CAUTION (contrarian)."""
+        from advisor.confluence.models import (
+            EarningsSurpriseResult,
+            FadeSetupResult,
+            PeadScreenerResult,
+        )
+
+        mock_tech.return_value = _tech(False)
+        mock_sent.return_value = _sent(False)
+        mock_pead.return_value = FundamentalResult(
+            earnings_within_7_days=True,
+            earnings_date=None,
+            insider_buying_detected=False,
+            is_clear=True,
+            pead_screener=PeadScreenerResult(
+                earnings_surprise=EarningsSurpriseResult(
+                    passes=True, eps_surprise_pct=15.0, revenue_surprise=True
+                ),
+                fade_setup=FadeSetupResult(passes=True, gap_and_fade=True, fade_pct=-0.08),
+                overall_score="STRONG_BUY",
+            ),
+        )
+
+        result = run_confluence("AAPL", strategy_name="pead", force_all=True)
+
+        assert result.verdict == ConfluenceVerdict.CAUTION
+        assert "contrarian" in result.reasoning.lower()
+
+    @patch("advisor.confluence.orchestrator.check_pead_fundamental")
+    @patch("advisor.confluence.orchestrator.check_sentiment")
+    @patch("advisor.confluence.orchestrator.check_technical")
+    def test_pead_fail_score_returns_pass(self, mock_tech, mock_sent, mock_pead):
+        """PEAD FAIL → PASS regardless of other signals."""
+        from advisor.confluence.models import (
+            EarningsSurpriseResult,
+            PeadScreenerResult,
+        )
+
+        mock_tech.return_value = _tech(False)
+        mock_sent.return_value = _sent(True)
+        mock_pead.return_value = FundamentalResult(
+            earnings_within_7_days=False,
+            earnings_date=None,
+            insider_buying_detected=False,
+            is_clear=False,
+            pead_screener=PeadScreenerResult(
+                earnings_surprise=EarningsSurpriseResult(passes=False),
+                overall_score="FAIL",
+                rejection_reason="Earnings reported 30 days ago",
+            ),
+        )
+
+        result = run_confluence("AAPL", strategy_name="pead", force_all=True)
+
+        assert result.verdict == ConfluenceVerdict.PASS
+        assert "PEAD screener rejected" in result.reasoning

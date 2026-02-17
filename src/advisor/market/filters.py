@@ -154,6 +154,40 @@ def _check_strategy_technical(
                 continue
         return False
 
+    elif strategy_name == "pead":
+        # Volume spike >2x 20-day average in last 5 bars (proxy for earnings event)
+        avg_vol = volume.rolling(20).mean()
+        has_spike = False
+        for i in range(-5, 0):
+            try:
+                if volume.iloc[i] > 2.0 * avg_vol.iloc[i]:
+                    has_spike = True
+                    break
+            except IndexError:
+                continue
+        if not has_spike:
+            return False
+        # Price faded: current price < 98% of 10-day high
+        high_10 = close.rolling(10).max().iloc[-1]
+        return bool(price < 0.98 * high_10)
+
+    elif strategy_name == "mean_reversion":
+        rsi = _compute_rsi(close, 14)
+        ema_20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
+        # ATR approx using close-to-close changes (no high/low in filter signature)
+        daily_range = close.diff().abs()
+        atr_14 = daily_range.rolling(14).mean().iloc[-1]
+        avg_vol = volume.rolling(20).mean().iloc[-1]
+        last_vol = volume.iloc[-1]
+        price_below_ema = ema_20 - price
+        return bool(
+            rsi.iloc[-1] < 25
+            and atr_14 > 0
+            and price_below_ema > 2.0 * atr_14
+            and avg_vol > 0
+            and last_vol > 1.5 * avg_vol
+        )
+
     else:
         # Default: price > SMA(50)
         sma_50 = close.rolling(50).mean().iloc[-1]
