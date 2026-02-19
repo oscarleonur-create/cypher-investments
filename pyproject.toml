@@ -29,6 +29,7 @@ dependencies = [
     "anthropic>=0.40",
     "httpx>=0.27",
     "tenacity>=8.3",
+    "tastytrade (>=12.0.2,<13.0.0)",
 ]
 
 [project.scripts]
