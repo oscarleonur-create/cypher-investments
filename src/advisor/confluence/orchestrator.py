@@ -17,6 +17,7 @@ from advisor.confluence.models import (
     ConfluenceResult,
     ConfluenceVerdict,
     FundamentalResult,
+    MLResult,
     PeadScreenerResult,
     SentimentResult,
     TechnicalResult,
@@ -202,10 +203,78 @@ def _pead_verdict(
     return verdict, reasoning, hold_days
 
 
+def _compute_ml_signal(symbol: str) -> MLResult | None:
+    """Compute the optional ML signal layer. Returns None on failure."""
+    try:
+        from advisor.ml.signal_generator import MLSignalGenerator
+
+        gen = MLSignalGenerator()
+        if not gen.is_available():
+            return None
+
+        explanation = gen.explain_prediction(symbol)
+        if "error" in explanation:
+            return None
+
+        prob = explanation["win_probability"]
+        if prob >= 0.65:
+            confidence = "high" if prob >= 0.80 else "medium"
+        elif prob <= 0.35:
+            confidence = "high" if prob <= 0.20 else "medium"
+        else:
+            confidence = "low"
+
+        return MLResult(
+            win_probability=prob,
+            signal=explanation["signal"],
+            confidence=confidence,
+            top_features=explanation.get("top_features", []),
+            model_type=explanation.get("model_type", "unknown"),
+            is_available=True,
+        )
+    except Exception as e:
+        logger.warning(f"ML signal computation failed: {e}")
+        return None
+
+
+def _apply_ml_adjustment(
+    verdict: ConfluenceVerdict,
+    reasoning: str,
+    hold_days: int,
+    ml: MLResult | None,
+) -> tuple[ConfluenceVerdict, str, int]:
+    """Apply ML signal adjustment to the base verdict.
+
+    Conservative rules:
+    - ML BUY + high confidence: can upgrade CAUTION -> ENTER
+    - ML SELL + high confidence: can downgrade CAUTION -> PASS
+    - ML never overrides consensus ENTER or PASS alone
+    """
+    if ml is None or not ml.is_available:
+        return verdict, reasoning, hold_days
+
+    ml_note = (
+        f" ML signal: {ml.signal} ({ml.win_probability:.0%} win prob,"
+        f" {ml.confidence} confidence)."
+    )
+
+    if verdict == ConfluenceVerdict.CAUTION:
+        if ml.signal == "BUY" and ml.confidence == "high":
+            reasoning += ml_note + " ML upgrades CAUTION to ENTER."
+            return ConfluenceVerdict.ENTER, reasoning, max(hold_days, 5)
+        elif ml.signal == "SELL" and ml.confidence == "high":
+            reasoning += ml_note + " ML downgrades CAUTION to PASS."
+            return ConfluenceVerdict.PASS, reasoning, 0
+
+    reasoning += ml_note
+    return verdict, reasoning, hold_days
+
+
 def run_confluence(
     symbol: str,
     strategy_name: str = "momentum_breakout",
     force_all: bool = False,
+    include_ml: bool = True,
 ) -> ConfluenceResult:
     """Run the full confluence scan for any strategy.
 
@@ -294,6 +363,11 @@ def run_confluence(
                 symbol, technical, sentiment, fundamental, ps
             )
 
+        # ── ML signal (PEAD path) ─────────────────────────────────────
+        ml = _compute_ml_signal(symbol) if include_ml else None
+        if ml is not None:
+            verdict, reasoning, hold_days = _apply_ml_adjustment(verdict, reasoning, hold_days, ml)
+
         return ConfluenceResult(
             symbol=symbol,
             strategy_name=strategy_name,
@@ -301,6 +375,7 @@ def run_confluence(
             technical=technical,
             sentiment=sentiment,
             fundamental=fundamental,
+            ml_signal=ml,
             reasoning=reasoning,
             suggested_hold_days=hold_days,
         )
@@ -328,6 +403,11 @@ def run_confluence(
     # ── Verdict ──────────────────────────────────────────────────────────
     verdict, reasoning, hold_days = _default_verdict(symbol, technical, sentiment, fundamental)
 
+    # ── ML signal (default path) ──────────────────────────────────────
+    ml = _compute_ml_signal(symbol) if include_ml else None
+    if ml is not None:
+        verdict, reasoning, hold_days = _apply_ml_adjustment(verdict, reasoning, hold_days, ml)
+
     return ConfluenceResult(
         symbol=symbol,
         strategy_name=strategy_name,
@@ -335,6 +415,7 @@ def run_confluence(
         technical=technical,
         sentiment=sentiment,
         fundamental=fundamental,
+        ml_signal=ml,
         reasoning=reasoning,
         suggested_hold_days=hold_days,
     )
