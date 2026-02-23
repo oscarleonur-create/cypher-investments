@@ -911,6 +911,88 @@ def ml_allocate(
     console.print(f"\nTotal: {sum(weights.values()):.4f} (should be 1.0)")
 
 
+@app.command("versions")
+def ml_versions(
+    output: Annotated[Optional[str], typer.Option("--output", help="Output format (json)")] = None,
+) -> None:
+    """List all saved model versions."""
+    from rich.table import Table
+
+    from advisor.ml.model_store import list_versions
+
+    versions = list_versions()
+
+    if not versions:
+        console.print(
+            "[dim]No model versions found. Versions are created on each training run.[/dim]"
+        )
+        return
+
+    if output == "json":
+        output_json(versions)
+        return
+
+    table = Table(title=f"Model Versions ({len(versions)} saved)")
+    table.add_column("Version", style="cyan")
+    table.add_column("Created", justify="right")
+    table.add_column("Tag", justify="left")
+    table.add_column("CV AUC", justify="right")
+    table.add_column("Meta AUC", justify="right")
+    table.add_column("Cutoff", justify="right")
+    table.add_column("Files", justify="right")
+
+    for i, v in enumerate(versions):
+        vid = v["version_id"]
+        created = v.get("created_at", "?")
+        if created and created != "?":
+            created = created[:19].replace("T", " ")
+        tag = v.get("tag", "")
+        cv_metrics = v.get("cv_metrics", {})
+        cv_auc = cv_metrics.get("cv_auc_mean", 0)
+        meta_auc = v.get("metrics", {}).get("meta_auc")
+        model_meta = v.get("model_metadata", {})
+        cutoff = model_meta.get("train_cutoff", "")
+        n_files = len(v.get("files", []))
+
+        label = f"[bold]{vid}[/bold]" if i == 0 else vid
+        auc_str = f"{cv_auc:.4f}" if cv_auc else "[dim]-[/dim]"
+        meta_str = f"{meta_auc:.4f}" if meta_auc else "[dim]-[/dim]"
+
+        table.add_row(label, created, tag, auc_str, meta_str, cutoff or "", str(n_files))
+
+    console.print(table)
+    console.print(
+        "\n[dim]Latest version is shown in bold."
+        " Use 'advisor ml rollback <version>' to restore.[/dim]"
+    )
+
+
+@app.command("rollback")
+def ml_rollback(
+    version: Annotated[
+        str, typer.Argument(help="Version ID to rollback to (e.g., 20260223_040000)")
+    ],
+    output: Annotated[Optional[str], typer.Option("--output", help="Output format (json)")] = None,
+) -> None:
+    """Rollback to a previous model version."""
+    from advisor.ml.model_store import rollback
+
+    try:
+        result = rollback(version)
+    except FileNotFoundError as e:
+        output_error(str(e))
+        return
+
+    if output == "json":
+        output_json(result)
+        return
+
+    console.print(f"[bold green]Rolled back to version {result['rolled_back_to']}[/bold green]")
+    console.print(f"  Restored files: {', '.join(result['restored_files'])}")
+    if result.get("backup_version"):
+        console.print(f"  Previous state backed up as: {result['backup_version']}")
+
+
 @app.command("status")
 def ml_status() -> None:
     """Show signal database and model status."""
@@ -985,5 +1067,15 @@ def ml_status() -> None:
         table.add_row("Meta-labeler", "[green]trained[/green]")
     else:
         table.add_row("Meta-labeler", "[dim]not trained[/dim]")
+
+    # Model versions
+    from advisor.ml.model_store import list_versions
+
+    versions = list_versions()
+    if versions:
+        latest = versions[0]["version_id"]
+        table.add_row("Versions", f"{len(versions)} saved (latest: {latest})")
+    else:
+        table.add_row("Versions", "[dim]none[/dim]")
 
     console.print(table)

@@ -381,6 +381,7 @@ class MLPipeline:
         model_type: ModelType = ModelType.LIGHTGBM,
         n_cv_splits: int = 5,
         train_cutoff: str | None = None,
+        _snapshot: bool = True,
     ) -> dict[str, Any]:
         """Full pipeline: build data -> train -> evaluate -> save.
 
@@ -389,6 +390,7 @@ class MLPipeline:
             n_cv_splits: Number of time-series CV folds.
             train_cutoff: If set, only train on data up to this date.
                 Stored in model metadata for OOS backtest enforcement.
+            _snapshot: Create versioned snapshot (set False when called from train_with_meta).
 
         Returns training results with CV metrics.
         """
@@ -418,6 +420,17 @@ class MLPipeline:
         result["model_path"] = str(model_path)
         result["feature_importance"] = trainer.get_feature_importance()
 
+        # Version snapshot
+        if _snapshot:
+            try:
+                from advisor.ml.model_store import prune, snapshot
+
+                vid = snapshot(metrics=result.get("cv_metrics", {}))
+                prune(keep=10)
+                result["version_id"] = vid
+            except Exception as e:
+                logger.warning("Model versioning failed: %s", e)
+
         return result
 
     def train_with_meta(
@@ -432,11 +445,12 @@ class MLPipeline:
         """
         from advisor.ml.meta_label import MetaLabeler
 
-        # Train primary model first
+        # Train primary model first (skip snapshot — we'll snapshot after meta is saved)
         result = self.train_and_evaluate(
             model_type=model_type,
             n_cv_splits=n_cv_splits,
             train_cutoff=train_cutoff,
+            _snapshot=False,
         )
 
         # Build data again for meta-training (same data, same features)
@@ -468,6 +482,20 @@ class MLPipeline:
             decay=self.decay,
         )
         result["precision_comparison"] = precision_comparison
+
+        # Version snapshot (captures primary + meta + HMM)
+        try:
+            from advisor.ml.model_store import prune, snapshot
+
+            metrics = {
+                **result.get("cv_metrics", {}),
+                "meta_auc": meta_result.get("metrics", {}).get("meta_auc"),
+            }
+            vid = snapshot(metrics=metrics)
+            prune(keep=10)
+            result["version_id"] = vid
+        except Exception as e:
+            logger.warning("Model versioning failed: %s", e)
 
         return result
 
