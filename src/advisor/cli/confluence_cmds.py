@@ -176,6 +176,26 @@ def confluence_scan(
             fund_parts.append("Insider buying detected")
         table.add_row("Fundamental", fund_status, ", ".join(fund_parts))
 
+    # ML Signal (optional 4th layer)
+    ml = result.ml_signal
+    if ml is not None and ml.is_available:
+        ml_signal_colors = {"BUY": "green", "SELL": "red", "NEUTRAL": "yellow"}
+        ml_color = ml_signal_colors.get(ml.signal, "dim")
+        ml_status = f"[{ml_color}]{ml.signal}[/{ml_color}]"
+        ml_detail = (
+            f"Win prob: {ml.win_probability:.0%}, "
+            f"Confidence: {ml.confidence}, Model: {ml.model_type}"
+        )
+        table.add_row("ML Signal", ml_status, ml_detail)
+
+        if verbose and ml.top_features:
+            for feat in ml.top_features[:3]:
+                table.add_row(
+                    f"  {feat.get('feature', '')}",
+                    f"{feat.get('value', 0):.4f}",
+                    f"importance: {feat.get('importance', 0):.4f}",
+                )
+
     console.print(table)
 
     # Verbose: show headlines and sources

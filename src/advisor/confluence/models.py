@@ -136,6 +136,17 @@ class FundamentalResult(BaseModel):
     pead_screener: PeadScreenerResult | None = None
 
 
+class MLResult(BaseModel):
+    """Result from the ML signal layer."""
+
+    win_probability: float = 0.0
+    signal: str = "NEUTRAL"
+    confidence: str = "low"
+    top_features: list[dict] = Field(default_factory=list)
+    model_type: str = "none"
+    is_available: bool = False
+
+
 class ConfluenceResult(BaseModel):
     """Aggregated result from all three confluence agents."""
 
@@ -145,6 +156,7 @@ class ConfluenceResult(BaseModel):
     technical: TechnicalResult
     sentiment: SentimentResult
     fundamental: FundamentalResult
+    ml_signal: MLResult | None = None
     reasoning: str
     suggested_hold_days: int = 4
     scanned_at: datetime = Field(default_factory=datetime.now)

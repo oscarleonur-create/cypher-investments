@@ -57,9 +57,15 @@ def backtest_run(
     output: Annotated[Optional[str], typer.Option("--output", help="Output format")] = None,
 ) -> None:
     """Run a backtest for a strategy."""
-    from advisor.engine.runner import BacktestRunner
     from advisor.storage.results_store import ResultsStore
+    from advisor.strategies.options import OPTIONS_STRATEGIES
     from advisor.strategies.registry import StrategyRegistry
+
+    if strategy in OPTIONS_STRATEGIES:
+        _run_options_backtest(strategy, symbol, start, end, cash, output)
+        return
+
+    from advisor.engine.runner import BacktestRunner
 
     # Ensure strategies are discovered
     registry = StrategyRegistry()
@@ -205,3 +211,25 @@ def backtest_walk_forward(
         output_json(result)
     else:
         print_walk_forward_summary(result)
+
+
+# ── Options backtest helper ──────────────────────────────────────────────────
+
+
+def _run_options_backtest(
+    strategy: str, symbol: str, start: str, end: str, cash: float, output: str | None
+) -> None:
+    """Run an options backtest using the Black-Scholes backtester."""
+    from advisor.backtesting.options_backtester import Backtester, print_summary
+
+    try:
+        bt = Backtester(symbol, start, end, cash)
+        result = bt.run(strategy)
+    except Exception as e:
+        output_error(f"Options backtest failed: {e}")
+        return
+
+    if output == "json":
+        output_json(result)
+    else:
+        print_summary(result)
