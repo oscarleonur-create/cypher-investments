@@ -43,33 +43,34 @@ def _purged_time_series_split(
     n_splits: int = 5,
     horizon: int = 10,
 ) -> list[tuple[np.ndarray, np.ndarray]]:
-    """Purged expanding-window time-series split.
+    """Purged expanding-window time-series split on calendar dates.
 
-    Prevents label-leakage by:
-    - Gap: horizon + 5 bars between train end and test start
-    - Purge: remove training samples whose forward window overlaps test start
-    - Embargo: exclude bars after test end from future training folds
+    Splits on unique calendar dates (not sample indices) to correctly
+    handle multi-symbol pooled data where many samples share the same date.
+    Prevents label-leakage via gap, purge, and embargo zones.
     """
-    n = len(dates)
-    gap_bars = horizon + 5
-    fold_size = n // (n_splits + 1)
+    unique_dates = np.sort(dates.unique())
+    n_dates = len(unique_dates)
+    gap_days = horizon + 5  # in trading days
+    fold_size = n_dates // (n_splits + 1)
     splits = []
 
     for i in range(1, n_splits + 1):
-        train_end = fold_size * i
-        test_start = train_end + gap_bars
-        test_end = min(train_end + fold_size + gap_bars, n)
+        train_end_d = fold_size * i
+        test_start_d = train_end_d + gap_days
+        test_end_d = min(train_end_d + fold_size + gap_days, n_dates)
 
-        if test_start >= n or test_end <= test_start:
+        if test_start_d >= n_dates or test_end_d <= test_start_d:
             continue
 
-        # Purge: remove training indices whose label window overlaps test
-        purge_start = max(0, test_start - horizon)
-        train_idx = np.arange(0, min(train_end, purge_start))
+        # Purge: remove training dates whose label window overlaps test start
+        purge_start_d = max(0, train_end_d - horizon)
 
-        # Embargo: test fold excludes first `horizon` bars after test_end
-        # (prevents contamination in future folds — handled implicitly by gap)
-        test_idx = np.arange(test_start, test_end)
+        train_dates = set(unique_dates[:purge_start_d])
+        test_dates = set(unique_dates[test_start_d:test_end_d])
+
+        train_idx = np.where(dates.isin(train_dates))[0]
+        test_idx = np.where(dates.isin(test_dates))[0]
 
         if len(train_idx) < 20 or len(test_idx) < 5:
             continue
@@ -94,6 +95,36 @@ def _compute_sample_weights(n_samples: int, decay: int = 365) -> np.ndarray:
     decay_rate = np.log(2) / decay
     weights = np.exp(-decay_rate * (n_samples - np.arange(n_samples)))
     return weights
+
+
+class _TemporalKFold:
+    """KFold that respects temporal order with a gap between folds.
+
+    Unlike ``TimeSeriesSplit``, every sample belongs to exactly one test
+    fold, which satisfies sklearn's ``cross_val_predict`` partition
+    requirement (needed by ``StackingClassifier``).
+    """
+
+    def __init__(self, n_splits: int = 3, gap: int = 15) -> None:
+        self.n_splits = n_splits
+        self.gap = gap
+
+    def split(self, X: Any, y: Any = None, groups: Any = None):
+        n = X.shape[0] if hasattr(X, "shape") else len(X)
+        fold_size = n // self.n_splits
+        for i in range(self.n_splits):
+            test_start = i * fold_size
+            test_end = test_start + fold_size if i < self.n_splits - 1 else n
+            # Training = everything before (test_start - gap) + everything after test_end
+            train_before = np.arange(0, max(0, test_start - self.gap))
+            train_after = np.arange(test_end, n)
+            train_idx = np.concatenate([train_before, train_after])
+            test_idx = np.arange(test_start, test_end)
+            if len(train_idx) > 0 and len(test_idx) > 0:
+                yield train_idx, test_idx
+
+    def get_n_splits(self, X: Any = None, y: Any = None, groups: Any = None) -> int:
+        return self.n_splits
 
 
 def _create_lgbm_params() -> dict[str, Any]:
@@ -173,14 +204,23 @@ class MLModelTrainer:
 
             sample_weight = _compute_sample_weights(len(y_train), decay=decay)
 
-            model = self._create_model()
+            # Carve early-stopping validation from training (last 15%)
+            # to avoid leaking test fold information into stopping decisions
+            val_size = max(5, int(len(y_train) * 0.15))
+            X_es = X_train_t[-val_size:]
+            y_es = y_train.iloc[-val_size:]
+            X_fit = X_train_t[:-val_size]
+            y_fit = y_train.iloc[:-val_size]
+            sw_fit = sample_weight[:-val_size]
+
+            model = self._create_model(horizon=horizon)
             self._fit_model(
                 model,
-                X_train_t,
-                y_train,
-                sample_weight=sample_weight,
-                X_val=X_test_t,
-                y_val=y_test,
+                X_fit,
+                y_fit,
+                sample_weight=sw_fit,
+                X_val=X_es,
+                y_val=y_es,
             )
 
             fold_metrics = self._compute_metrics(model, X_test_t, y_test)
@@ -189,7 +229,7 @@ class MLModelTrainer:
         # Train final model on all data
         X_all = self.preprocessor.fit_transform(features_df)
         sample_weight_all = _compute_sample_weights(len(labels), decay=decay)
-        self.model = self._create_model()
+        self.model = self._create_model(horizon=horizon)
         self._fit_model(
             self.model,
             X_all,
@@ -221,7 +261,7 @@ class MLModelTrainer:
             "metadata": self.metadata,
         }
 
-    def _create_model(self) -> Any:
+    def _create_model(self, horizon: int = 10) -> Any:
         """Instantiate the appropriate model."""
         if self.model_type == ModelType.LOGISTIC:
             return LogisticRegression(max_iter=2000, class_weight="balanced", C=1.0)
@@ -238,7 +278,7 @@ class MLModelTrainer:
             return StackingClassifier(
                 estimators=[("lr", lr), ("lgbm", lgbm)],
                 final_estimator=LogisticRegression(max_iter=1000),
-                cv=3,
+                cv=_TemporalKFold(n_splits=3, gap=horizon + 5),
                 passthrough=False,
             )
         else:
@@ -351,14 +391,22 @@ class MLModelTrainer:
 
             sample_weight = _compute_sample_weights(len(y_train), decay=decay)
 
-            model = self._create_model()
+            # Carve early-stopping validation from training (last 15%)
+            val_size = max(5, int(len(y_train) * 0.15))
+            X_es = X_train_t[-val_size:]
+            y_es = y_train.iloc[-val_size:]
+            X_fit = X_train_t[:-val_size]
+            y_fit = y_train.iloc[:-val_size]
+            sw_fit = sample_weight[:-val_size]
+
+            model = self._create_model(horizon=horizon)
             self._fit_model(
                 model,
-                X_train_t,
-                y_train,
-                sample_weight=sample_weight,
-                X_val=X_test_t,
-                y_val=y_test,
+                X_fit,
+                y_fit,
+                sample_weight=sw_fit,
+                X_val=X_es,
+                y_val=y_es,
             )
 
             # Wrap as DataFrame for LightGBM feature name consistency
@@ -468,14 +516,22 @@ class MLModelTrainer:
 
             sample_weight = _compute_sample_weights(len(y_train), decay=decay)
 
-            model = self._create_model()
+            # Carve early-stopping validation from training (last 15%)
+            val_size = max(5, int(len(y_train) * 0.15))
+            X_es = X_train_t[-val_size:]
+            y_es = y_train.iloc[-val_size:]
+            X_fit = X_train_t[:-val_size]
+            y_fit = y_train.iloc[:-val_size]
+            sw_fit = sample_weight[:-val_size]
+
+            model = self._create_model(horizon=horizon)
             self._fit_model(
                 model,
-                X_train_t,
-                y_train,
-                sample_weight=sample_weight,
-                X_val=X_test_t,
-                y_val=y_test,
+                X_fit,
+                y_fit,
+                sample_weight=sw_fit,
+                X_val=X_es,
+                y_val=y_es,
             )
 
             is_m = self._compute_metrics(model, X_train_t, y_train)
@@ -537,6 +593,9 @@ class MLModelTrainer:
         """Predict win probability for feature rows."""
         if self.model is None or self.preprocessor is None:
             raise RuntimeError("Model not trained or loaded.")
+        # Align to training features (live data may include extra snapshot cols)
+        if self.feature_names and isinstance(features, pd.DataFrame):
+            features = features.reindex(columns=self.feature_names, fill_value=0.0)
         X = self.preprocessor.transform(features)
         return self.model.predict_proba(X)[:, 1]
 
