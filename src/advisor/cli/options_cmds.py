@@ -471,3 +471,153 @@ def analyze(
         console.print(table)
 
     console.print()
+
+
+# ── Premium Scan command ──────────────────────────────────────────────────────
+
+
+@app.command("premium-scan")
+def premium_scan(
+    account_size: float = typer.Option(5000.0, "--account-size", "-a", help="Account size in USD"),
+    universe: str = typer.Option(
+        "wheel", "--universe", "-u", help="Ticker universe: leveraged, wheel, blue_chip"
+    ),
+    tickers: Optional[str] = typer.Option(
+        None, "--tickers", "-t", help="Comma-separated tickers (overrides universe)"
+    ),
+    min_iv_pctile: float = typer.Option(
+        30.0, "--min-iv-pctile", help="Minimum IV percentile to qualify (0-100)"
+    ),
+    strategies: Optional[str] = typer.Option(
+        None, "--strategies", "-s", help="Strategies: naked_put,put_credit_spread"
+    ),
+    min_dte: int = typer.Option(25, "--min-dte", help="Minimum days to expiration"),
+    max_dte: int = typer.Option(45, "--max-dte", help="Maximum days to expiration"),
+    top: int = typer.Option(15, "--top", help="Number of top results to show"),
+    live_iv: bool = typer.Option(False, "--live-iv", help="Fetch live IV data from TastyTrade"),
+    earnings_buffer: int = typer.Option(
+        7, "--earnings-buffer", help="Days buffer around earnings to flag"
+    ),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output format: json"),
+):
+    """Smart premium scanner — rank sell opportunities by composite score."""
+    from advisor.market.premium_screener import UNIVERSES, PremiumScreener
+
+    if tickers:
+        ticker_list = [t.strip().upper() for t in tickers.split(",")]
+    else:
+        ticker_list = UNIVERSES.get(universe, UNIVERSES["wheel"])
+
+    strategy_list = (
+        [s.strip() for s in strategies.split(",")]
+        if strategies
+        else ["naked_put", "put_credit_spread"]
+    )
+
+    is_json = output == "json"
+
+    if not is_json:
+        console.print(
+            f"\n[bold]Premium Scan[/bold] — scanning {len(ticker_list)} tickers"
+            f" (min IV%ile={min_iv_pctile:.0f}, DTE={min_dte}-{max_dte})\n"
+        )
+
+    # Optionally fetch live IV from TastyTrade
+    tt_iv_data: dict = {}
+    if live_iv:
+        try:
+            import asyncio
+
+            from advisor.market.tastytrade_client import get_market_metrics, get_session
+
+            async def _fetch_iv():
+                session = await get_session()
+                return await get_market_metrics(session, ticker_list)
+
+            tt_iv_data = asyncio.run(_fetch_iv())
+            if not is_json:
+                console.print(f"[green]TastyTrade IV loaded for {len(tt_iv_data)} symbols[/green]")
+        except Exception as e:
+            if not is_json:
+                console.print(f"[yellow]TastyTrade IV unavailable: {e}[/yellow]")
+
+    screener = PremiumScreener(
+        account_size=account_size,
+        min_iv_pctile=min_iv_pctile,
+        strategies=strategy_list,
+        min_dte=min_dte,
+        max_dte=max_dte,
+        earnings_buffer=earnings_buffer,
+        top_n=top,
+        tt_data=tt_iv_data or None,
+    )
+    scan_result = screener.scan(ticker_list)
+
+    if is_json:
+        from advisor.cli.formatters import output_json
+
+        output_json(scan_result)
+        return
+
+    # Header
+    console.print(
+        f"[dim]Regime: {scan_result.regime} | "
+        f"Target delta: {scan_result.target_delta:.2f} | "
+        f"Scanned: {scan_result.tickers_scanned} tickers[/dim]\n"
+    )
+
+    if scan_result.opportunities:
+        table = Table(
+            title=f"Premium Opportunities ({len(scan_result.opportunities)} results)",
+            show_lines=False,
+        )
+        table.add_column("Sym", style="cyan")
+        table.add_column("Strategy")
+        table.add_column("Strike", justify="right")
+        table.add_column("Expiry")
+        table.add_column("DTE", justify="right")
+        table.add_column("Credit", justify="right", style="green")
+        table.add_column("POP", justify="right")
+        table.add_column("IV%ile", justify="right", style="yellow")
+        table.add_column("Yield", justify="right", style="bold green")
+        table.add_column("Liq", justify="right")
+        table.add_column("Score", justify="right", style="bold")
+        table.add_column("Flags", style="dim")
+
+        for opp in scan_result.opportunities:
+            strategy_label = "naked_put" if opp.strategy == "naked_put" else "spread"
+            strike_str = f"${opp.strike:.2f}"
+            if opp.long_strike is not None:
+                strike_str += f"/${opp.long_strike:.0f}"
+
+            # Color score
+            if opp.sell_score >= 70:
+                score_str = f"[bold green]{opp.sell_score:.0f}[/bold green]"
+            elif opp.sell_score >= 50:
+                score_str = f"[yellow]{opp.sell_score:.0f}[/yellow]"
+            else:
+                score_str = f"[dim]{opp.sell_score:.0f}[/dim]"
+
+            table.add_row(
+                opp.symbol,
+                strategy_label,
+                strike_str,
+                str(opp.expiry),
+                str(opp.dte),
+                f"${opp.credit:.2f}",
+                f"{opp.pop:.0%}",
+                f"{opp.iv_percentile:.0f}",
+                f"{opp.annualized_yield:.0%}",
+                str(opp.liquidity.total),
+                score_str,
+                ", ".join(opp.flags) if opp.flags else "",
+            )
+
+        console.print(table)
+    else:
+        console.print("[yellow]No premium opportunities found matching criteria.[/yellow]")
+
+    if scan_result.errors:
+        console.print(f"\n[dim]Errors: {', '.join(scan_result.errors[:5])}[/dim]")
+
+    console.print(f"\n[dim]Scanned at {scan_result.scanned_at:%H:%M:%S}[/dim]\n")
