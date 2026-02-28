@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import Optional
@@ -23,6 +24,77 @@ app = typer.Typer(
 )
 track_app = typer.Typer(name="track", help="Track options trades.", no_args_is_help=True)
 app.add_typer(track_app, name="track")
+
+
+# ── Account command ───────────────────────────────────────────────────────────
+
+
+@app.command("account")
+def account(
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output format: json"),
+):
+    """Show live TastyTrade account balances and open positions."""
+    from advisor.market.tastytrade_client import get_balances, get_positions, get_session
+
+    async def _fetch():
+        session = await get_session()
+        balances = await get_balances(session)
+        positions = await get_positions(session)
+        return balances, positions
+
+    try:
+        balances, positions = asyncio.run(_fetch())
+    except Exception as e:
+        console.print(f"[red]Failed to connect to TastyTrade: {e}[/red]")
+        raise typer.Exit(1)
+
+    if output == "json":
+        from advisor.cli.formatters import output_json
+
+        output_json({"balances": balances, "positions": positions})
+        return
+
+    # Balances table
+    bal_table = Table(title="Account Balances")
+    bal_table.add_column("Metric", style="bold")
+    bal_table.add_column("Value", justify="right", style="green")
+    bal_table.add_row("Account", balances["account"])
+    bal_table.add_row("Net Liquidating Value", f"${balances['net_liq']:,.2f}")
+    bal_table.add_row("Cash Balance", f"${balances['cash']:,.2f}")
+    bal_table.add_row("Buying Power", f"${balances['buying_power']:,.2f}")
+    console.print(bal_table)
+    console.print()
+
+    # Positions table
+    if not positions:
+        console.print("[yellow]No open positions.[/yellow]")
+        return
+
+    pos_table = Table(title=f"Open Positions ({len(positions)})")
+    pos_table.add_column("Symbol", style="cyan")
+    pos_table.add_column("Type")
+    pos_table.add_column("Qty", justify="right")
+    pos_table.add_column("Avg Open", justify="right")
+    pos_table.add_column("Current", justify="right")
+    pos_table.add_column("P&L", justify="right")
+
+    for p in positions:
+        avg = p["average_open_price"]
+        cur = p["close_price"]
+        pnl = (avg - cur) * 100 * int(p["quantity"])
+        color = "green" if pnl >= 0 else "red"
+        inst = str(p["instrument_type"]).replace("InstrumentType.", "")
+        pos_table.add_row(
+            p["symbol"],
+            inst,
+            str(p["quantity"]),
+            f"${avg:.2f}",
+            f"${cur:.2f}",
+            f"[{color}]${pnl:+,.2f}[/{color}]",
+        )
+
+    console.print(pos_table)
+
 
 # ── Scan command ───────────────────────────────────────────────────────────────
 
