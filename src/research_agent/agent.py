@@ -25,7 +25,7 @@ from research_agent.models import (
     TriggerResult,
     Verdict,
 )
-from research_agent.queries import step1_queries, step3_queries, subject_label
+from research_agent.queries import step1_queries, step3_queries, step3_sec_queries, subject_label
 from research_agent.search import PerplexityClient, SearchResult
 
 logger = logging.getLogger(__name__)
@@ -207,7 +207,13 @@ def step3_research_facts(
     registry: SourceRegistry,
     config: ResearchConfig,
 ) -> None:
-    """Generate targeted queries and extract structured facts."""
+    """Generate targeted queries and extract structured facts.
+
+    Uses two search passes:
+    1. Standard web search for all categories (existing behavior).
+    2. SEC filings search for earnings, balance sheet, guidance,
+       valuation (when ``sec_search_enabled`` is True).
+    """
     category_queries = step3_queries(state.input)
 
     all_results: list[SearchResult] = []
@@ -220,6 +226,18 @@ def step3_research_facts(
             all_results.extend(results)
             state.queries_executed.append(q)
             queries_this_step += 1
+
+    # SEC filings search pass
+    if config.sec_search_enabled:
+        sec_queries = step3_sec_queries(state.input)
+        for _cat, q in sec_queries.items():
+            if queries_this_step >= config.max_queries_per_iteration:
+                break
+            if q not in state.queries_executed:
+                results = search.search_sec(q, max_results=config.max_urls_per_query)
+                all_results.extend(results)
+                state.queries_executed.append(q)
+                queries_this_step += 1
 
     if not all_results:
         return

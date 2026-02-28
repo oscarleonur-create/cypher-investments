@@ -65,6 +65,25 @@ def step3_queries(input: ResearchInput) -> dict[str, str]:
     }
 
 
+def step3_sec_queries(input: ResearchInput) -> dict[str, str]:
+    """Return SEC-specific queries for filing-sourced data.
+
+    Only meaningful for TICKER mode — SEC filings are company-specific.
+    Returns empty dict for SECTOR and THESIS modes.
+    """
+    if input.mode != InputMode.TICKER:
+        return {}
+
+    ticker = input.value.upper()
+    year = date.today().year
+    return {
+        "earnings_sec": f"{ticker} 10-Q quarterly earnings revenue net income {year}",
+        "balance_sheet_sec": f"{ticker} 10-K balance sheet total assets liabilities cash",
+        "guidance_sec": f"{ticker} 8-K forward guidance outlook management commentary {year}",
+        "valuation_sec": f"{ticker} 10-K annual report revenue segments operating income",
+    }
+
+
 def subject_label(input: ResearchInput) -> str:
     """Return a labelled string for LLM prompts, e.g. 'Ticker: AAPL'."""
     if input.mode == InputMode.TICKER:

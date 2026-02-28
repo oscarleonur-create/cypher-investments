@@ -33,6 +33,9 @@ class ResearchConfig(BaseSettings):
     min_evidence_items: int = 8
 
     # --- Search policy ---
+    search_recency_filter: str = "month"
+    default_search_mode: str | None = None
+    sec_search_enabled: bool = True
     curated_first: bool = True
     curated_domains: str = "sec.gov,reuters.com,bloomberg.com,wsj.com,ft.com"
     allow_fallback_web: bool = True

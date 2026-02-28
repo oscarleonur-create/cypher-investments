@@ -1,8 +1,8 @@
 """Smart Money screener — detects institutional/insider/political buying signals.
 
 Four signal sources scored -100 to +100:
-  1. Insider activity (SEC Form 4 via OpenInsider) — -35 to +35 pts
-  2. Congressional trading (Finnhub) — 0 to +20 pts
+  1. Insider activity (SEC Form 4 via Perplexity SEC search + Claude) — -35 to +35 pts
+  2. Congressional trading (Perplexity web search + Claude) — 0 to +20 pts
   3. Technical breakout proximity (yfinance) — 0 to +25 pts
   4. Unusual options activity (yfinance) — 0 to +20 pts
 """
@@ -23,8 +23,11 @@ from typing import TYPE_CHECKING
 
 import httpx
 import yfinance as yf
-from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field
+from research_agent.config import ResearchConfig
+from research_agent.llm import ClaudeLLM
+from research_agent.search import PerplexityClient
+from research_agent.store import Store
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -107,6 +110,65 @@ class SmartMoneyResult(BaseModel):
     scanned_at: datetime = Field(default_factory=datetime.now)
 
 
+# ── LLM response models (private) ────────────────────────────────────────────
+
+
+class _InsiderTradeItem(BaseModel):
+    filing_date: str = Field(description="Filing date in YYYY-MM-DD format")
+    insider_name: str = Field(description="Name of the insider")
+    title: str = Field(description="Title/role of the insider (e.g. CEO, CFO, DIR)")
+    trade_type: str = Field(description="'Purchase' or 'Sale'")
+    price: float = Field(default=0.0, description="Price per share")
+    qty: int = Field(default=0, description="Number of shares traded")
+    value: float = Field(default=0.0, description="Total dollar value of the trade")
+
+
+class _InsiderTradesResponse(BaseModel):
+    trades: list[_InsiderTradeItem] = Field(default_factory=list)
+
+
+class _CongressTradeItem(BaseModel):
+    transaction_date: str = Field(description="Transaction date in YYYY-MM-DD format")
+    transaction_type: str = Field(description="'Purchase' or 'Sale'")
+    politician: str = Field(description="Name of the politician")
+
+
+class _CongressTradesResponse(BaseModel):
+    trades: list[_CongressTradeItem] = Field(default_factory=list)
+
+
+_INSIDER_SYSTEM_PROMPT = """\
+You are a financial data extraction specialist. Given SEC EDGAR Form 4 filing \
+data about insider transactions for a specific stock, extract each transaction \
+into structured format.
+
+For each insider trade found, extract:
+- filing_date: the filing date (YYYY-MM-DD)
+- insider_name: the full name of the insider
+- title: their role/title (e.g. CEO, CFO, COO, DIR, VP, PRES, 10% Owner)
+- trade_type: "Purchase" or "Sale"
+- price: price per share (float, 0.0 if unknown)
+- qty: number of shares (int, 0 if unknown)
+- value: total dollar value (float, 0.0 if unknown)
+
+Only include actual Form 4 insider transactions. Ignore derivative transactions \
+(options exercises) unless they resulted in open-market purchases or sales. \
+If no insider trades are found, return an empty trades list."""
+
+_CONGRESS_SYSTEM_PROMPT = """\
+You are a financial data extraction specialist. Given information about \
+congressional stock trading disclosures for a specific stock, extract each \
+transaction into structured format.
+
+For each congressional trade found, extract:
+- transaction_date: the transaction or disclosure date (YYYY-MM-DD)
+- transaction_type: "Purchase" or "Sale"
+- politician: name of the congress member
+
+Only include actual stock purchase/sale transactions. If no congressional \
+trades are found, return an empty trades list."""
+
+
 # ── Cache helpers ────────────────────────────────────────────────────────────
 
 
@@ -173,77 +235,7 @@ def _fetch_ticker_data(symbol: str) -> tuple[yf.Ticker, "pd.DataFrame"]:
     return ticker, hist
 
 
-# ── Column header mapping for OpenInsider ────────────────────────────────────
-
-# Expected headers (lowercased) → our field names
-_OI_HEADER_MAP = {
-    "filing date": "filing_date",
-    "trade date": "trade_date",
-    "ticker": "ticker",
-    "insider name": "insider_name",
-    "title": "title",
-    "trade type": "trade_type",
-    "price": "price",
-    "qty": "qty",
-    "value": "value",
-}
-
-
-# ── 1. Insider activity (OpenInsider) ────────────────────────────────────────
-
-
-def _parse_insider_table(html: str, symbol: str) -> list[dict]:
-    """Parse OpenInsider HTML into trade dicts using BeautifulSoup."""
-    soup = BeautifulSoup(html, "html.parser")
-    tables = soup.find_all("table", class_="tinytable")
-    if not tables:
-        return []
-
-    table = tables[-1]  # data table is typically the last tinytable
-    headers_row = table.find("thead")
-    if not headers_row:
-        return []
-
-    # Build column index from actual headers (normalize \xa0 → regular space)
-    ths = headers_row.find_all("th")
-    col_map: dict[str, int] = {}
-    for i, th in enumerate(ths):
-        text = th.get_text(strip=True).replace("\xa0", " ").lower()
-        for expected, field in _OI_HEADER_MAP.items():
-            if expected in text:
-                col_map[field] = i
-                break
-
-    tbody = table.find("tbody")
-    if not tbody:
-        return []
-
-    trades = []
-    for row in tbody.find_all("tr"):
-        cells = row.find_all("td")
-        if len(cells) < max(col_map.values(), default=0) + 1:
-            continue
-
-        def cell_text(field: str) -> str:
-            idx = col_map.get(field)
-            if idx is None or idx >= len(cells):
-                return ""
-            return cells[idx].get_text(strip=True)
-
-        trades.append(
-            {
-                "filing_date": cell_text("filing_date"),
-                "ticker": symbol.upper(),
-                "insider_name": cell_text("insider_name"),
-                "title": cell_text("title"),
-                "trade_type": cell_text("trade_type"),
-                "price": cell_text("price"),
-                "qty": cell_text("qty"),
-                "value": cell_text("value"),
-            }
-        )
-
-    return trades
+# ── 1. Insider activity (SEC Form 4 via Perplexity) ──────────────────────────
 
 
 def _fetch_insider_activity(symbol: str) -> InsiderScore:
@@ -251,65 +243,71 @@ def _fetch_insider_activity(symbol: str) -> InsiderScore:
     if cached:
         return InsiderScore(**cached)
 
-    url = f"http://openinsider.com/search?q={symbol.lower()}"
+    config = ResearchConfig()
+    store = Store(config.db_path)
     buy_trades: list[InsiderTrade] = []
     sell_trades: list[InsiderTrade] = []
 
     try:
-        resp = httpx.get(
-            url,
-            timeout=15.0,
-            headers={"User-Agent": "Mozilla/5.0"},
-            follow_redirects=True,
-        )
-        resp.raise_for_status()
-        raw_trades = _parse_insider_table(resp.text, symbol)
+        search = PerplexityClient(config, store)
+        llm = ClaudeLLM(config)
 
         cutoff = datetime.now() - timedelta(days=INSIDER_LOOKBACK_DAYS)
+        after_date = cutoff.strftime("%Y-%m-%d")
 
-        for raw in raw_trades:
-            # Parse and filter by date
-            filing_str = raw["filing_date"]
+        results = search.search_sec(
+            f"{symbol} SEC Form 4 insider transactions recent purchases sales",
+            after_date=after_date,
+            max_results=5,
+        )
+
+        if not results:
+            result = InsiderScore()
+            _cache_set("insider", symbol, result.model_dump())
+            return result
+
+        context = "\n---\n".join(f"{r.title}\nURL: {r.url}\n{r.content}" for r in results)
+        user_prompt = (
+            f"Extract insider trades for {symbol} from these SEC Form 4 filings:\n\n" f"{context}"
+        )
+
+        parsed: _InsiderTradesResponse = llm.complete(
+            system_prompt=_INSIDER_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            response_model=_InsiderTradesResponse,
+        )
+
+        for item in parsed.trades:
             try:
-                filing_date = datetime.strptime(filing_str[:10], "%Y-%m-%d")
+                filing_date = datetime.strptime(item.filing_date[:10], "%Y-%m-%d")
             except (ValueError, TypeError):
                 continue
-
             if filing_date < cutoff:
                 continue
 
-            # Parse numeric fields
-            def clean_num(s: str) -> str:
-                return s.replace(",", "").replace("$", "").replace("+", "").strip()
+            trade = InsiderTrade(
+                filing_date=item.filing_date,
+                ticker=symbol.upper(),
+                insider_name=item.insider_name,
+                title=item.title,
+                trade_type=item.trade_type,
+                price=item.price,
+                qty=abs(item.qty),
+                value=abs(item.value),
+            )
 
-            try:
-                price_str = clean_num(raw["price"])
-                qty_str = clean_num(raw["qty"])
-                value_str = clean_num(raw["value"])
-
-                trade = InsiderTrade(
-                    filing_date=filing_str,
-                    ticker=symbol.upper(),
-                    insider_name=raw["insider_name"],
-                    title=raw["title"],
-                    trade_type="Purchase" if "P - Purchase" in raw["trade_type"] else "Sale",
-                    price=float(price_str) if price_str else 0.0,
-                    qty=abs(int(qty_str)) if qty_str else 0,
-                    value=abs(float(value_str)) if value_str else 0.0,
-                )
-            except (ValueError, IndexError):
-                continue
-
-            if "P - Purchase" in raw["trade_type"]:
+            if item.trade_type == "Purchase":
                 buy_trades.append(trade)
-            elif "S - Sale" in raw["trade_type"]:
+            elif item.trade_type == "Sale":
                 sell_trades.append(trade)
 
     except Exception as e:
-        logger.warning(f"OpenInsider fetch failed for {symbol}: {e}")
+        logger.warning(f"Insider activity fetch failed for {symbol}: {e}")
         result = InsiderScore()
         _cache_set("insider", symbol, result.model_dump())
         return result
+    finally:
+        store.close()
 
     # Score buys (max +35)
     csuite_buys = csuite_sells = large_buys = large_sells = 0
@@ -369,7 +367,7 @@ def _fetch_insider_activity(symbol: str) -> InsiderScore:
     return result
 
 
-# ── 2. Congressional trading (Finnhub) ──────────────────────────────────────
+# ── 2. Congressional trading (Perplexity web search) ─────────────────────────
 
 
 def _fetch_congress_trades(symbol: str) -> CongressScore:
@@ -377,41 +375,51 @@ def _fetch_congress_trades(symbol: str) -> CongressScore:
     if cached:
         return CongressScore(**cached)
 
-    api_key = os.environ.get("FINNHUB_API_KEY", "")
-    if not api_key:
-        logger.debug("No FINNHUB_API_KEY set, skipping congress data")
-        result = CongressScore()
-        _cache_set("congress", symbol, result.model_dump())
-        return result
-
+    config = ResearchConfig()
+    store = Store(config.db_path)
     recent_buys = 0
     politicians: list[str] = []
 
     try:
-        url = f"https://finnhub.io/api/v1/stock/congressional-trading?symbol={symbol.upper()}&token={api_key}"
-        resp = httpx.get(url, timeout=15.0, follow_redirects=True)
-        resp.raise_for_status()
-        data = resp.json()
+        search = PerplexityClient(config, store)
+        llm = ClaudeLLM(config)
+
+        results = search.search(
+            f"{symbol} congressional stock trading disclosures recent",
+            max_results=5,
+        )
+
+        if not results:
+            result = CongressScore()
+            _cache_set("congress", symbol, result.model_dump())
+            return result
+
+        context = "\n---\n".join(f"{r.title}\nURL: {r.url}\n{r.content}" for r in results)
+        user_prompt = (
+            f"Extract congressional stock trades for {symbol} from these sources:\n\n" f"{context}"
+        )
+
+        parsed: _CongressTradesResponse = llm.complete(
+            system_prompt=_CONGRESS_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            response_model=_CongressTradesResponse,
+        )
 
         cutoff = datetime.now() - timedelta(days=90)
-        trades = data if isinstance(data, list) else data.get("data", [])
-
-        for trade in trades:
-            tx_date_str = trade.get("transactionDate", "")
-            tx_type = trade.get("transactionType", "")
+        for item in parsed.trades:
             try:
-                tx_date = datetime.strptime(tx_date_str, "%Y-%m-%d")
+                tx_date = datetime.strptime(item.transaction_date[:10], "%Y-%m-%d")
             except (ValueError, TypeError):
                 continue
-
-            if tx_date >= cutoff and "purchase" in str(tx_type).lower():
-                pol = trade.get("representative", "Unknown")
-                if pol not in politicians:
-                    politicians.append(pol)
+            if tx_date >= cutoff and item.transaction_type == "Purchase":
+                if item.politician not in politicians:
+                    politicians.append(item.politician)
                 recent_buys += 1
 
     except Exception as e:
-        logger.debug(f"Finnhub congress fetch failed for {symbol}: {e}")
+        logger.debug(f"Congress trades fetch failed for {symbol}: {e}")
+    finally:
+        store.close()
 
     # Score (max 20)
     score = 0.0

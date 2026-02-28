@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from research_agent.config import ResearchConfig
-from research_agent.search import PerplexityClient
+from research_agent.search import PerplexityClient, SearchOptions
 from research_agent.store import Store
 
 
@@ -188,5 +188,170 @@ class TestPerplexityClient:
             call_args = mock_post.call_args
             headers = call_args.kwargs.get("headers") or call_args[1].get("headers")
             assert headers["Authorization"] == "Bearer pplx-test-key"
+        finally:
+            store.close()
+
+    @patch("research_agent.search.httpx.post")
+    def test_search_with_sec_mode(self, mock_post, tmp_path):
+        """Passing search_mode='sec' adds it to API payload."""
+        config = _make_config()
+        store = Store(tmp_path / "test.db")
+        try:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = _mock_perplexity_response()
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
+
+            client = PerplexityClient(config, store)
+            options = SearchOptions(search_mode="sec")
+            client.search("AAPL 10-K", options=options)
+
+            payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+            assert payload["search_mode"] == "sec"
+        finally:
+            store.close()
+
+    @patch("research_agent.search.httpx.post")
+    def test_search_sec_convenience(self, mock_post, tmp_path):
+        """search_sec() convenience method sends search_mode='sec'."""
+        config = _make_config()
+        store = Store(tmp_path / "test.db")
+        try:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = _mock_perplexity_response()
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
+
+            client = PerplexityClient(config, store)
+            client.search_sec("AAPL 10-K revenue")
+
+            payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+            assert payload["search_mode"] == "sec"
+        finally:
+            store.close()
+
+    @patch("research_agent.search.httpx.post")
+    def test_search_with_date_filter(self, mock_post, tmp_path):
+        """search_after_date_filter is included in API payload."""
+        config = _make_config()
+        store = Store(tmp_path / "test.db")
+        try:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = _mock_perplexity_response()
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
+
+            client = PerplexityClient(config, store)
+            options = SearchOptions(search_after_date_filter="1/1/2024")
+            client.search("AAPL earnings", options=options)
+
+            payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+            assert payload["search_after_date_filter"] == "1/1/2024"
+        finally:
+            store.close()
+
+    @patch("research_agent.search.httpx.post")
+    def test_sec_mode_skips_domain_filter(self, mock_post, tmp_path):
+        """When search_mode is set, search_domain_filter is not sent."""
+        config = _make_config(curated_first=True)
+        store = Store(tmp_path / "test.db")
+        try:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = _mock_perplexity_response()
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
+
+            client = PerplexityClient(config, store)
+            options = SearchOptions(search_mode="sec")
+            client.search("AAPL 10-K", options=options)
+
+            payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+            assert "search_domain_filter" not in payload
+            assert payload["search_mode"] == "sec"
+        finally:
+            store.close()
+
+    @patch("research_agent.search.httpx.post")
+    def test_cache_key_differs_by_mode(self, mock_post, tmp_path):
+        """Same query with different search_mode produces separate cache entries."""
+        config = _make_config()
+        store = Store(tmp_path / "test.db")
+        try:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = _mock_perplexity_response()
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
+
+            client = PerplexityClient(config, store)
+
+            # First call: web search
+            client.search("AAPL earnings")
+            # Second call: SEC search
+            client.search("AAPL earnings", options=SearchOptions(search_mode="sec"))
+
+            # Both should hit the API (different cache keys)
+            assert mock_post.call_count == 2
+        finally:
+            store.close()
+
+    @patch("research_agent.search.httpx.post")
+    def test_options_none_preserves_behavior(self, mock_post, tmp_path):
+        """Passing options=None produces same payload as before (no search_mode)."""
+        config = _make_config()
+        store = Store(tmp_path / "test.db")
+        try:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = _mock_perplexity_response()
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
+
+            client = PerplexityClient(config, store)
+            client.search("AAPL earnings")
+
+            payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+            assert "search_mode" not in payload
+            assert "search_after_date_filter" not in payload
+            assert payload["search_recency_filter"] == "month"
+        finally:
+            store.close()
+
+    @patch("research_agent.search.httpx.post")
+    def test_recency_filter_from_config(self, mock_post, tmp_path):
+        """search_recency_filter is read from config instead of hardcoded."""
+        config = _make_config(search_recency_filter="week")
+        store = Store(tmp_path / "test.db")
+        try:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = _mock_perplexity_response()
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
+
+            client = PerplexityClient(config, store)
+            client.search("AAPL earnings")
+
+            payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+            assert payload["search_recency_filter"] == "week"
+        finally:
+            store.close()
+
+    @patch("research_agent.search.httpx.post")
+    def test_sec_mode_skips_curated_first(self, mock_post, tmp_path):
+        """With curated_first=True and search_mode='sec', curated-first is bypassed."""
+        config = _make_config(curated_first=True)
+        store = Store(tmp_path / "test.db")
+        try:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = _mock_perplexity_response()
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
+
+            client = PerplexityClient(config, store)
+            options = SearchOptions(search_mode="sec")
+            client.search("AAPL 10-K", options=options)
+
+            # Should only call API once (no curated-first attempt)
+            assert mock_post.call_count == 1
+            payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+            assert payload["search_mode"] == "sec"
         finally:
             store.close()
