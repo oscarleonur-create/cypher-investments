@@ -9,6 +9,7 @@ import typer
 from advisor.cli.formatters import console, output_error, output_json
 
 if TYPE_CHECKING:
+    from advisor.confluence.alpha_scorer import AlphaResult
     from advisor.confluence.mispricing_screener import MispricingResult
     from advisor.confluence.smart_money_screener import SmartMoneyResult
 
@@ -545,3 +546,168 @@ def print_market_scan(
     # Timing
     elapsed = result.elapsed_seconds
     console.print(f"\n[dim]Completed in {elapsed:.1f}s[/dim]")
+
+
+# ── Alpha Score ──────────────────────────────────────────────────────────
+
+
+@app.command("alpha")
+def alpha_scan(
+    ticker: Annotated[
+        Optional[str], typer.Option("--ticker", "-t", help="Single ticker deep-dive")
+    ] = None,
+    top: Annotated[int, typer.Option("--top", "-n", help="Top N results from S&P 500")] = 10,
+    output: Annotated[Optional[str], typer.Option("--output", help="Output format (json)")] = None,
+    skip_sentiment: Annotated[
+        bool, typer.Option("--skip-sentiment", help="Skip sentiment layer")
+    ] = False,
+    skip_ml: Annotated[bool, typer.Option("--skip-ml", help="Skip ML signal layer")] = False,
+) -> None:
+    """Compute a unified alpha conviction score (0-100) across all signal layers."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn
+    from rich.table import Table
+
+    from advisor.confluence.alpha_scorer import compute_alpha
+    from advisor.confluence.smart_money_screener import get_sp500_tickers
+
+    skip_layers: set[str] = set()
+    if skip_sentiment:
+        skip_layers.add("sentiment")
+    if skip_ml:
+        skip_layers.add("ml_signal")
+
+    if ticker:
+        result = compute_alpha(ticker, skip_layers=skip_layers)
+        if output == "json":
+            output_json(result)
+            return
+        _print_alpha_detail(result)
+        return
+
+    # Full scan mode
+    tickers = get_sp500_tickers()
+    results: list[AlphaResult] = []
+
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        console=console,
+    )
+
+    with progress:
+        task = progress.add_task("[cyan]Computing alpha scores...", total=len(tickers))
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = {pool.submit(compute_alpha, t, None, skip_layers): t for t in tickers}
+            for future in as_completed(futures):
+                try:
+                    r = future.result()
+                    results.append(r)
+                except Exception:
+                    pass
+                progress.update(task, advance=1)
+
+    results.sort(key=lambda r: r.alpha_score, reverse=True)
+    results = results[:top]
+
+    if output == "json":
+        output_json([r.model_dump(mode="json") for r in results])
+        return
+
+    # Rich table
+    signal_colors = {
+        "STRONG_BUY": "bold green",
+        "BUY": "green",
+        "LEAN_BUY": "cyan",
+        "NEUTRAL": "yellow",
+        "LEAN_SELL": "magenta",
+        "AVOID": "bold red",
+    }
+
+    table = Table(title=f"Alpha Score — Top {top}")
+    table.add_column("Symbol", style="cyan")
+    table.add_column("Alpha", justify="right")
+    table.add_column("Signal")
+    table.add_column("Tech", justify="right")
+    table.add_column("Sent", justify="right")
+    table.add_column("Fund", justify="right")
+    table.add_column("Smart$", justify="right")
+    table.add_column("Misprice", justify="right")
+    table.add_column("ML", justify="right")
+    table.add_column("Layers", justify="right")
+
+    for r in results:
+        color = signal_colors.get(r.signal.value, "white")
+        layer_map = {ls.name: ls for ls in r.layers}
+
+        def _fmt(name: str) -> str:
+            ls = layer_map.get(name)
+            if ls is None or not ls.available:
+                return "[dim]-[/dim]"
+            return f"{ls.normalized:.0f}"
+
+        table.add_row(
+            r.symbol,
+            f"{r.alpha_score:.0f}",
+            f"[{color}]{r.signal.value}[/{color}]",
+            _fmt("technical"),
+            _fmt("sentiment"),
+            _fmt("fundamental"),
+            _fmt("smart_money"),
+            _fmt("mispricing"),
+            _fmt("ml_signal"),
+            f"{r.active_layers}/{r.total_layers}",
+        )
+
+    console.print(table)
+
+
+def _print_alpha_detail(r: "AlphaResult") -> None:
+    """Print detailed alpha result for a single ticker."""
+    from rich.panel import Panel
+    from rich.table import Table
+
+    signal_colors = {
+        "STRONG_BUY": "bold green",
+        "BUY": "green",
+        "LEAN_BUY": "cyan",
+        "NEUTRAL": "yellow",
+        "LEAN_SELL": "magenta",
+        "AVOID": "bold red",
+    }
+    color = signal_colors.get(r.signal.value, "white")
+
+    header = (
+        f"[bold]{r.symbol}[/bold] — [{color}]{r.signal.value}[/{color}]"
+        f"  (Alpha: {r.alpha_score:.1f}/100)"
+        f"  [{r.active_layers}/{r.total_layers} layers active]"
+    )
+    console.print(Panel(header, title="Alpha Score", border_style="blue"))
+
+    # Layer breakdown table
+    table = Table(title="Layer Breakdown")
+    table.add_column("Layer", style="cyan")
+    table.add_column("Norm", justify="right")
+    table.add_column("Weight", justify="right")
+    table.add_column("Contrib", justify="right")
+    table.add_column("Status")
+
+    for ls in r.layers:
+        if ls.available:
+            status = "[green]OK[/green]"
+            table.add_row(
+                ls.name,
+                f"{ls.normalized:.0f}",
+                f"{ls.weight:.0%}",
+                f"{ls.weighted_contribution:.1f}",
+                status,
+            )
+        else:
+            status = f"[dim]{ls.error or 'unavailable'}[/dim]"
+            table.add_row(ls.name, "-", "-", "-", status)
+
+    console.print(table)

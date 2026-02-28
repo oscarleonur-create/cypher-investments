@@ -12,7 +12,7 @@ from research_agent.llm import ClaudeLLM
 def _make_config(**overrides) -> ResearchConfig:
     defaults = dict(
         _env_file=None,
-        tavily_api_key="test-key",
+        perplexity_api_key="test-key",
         anthropic_api_key="test-key",
     )
     defaults.update(overrides)

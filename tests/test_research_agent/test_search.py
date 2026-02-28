@@ -5,14 +5,14 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from research_agent.config import ResearchConfig
-from research_agent.search import TavilyClient
+from research_agent.search import PerplexityClient
 from research_agent.store import Store
 
 
 def _make_config(**overrides) -> ResearchConfig:
     defaults = dict(
         _env_file=None,
-        tavily_api_key="test-key",
+        perplexity_api_key="test-key",
         anthropic_api_key="test-key",
         curated_first=False,
         allow_fallback_web=True,
@@ -21,31 +21,42 @@ def _make_config(**overrides) -> ResearchConfig:
     return ResearchConfig(**defaults)
 
 
-def _mock_tavily_response(results=None):
-    """Create a mock Tavily API response."""
+def _mock_perplexity_response(results=None):
+    """Create a mock Perplexity Sonar API response."""
     if results is None:
         results = [
             {
                 "url": "https://reuters.com/article/1",
                 "title": "Test Article",
-                "content": "Test content about stock",
+                "snippet": "Test content about stock",
                 "score": 0.95,
             }
         ]
-    return {"results": results}
+    return {
+        "search_results": results,
+        "citations": [r["url"] for r in results],
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "Synthesized answer from Perplexity",
+                }
+            }
+        ],
+    }
 
 
-class TestTavilyClient:
+class TestPerplexityClient:
     def test_search_with_cache_hit(self, tmp_path):
         """Cached results are returned without API call."""
         config = _make_config()
         store = Store(tmp_path / "test.db")
         try:
             # Pre-populate cache
-            cached_data = _mock_tavily_response()
+            cached_data = _mock_perplexity_response()
             store.cache_search("AAPL stock", cached_data)
 
-            client = TavilyClient(config, store)
+            client = PerplexityClient(config, store)
             results = client.search("AAPL stock")
 
             assert len(results) == 1
@@ -56,16 +67,16 @@ class TestTavilyClient:
 
     @patch("research_agent.search.httpx.post")
     def test_search_calls_api(self, mock_post, tmp_path):
-        """When no cache, search calls the Tavily API."""
+        """When no cache, search calls the Perplexity API."""
         config = _make_config()
         store = Store(tmp_path / "test.db")
         try:
             mock_resp = MagicMock()
-            mock_resp.json.return_value = _mock_tavily_response()
+            mock_resp.json.return_value = _mock_perplexity_response()
             mock_resp.raise_for_status = MagicMock()
             mock_post.return_value = mock_resp
 
-            client = TavilyClient(config, store)
+            client = PerplexityClient(config, store)
             results = client.search("AAPL earnings")
 
             assert len(results) == 1
@@ -80,11 +91,11 @@ class TestTavilyClient:
         store = Store(tmp_path / "test.db")
         try:
             mock_resp = MagicMock()
-            mock_resp.json.return_value = _mock_tavily_response()
+            mock_resp.json.return_value = _mock_perplexity_response()
             mock_resp.raise_for_status = MagicMock()
             mock_post.return_value = mock_resp
 
-            client = TavilyClient(config, store)
+            client = PerplexityClient(config, store)
             client.search("AAPL earnings")
 
             # Second call should use cache
@@ -100,17 +111,17 @@ class TestTavilyClient:
         store = Store(tmp_path / "test.db")
         try:
             mock_resp = MagicMock()
-            mock_resp.json.return_value = _mock_tavily_response()
+            mock_resp.json.return_value = _mock_perplexity_response()
             mock_resp.raise_for_status = MagicMock()
             mock_post.return_value = mock_resp
 
-            client = TavilyClient(config, store)
+            client = PerplexityClient(config, store)
             client.search("AAPL stock")
 
-            # Should have been called with include_domains
+            # Should have been called with search_domain_filter
             call_args = mock_post.call_args
             payload = call_args.kwargs.get("json") or call_args[1].get("json")
-            assert "include_domains" in payload
+            assert "search_domain_filter" in payload
         finally:
             store.close()
 
@@ -120,7 +131,7 @@ class TestTavilyClient:
         config = _make_config(offline_mode=True)
         store = Store(tmp_path / "test.db")
         try:
-            client = TavilyClient(config, store)
+            client = PerplexityClient(config, store)
             results = client.search("AAPL earnings")
 
             assert results == []
@@ -133,10 +144,10 @@ class TestTavilyClient:
         config = _make_config(offline_mode=True)
         store = Store(tmp_path / "test.db")
         try:
-            cached_data = _mock_tavily_response()
+            cached_data = _mock_perplexity_response()
             store.cache_search("AAPL stock", cached_data)
 
-            client = TavilyClient(config, store)
+            client = PerplexityClient(config, store)
             results = client.search("AAPL stock")
 
             assert len(results) == 1
@@ -145,17 +156,37 @@ class TestTavilyClient:
             store.close()
 
     def test_parse_results_empty(self):
-        results = TavilyClient._parse_results({"results": []})
+        results = PerplexityClient._parse_results({"search_results": []})
         assert results == []
 
     def test_parse_results_filters_empty_urls(self):
-        results = TavilyClient._parse_results(
+        results = PerplexityClient._parse_results(
             {
-                "results": [
-                    {"url": "", "title": "No URL", "content": "test"},
-                    {"url": "https://example.com", "title": "Has URL", "content": "test"},
+                "search_results": [
+                    {"url": "", "title": "No URL", "snippet": "test"},
+                    {"url": "https://example.com", "title": "Has URL", "snippet": "test"},
                 ]
             }
         )
         assert len(results) == 1
         assert results[0].url == "https://example.com"
+
+    @patch("research_agent.search.httpx.post")
+    def test_api_sends_auth_header(self, mock_post, tmp_path):
+        """API calls include Bearer token authorization header."""
+        config = _make_config(perplexity_api_key="pplx-test-key")
+        store = Store(tmp_path / "test.db")
+        try:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = _mock_perplexity_response()
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
+
+            client = PerplexityClient(config, store)
+            client.search("AAPL stock")
+
+            call_args = mock_post.call_args
+            headers = call_args.kwargs.get("headers") or call_args[1].get("headers")
+            assert headers["Authorization"] == "Bearer pplx-test-key"
+        finally:
+            store.close()

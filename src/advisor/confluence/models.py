@@ -160,3 +160,39 @@ class ConfluenceResult(BaseModel):
     reasoning: str
     suggested_hold_days: int = 4
     scanned_at: datetime = Field(default_factory=datetime.now)
+
+
+# ── Alpha Score models ────────────────────────────────────────────────
+
+
+class AlphaSignal(StrEnum):
+    STRONG_BUY = "STRONG_BUY"
+    BUY = "BUY"
+    LEAN_BUY = "LEAN_BUY"
+    NEUTRAL = "NEUTRAL"
+    LEAN_SELL = "LEAN_SELL"
+    AVOID = "AVOID"
+
+
+class AlphaLayerScore(BaseModel):
+    """Per-layer breakdown within the alpha score."""
+
+    name: str
+    raw_value: float | None = None
+    normalized: float = Field(ge=0, le=100, default=0.0)
+    weight: float = 0.0
+    weighted_contribution: float = 0.0
+    available: bool = True
+    error: str | None = None
+
+
+class AlphaResult(BaseModel):
+    """Composite alpha score combining all signal layers."""
+
+    symbol: str
+    alpha_score: float = Field(ge=0, le=100)
+    signal: AlphaSignal
+    layers: list[AlphaLayerScore] = Field(default_factory=list)
+    active_layers: int = 0
+    total_layers: int = 0
+    scanned_at: datetime = Field(default_factory=datetime.now)

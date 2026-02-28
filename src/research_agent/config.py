@@ -13,10 +13,10 @@ class ResearchConfig(BaseSettings):
 
     model_config = {"env_prefix": "RESEARCH_AGENT_", "extra": "ignore", "env_file": ".env"}
 
-    # --- Tavily search ---
-    tavily_api_key: str = ""
-    search_endpoint: str = "https://api.tavily.com/search"
-    tavily_search_depth: str = "advanced"
+    # --- Perplexity Sonar search ---
+    perplexity_api_key: str = ""
+    search_endpoint: str = "https://api.perplexity.ai/chat/completions"
+    perplexity_model: str = "sonar"
 
     # --- Anthropic LLM ---
     anthropic_api_key: str = ""

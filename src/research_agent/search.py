@@ -1,4 +1,4 @@
-"""Tavily search client with caching and curated-first strategy."""
+"""Perplexity Sonar search client with caching and curated-first strategy."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from research_agent.store import Store
 
 @dataclass
 class SearchResult:
-    """A single result from a Tavily search."""
+    """A single result from a Perplexity search."""
 
     url: str
     title: str
@@ -21,8 +21,8 @@ class SearchResult:
     score: float = 0.0
 
 
-class TavilyClient:
-    """Tavily search API client with caching, rate limiting, and curated-first policy."""
+class PerplexityClient:
+    """Perplexity Sonar API client with caching, rate limiting, and curated-first policy."""
 
     def __init__(self, config: ResearchConfig, store: Store) -> None:
         self._config = config
@@ -37,20 +37,23 @@ class TavilyClient:
         self._last_request_time = time.time()
 
     def _call_api(self, query: str, domains: list[str] | None, max_results: int) -> dict:
-        """Make a raw Tavily API call."""
+        """Make a raw Perplexity Sonar API call."""
         self._rate_limit()
         payload: dict = {
-            "api_key": self._config.tavily_api_key,
-            "query": query,
-            "search_depth": self._config.tavily_search_depth,
-            "max_results": max_results,
-            "include_answer": False,
+            "model": self._config.perplexity_model,
+            "messages": [{"role": "user", "content": query}],
+            "search_recency_filter": "month",
         }
         if domains:
-            payload["include_domains"] = domains
+            payload["search_domain_filter"] = domains
+        headers = {
+            "Authorization": f"Bearer {self._config.perplexity_api_key}",
+            "Content-Type": "application/json",
+        }
         resp = httpx.post(
             self._config.search_endpoint,
             json=payload,
+            headers=headers,
             timeout=self._config.http_timeout_seconds,
         )
         resp.raise_for_status()
@@ -62,7 +65,7 @@ class TavilyClient:
         domains: list[str] | None = None,
         max_results: int = 5,
     ) -> list[SearchResult]:
-        """Search Tavily with optional domain filtering and caching.
+        """Search Perplexity with optional domain filtering and caching.
 
         Uses curated-first strategy: tries curated domains first, then
         falls back to open web if allowed and needed.
@@ -102,13 +105,13 @@ class TavilyClient:
 
     @staticmethod
     def _parse_results(data: dict) -> list[SearchResult]:
-        """Parse Tavily API response into SearchResult objects."""
-        items = data.get("results", [])
+        """Parse Perplexity Sonar response into SearchResult objects."""
+        items = data.get("search_results", [])
         return [
             SearchResult(
                 url=item.get("url", ""),
                 title=item.get("title", ""),
-                content=item.get("content", ""),
+                content=item.get("snippet", ""),
                 score=item.get("score", 0.0),
             )
             for item in items

@@ -26,7 +26,7 @@ from research_agent.models import (
     Verdict,
 )
 from research_agent.queries import step1_queries, step3_queries, subject_label
-from research_agent.search import SearchResult, TavilyClient
+from research_agent.search import PerplexityClient, SearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +123,7 @@ def _format_evidence_for_llm(state: AgentState, registry: SourceRegistry) -> str
 
 def step1_detect_trigger(
     state: AgentState,
-    search: TavilyClient,
+    search: PerplexityClient,
     llm: ClaudeLLM,
     registry: SourceRegistry,
     config: ResearchConfig,
@@ -202,7 +202,7 @@ def step2_classify_dip(
 
 def step3_research_facts(
     state: AgentState,
-    search: TavilyClient,
+    search: PerplexityClient,
     llm: ClaudeLLM,
     registry: SourceRegistry,
     config: ResearchConfig,
@@ -287,7 +287,7 @@ def step4_generate_card(
 
 def run_loop(
     state: AgentState,
-    search: TavilyClient,
+    search: PerplexityClient,
     llm: ClaudeLLM,
     registry: SourceRegistry,
     config: ResearchConfig,

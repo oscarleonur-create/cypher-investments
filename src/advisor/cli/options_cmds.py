@@ -501,7 +501,8 @@ def premium_scan(
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Output format: json"),
 ):
     """Smart premium scanner — rank sell opportunities by composite score."""
-    from advisor.market.premium_screener import UNIVERSES, PremiumScreener
+    from advisor.market.options_scanner import UNIVERSES
+    from advisor.market.premium_screener import PremiumScreener
 
     if tickers:
         ticker_list = [t.strip().upper() for t in tickers.split(",")]
