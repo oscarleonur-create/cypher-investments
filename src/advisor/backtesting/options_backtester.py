@@ -2,9 +2,10 @@
 """
 Options Backtester — Black-Scholes based historical simulation.
 Strategies: naked_put, wheel, put_credit_spread.
-Uses yfinance for price data, scipy for BS pricing.
+Uses yfinance for price data, core/pricing.py for BSM pricing with full Greeks.
 """
 
+import logging
 import sys
 from dataclasses import asdict, dataclass
 from datetime import timedelta
@@ -13,40 +14,37 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from scipy.stats import norm
 
-# ── Black-Scholes ────────────────────────────────────────────────────────────
+from advisor.core.enums import OptionType
+from advisor.core.pricing import bsm_price
+from advisor.market.premium_screener import get_adaptive_delta
 
-
-def bs_put_price(S: float, K: float, T: float, r: float, sigma: float) -> float:
-    """Black-Scholes European put price. T in years."""
-    if T <= 0 or sigma <= 0:
-        return max(K - S, 0.0)
-    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
-    d2 = d1 - sigma * np.sqrt(T)
-    return K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+logger = logging.getLogger(__name__)
 
 
-def bs_call_price(S: float, K: float, T: float, r: float, sigma: float) -> float:
-    if T <= 0 or sigma <= 0:
-        return max(S - K, 0.0)
-    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
-    d2 = d1 - sigma * np.sqrt(T)
-    return S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+# ── Configuration ────────────────────────────────────────────────────────────
 
 
-def bs_put_delta(S: float, K: float, T: float, r: float, sigma: float) -> float:
-    if T <= 0 or sigma <= 0:
-        return -1.0 if S < K else 0.0
-    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
-    return norm.cdf(d1) - 1.0
+@dataclass
+class BacktestConfig:
+    """Tunable parameters for options backtesting."""
 
+    # Entry signals
+    use_adaptive_delta: bool = True  # use IV-based delta vs fixed 0.25
+    base_rsi_threshold: float = 40.0  # default RSI entry threshold
+    rsi_relax_in_high_iv: bool = True  # relax to 50 when IV pctile > 75
+    use_regime_filter: bool = True  # skip entries in high-vol HMM regime
+    use_iv_term_filter: bool = False  # require near-term HV > long-term HV
 
-def bs_call_delta(S: float, K: float, T: float, r: float, sigma: float) -> float:
-    if T <= 0 or sigma <= 0:
-        return 1.0 if S > K else 0.0
-    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
-    return norm.cdf(d1)
+    # Position management
+    profit_target_pct: float = 0.50  # close at 50% of credit
+    stop_loss_multiplier: float = 3.0  # close at 3x credit
+    close_at_dte: int = 21  # close when DTE <= 21
+    use_gamma_exit: bool = True  # close on gamma spike
+    gamma_threshold: float = 0.03  # gamma * S threshold
+    use_iv_crush_exit: bool = True  # close early on IV drop
+    iv_crush_pnl_pct: float = 0.30  # min unrealized P&L for crush exit
+    iv_crush_drop_pct: float = 0.20  # min IV drop from entry
 
 
 # ── IV estimation ────────────────────────────────────────────────────────────
@@ -81,10 +79,10 @@ def find_strike_for_delta(
     """Find strike closest to target delta via grid search."""
     if option_type == "put":
         strikes = np.arange(S * 0.70, S * 1.01, step)
-        deltas = [abs(bs_put_delta(S, k, T, r, sigma)) for k in strikes]
+        deltas = [abs(bsm_price(S, k, T, r, sigma, OptionType.PUT).delta) for k in strikes]
     else:
         strikes = np.arange(S * 1.0, S * 1.30, step)
-        deltas = [bs_call_delta(S, k, T, r, sigma) for k in strikes]
+        deltas = [bsm_price(S, k, T, r, sigma, OptionType.CALL).delta for k in strikes]
 
     if not len(deltas):
         return round(S * 0.90 if option_type == "put" else S * 1.10, 2)
@@ -112,6 +110,9 @@ class Trade:
     # spread fields
     long_strike: Optional[float] = None
     long_premium: Optional[float] = None
+    # entry context
+    entry_iv: Optional[float] = None
+    entry_delta: Optional[float] = None
 
     def net_credit(self) -> float:
         """Total credit received (per contract = 100 shares)."""
@@ -127,20 +128,29 @@ class Trade:
 
 
 class Backtester:
-    def __init__(self, symbol: str, start: str, end: str, cash: float, risk_free: float = 0.045):
+    def __init__(
+        self,
+        symbol: str,
+        start: str,
+        end: str,
+        cash: float,
+        risk_free: float = 0.045,
+        config: BacktestConfig | None = None,
+    ):
         self.symbol = symbol
         self.start = start
         self.end = end
         self.initial_cash = cash
         self.cash = cash
         self.r = risk_free
+        self.config = config or BacktestConfig()
         self.trades: list[Trade] = []
         self.equity_curve: list[float] = []
         self._load_data()
 
     def _load_data(self):
-        # Fetch with extra buffer for IV calc
-        buf_start = (pd.Timestamp(self.start) - timedelta(days=60)).strftime("%Y-%m-%d")
+        # Fetch with extra buffer for IV calc + IV percentile
+        buf_start = (pd.Timestamp(self.start) - timedelta(days=365)).strftime("%Y-%m-%d")
         ticker = yf.Ticker(self.symbol)
         df = ticker.history(start=buf_start, end=self.end, auto_adjust=True)
         if df.empty:
@@ -149,9 +159,161 @@ class Backtester:
         df["IV"] = estimate_iv(df["Close"], window=30)
         df["RSI"] = compute_rsi(df["Close"], period=14)
         df["RedDay"] = df["Close"] < df["Open"]
+
+        # Rolling IV percentile: rank current IV against trailing 252-day distribution
+        df["IV_Pctile"] = (
+            df["IV"]
+            .rolling(252, min_periods=60)
+            .apply(lambda w: (w.iloc[:-1] < w.iloc[-1]).mean() * 100)
+        )
+
+        # HMM regime labels
+        if self.config.use_regime_filter:
+            try:
+                from advisor.ml.regime import RegimeDetector
+
+                if RegimeDetector.model_exists():
+                    detector = RegimeDetector.load()
+                    regime_df = detector.compute_regime_features(df.index)
+                    df["regime"] = regime_df["hmm_regime"]
+                else:
+                    logger.info("No HMM model found, regime filter disabled")
+                    df["regime"] = 1  # default to normal
+            except Exception as e:
+                logger.warning("Regime detection failed, defaulting to normal: %s", e)
+                df["regime"] = 1
+
+        # IV term structure proxy
+        if self.config.use_iv_term_filter:
+            df["IV_60"] = estimate_iv(df["Close"], window=60)
+            df["iv_contango"] = df["IV"] > df["IV_60"]  # near-term elevated
+
         self.df = df.loc[self.start : self.end].copy()
         self.all_df = df  # keep full for lookback
         print(f"Loaded {len(self.df)} trading days for {self.symbol}", file=sys.stderr)
+
+    # ── Shared position management ────────────────────────────────────────
+
+    def _close_trade(
+        self, trade: Trade, date_str: str, exit_premium: float, reason: str
+    ) -> tuple[bool, Trade]:
+        """Close a trade with given exit premium and reason."""
+        initial_credit = trade.premium - (trade.long_premium or 0)
+        trade.exit_date = date_str
+        trade.exit_premium = round(exit_premium, 2)
+        trade.pnl = round((initial_credit - exit_premium) * 100 * trade.contracts, 2)
+        trade.reason = reason
+        return (True, trade)
+
+    def _manage_position(
+        self, trade: Trade, S: float, iv: float, date, date_str: str
+    ) -> tuple[bool, Trade | None]:
+        """Check exits for an open position. Returns (closed, trade_if_closed)."""
+        expiry = pd.Timestamp(trade.expiry_date)
+        dte = (expiry - date).days
+        T = max(dte / 365.0, 0.001)
+
+        # Get full Greeks via bsm_price
+        if trade.option_type == "spread":
+            short_result = bsm_price(S, trade.strike, T, self.r, iv, OptionType.PUT)
+            long_result = bsm_price(S, trade.long_strike, T, self.r, iv, OptionType.PUT)
+            current_premium = short_result.price - long_result.price
+            gamma = short_result.gamma - long_result.gamma  # net gamma
+        elif trade.option_type == "put":
+            result = bsm_price(S, trade.strike, T, self.r, iv, OptionType.PUT)
+            current_premium = result.price
+            gamma = result.gamma
+        else:  # call
+            result = bsm_price(S, trade.strike, T, self.r, iv, OptionType.CALL)
+            current_premium = result.price
+            gamma = result.gamma
+
+        initial_credit = trade.premium - (trade.long_premium or 0)
+
+        # --- Profit target ---
+        if current_premium <= initial_credit * self.config.profit_target_pct:
+            return self._close_trade(trade, date_str, current_premium, "profit_target")
+
+        # --- Stop loss ---
+        if current_premium >= initial_credit * self.config.stop_loss_multiplier:
+            return self._close_trade(trade, date_str, current_premium, "stop_loss")
+
+        # --- DTE exit ---
+        if self.config.close_at_dte and dte <= self.config.close_at_dte and dte > 0:
+            return self._close_trade(trade, date_str, current_premium, "dte_exit")
+
+        # --- Gamma spike exit ---
+        if self.config.use_gamma_exit and abs(gamma) * S > self.config.gamma_threshold:
+            return self._close_trade(trade, date_str, current_premium, "gamma_exit")
+
+        # --- IV crush exit ---
+        if self.config.use_iv_crush_exit and trade.entry_iv:
+            iv_drop = (trade.entry_iv - iv) / trade.entry_iv
+            unrealized_pnl_pct = (
+                (initial_credit - current_premium) / initial_credit if initial_credit > 0 else 0
+            )
+            if (
+                iv_drop > self.config.iv_crush_drop_pct
+                and unrealized_pnl_pct > self.config.iv_crush_pnl_pct
+            ):
+                return self._close_trade(trade, date_str, current_premium, "iv_crush_exit")
+
+        # --- Expiry ---
+        if dte <= 0:
+            return self._close_at_expiry(trade, S, date_str)
+
+        return (False, None)  # still open
+
+    def _close_at_expiry(self, trade: Trade, S: float, date_str: str) -> tuple[bool, Trade]:
+        """Handle trade at expiration with intrinsic value settlement."""
+        if trade.option_type == "spread":
+            short_itm = max(trade.strike - S, 0)
+            long_itm = max(trade.long_strike - S, 0)
+            intrinsic = short_itm - long_itm
+        elif trade.option_type == "put":
+            intrinsic = max(trade.strike - S, 0)
+        else:  # call
+            intrinsic = max(S - trade.strike, 0)
+
+        initial_credit = trade.premium - (trade.long_premium or 0)
+        trade.exit_date = date_str
+        trade.exit_premium = round(intrinsic, 2)
+        trade.pnl = round((initial_credit - intrinsic) * 100 * trade.contracts, 2)
+        if trade.option_type == "spread":
+            trade.reason = "expired"
+        else:
+            trade.reason = "expired_otm" if intrinsic == 0 else "expired_itm"
+        return (True, trade)
+
+    def _should_enter(self, row, rsi: float) -> bool:
+        """Check entry signal filters (regime, IV term structure, RSI threshold)."""
+        iv_pctile = row.get("IV_Pctile", 50)
+        if np.isnan(iv_pctile):
+            iv_pctile = 50
+
+        rsi_thresh = self.config.base_rsi_threshold
+        if self.config.rsi_relax_in_high_iv and iv_pctile >= 75:
+            rsi_thresh = 50.0
+
+        if self.config.use_regime_filter and row.get("regime") == 2:
+            return False
+
+        if self.config.use_iv_term_filter and not row.get("iv_contango", True):
+            return False
+
+        if not row["RedDay"] or rsi >= rsi_thresh:
+            return False
+
+        return True
+
+    def _get_target_delta(self, row, default: float = 0.25) -> float:
+        """Get target delta, adaptive or fixed."""
+        if self.config.use_adaptive_delta:
+            iv_pctile = row.get("IV_Pctile", 50)
+            if np.isnan(iv_pctile):
+                iv_pctile = 50
+            return get_adaptive_delta(iv_pctile)
+        return default
 
     # ── Naked Put ────────────────────────────────────────────────────────
 
@@ -174,60 +336,33 @@ class Backtester:
             # Check/close existing trades
             still_open = []
             for t in open_trades:
-                expiry = pd.Timestamp(t.expiry_date)
-                dte = (expiry - date).days
-                T = max(dte / 365.0, 0.001)
-                current_premium = bs_put_price(S, t.strike, T, self.r, iv)
-
-                # Profit target: bought back at 50% of credit
-                if current_premium <= t.premium * 0.50:
-                    t.exit_date = date_str
-                    t.exit_premium = current_premium
-                    t.pnl = (t.premium - current_premium) * 100 * t.contracts
-                    t.reason = "profit_target_50pct"
-                    self.cash -= current_premium * 100 * t.contracts  # buy back
-                    self.trades.append(t)
-                    continue
-
-                # Stop loss: 200% of credit
-                if current_premium >= t.premium * 3.0:
-                    t.exit_date = date_str
-                    t.exit_premium = current_premium
-                    t.pnl = (t.premium - current_premium) * 100 * t.contracts
-                    t.reason = "stop_loss_200pct"
-                    self.cash -= current_premium * 100 * t.contracts  # buy back
-                    self.trades.append(t)
-                    continue
-
-                # Expiry
-                if dte <= 0:
-                    intrinsic = max(t.strike - S, 0)
-                    t.exit_date = date_str
-                    t.exit_premium = intrinsic
-                    t.pnl = (t.premium - intrinsic) * 100 * t.contracts
-                    t.reason = "expired_otm" if intrinsic == 0 else "expired_itm"
-                    self.cash -= intrinsic * 100 * t.contracts  # assignment cost
-                    self.trades.append(t)
-                    continue
-
-                still_open.append(t)
+                closed, closed_trade = self._manage_position(t, S, iv, date, date_str)
+                if closed:
+                    self.cash += closed_trade.pnl
+                    self.trades.append(closed_trade)
+                else:
+                    still_open.append(t)
             open_trades = still_open
 
-            # Entry: red day, RSI < 40, room for position
-            if row["RedDay"] and rsi < 40 and len(open_trades) < max_positions:
+            # Entry: adaptive signals
+            if self._should_enter(row, rsi) and len(open_trades) < max_positions:
                 target_dte = 35
                 expiry_date = (date + timedelta(days=target_dte)).strftime("%Y-%m-%d")
                 T = target_dte / 365.0
-                strike = find_strike_for_delta(S, T, self.r, iv, 0.25, "put")
+                target_delta = self._get_target_delta(row, default=0.25)
+                strike = find_strike_for_delta(S, T, self.r, iv, target_delta, "put")
 
                 # Margin: max(20% underlying - OTM, 10% strike) * 100 + premium
                 otm_amount = max(S - strike, 0)
                 margin_req = max(0.20 * S - otm_amount, 0.10 * strike) * 100
                 if margin_req > self.cash * 0.80:
+                    self.equity_curve.append(self.cash)
                     continue
 
-                premium = bs_put_price(S, strike, T, self.r, iv)
+                bsm_result = bsm_price(S, strike, T, self.r, iv, OptionType.PUT)
+                premium = bsm_result.price
                 if premium < 0.10:  # skip tiny premiums
+                    self.equity_curve.append(self.cash)
                     continue
 
                 trade = Trade(
@@ -238,6 +373,8 @@ class Backtester:
                     option_type="put",
                     premium=round(premium, 2),
                     contracts=1,
+                    entry_iv=round(iv, 4),
+                    entry_delta=round(abs(bsm_result.delta), 4),
                 )
                 self.cash += trade.net_credit()  # receive premium
                 open_trades.append(trade)
@@ -252,12 +389,12 @@ class Backtester:
                 iv = self.all_df["IV"].dropna().iloc[-1]
             dte = max((pd.Timestamp(t.expiry_date) - df.index[-1]).days, 0)
             T = max(dte / 365.0, 0.001)
-            current_premium = bs_put_price(S, t.strike, T, self.r, iv)
+            current_premium = bsm_price(S, t.strike, T, self.r, iv, OptionType.PUT).price
             t.exit_date = df.index[-1].strftime("%Y-%m-%d")
             t.exit_premium = round(current_premium, 2)
             t.pnl = round((t.premium - current_premium) * 100 * t.contracts, 2)
             t.reason = "end_of_backtest"
-            self.cash -= current_premium * 100 * t.contracts
+            self.cash += t.pnl
             self.trades.append(t)
 
     # ── Wheel ────────────────────────────────────────────────────────────
@@ -283,23 +420,21 @@ class Backtester:
                 dte = (expiry - date).days
                 T = max(dte / 365.0, 0.001)
 
-                if open_trade.option_type == "put":
-                    current = bs_put_price(S, open_trade.strike, T, self.r, iv)
-
-                    # 50% profit
-                    if current <= open_trade.premium * 0.50:
-                        open_trade.exit_date = date_str
-                        open_trade.exit_premium = round(current, 2)
-                        open_trade.pnl = round((open_trade.premium - current) * 100, 2)
-                        open_trade.reason = "profit_target"
-                        self.cash += open_trade.pnl
-                        self.trades.append(open_trade)
+                # Wheel has special assignment/called-away logic at expiry
+                # Use _manage_position for standard exits (profit target, stop loss,
+                # DTE exit, gamma exit, IV crush), but handle expiry ourselves
+                if dte > 0:
+                    # Check standard exits (non-expiry)
+                    closed, closed_trade = self._manage_position(open_trade, S, iv, date, date_str)
+                    if closed:
+                        self.cash += closed_trade.pnl
+                        self.trades.append(closed_trade)
                         open_trade = None
                         self.equity_curve.append(self.cash + shares * S)
                         continue
-
-                    # Expiry
-                    if dte <= 0:
+                else:
+                    # Expiry — wheel-specific assignment/called-away logic
+                    if open_trade.option_type == "put":
                         intrinsic = max(open_trade.strike - S, 0)
                         if intrinsic > 0:
                             # Assigned — buy 100 shares
@@ -321,29 +456,14 @@ class Backtester:
                             self.cash += open_trade.pnl
                             self.trades.append(open_trade)
                             open_trade = None
-                        self.equity_curve.append(self.cash + shares * S)
-                        continue
 
-                elif open_trade.option_type == "call":
-                    current = bs_call_price(S, open_trade.strike, T, self.r, iv)
-
-                    if current <= open_trade.premium * 0.50:
-                        open_trade.exit_date = date_str
-                        open_trade.exit_premium = round(current, 2)
-                        open_trade.pnl = round((open_trade.premium - current) * 100, 2)
-                        open_trade.reason = "profit_target"
-                        self.cash += open_trade.pnl
-                        self.trades.append(open_trade)
-                        open_trade = None
-                        self.equity_curve.append(self.cash + shares * S)
-                        continue
-
-                    if dte <= 0:
+                    elif open_trade.option_type == "call":
                         if S >= open_trade.strike:
                             # Called away
                             open_trade.exit_date = date_str
                             open_trade.pnl = round(
-                                (open_trade.strike - cost_basis + open_trade.premium) * 100, 2
+                                (open_trade.strike - cost_basis + open_trade.premium) * 100,
+                                2,
                             )
                             open_trade.reason = "called_away"
                             self.cash += open_trade.strike * 100 + open_trade.premium * 100
@@ -359,8 +479,9 @@ class Backtester:
                             self.cash += open_trade.pnl
                             self.trades.append(open_trade)
                             open_trade = None
-                        self.equity_curve.append(self.cash + shares * S)
-                        continue
+
+                    self.equity_curve.append(self.cash + shares * S)
+                    continue
 
                 # Not expired yet, continue
                 self.equity_curve.append(self.cash + shares * S)
@@ -377,9 +498,11 @@ class Backtester:
                 target_dte = 35
                 T = target_dte / 365.0
                 expiry_date = (date + timedelta(days=target_dte)).strftime("%Y-%m-%d")
-                strike = find_strike_for_delta(S, T, self.r, iv, 0.25, "put")
+                target_delta = self._get_target_delta(row, default=0.25)
+                strike = find_strike_for_delta(S, T, self.r, iv, target_delta, "put")
                 strike = min(strike, affordable_strike)
-                premium = bs_put_price(S, strike, T, self.r, iv)
+                bsm_result = bsm_price(S, strike, T, self.r, iv, OptionType.PUT)
+                premium = bsm_result.price
                 if premium < 0.10:
                     self.equity_curve.append(self.cash + shares * S)
                     continue
@@ -391,6 +514,8 @@ class Backtester:
                     strike=round(strike, 2),
                     option_type="put",
                     premium=round(premium, 2),
+                    entry_iv=round(iv, 4),
+                    entry_delta=round(abs(bsm_result.delta), 4),
                 )
                 self.cash += open_trade.net_credit()
 
@@ -399,9 +524,11 @@ class Backtester:
                 T = target_dte / 365.0
                 expiry_date = (date + timedelta(days=target_dte)).strftime("%Y-%m-%d")
                 # Sell call above cost basis
-                strike = find_strike_for_delta(S, T, self.r, iv, 0.30, "call")
+                target_delta = self._get_target_delta(row, default=0.30)
+                strike = find_strike_for_delta(S, T, self.r, iv, target_delta, "call")
                 strike = max(strike, cost_basis * 1.02)  # at least break even
-                premium = bs_call_price(S, strike, T, self.r, iv)
+                bsm_result = bsm_price(S, strike, T, self.r, iv, OptionType.CALL)
+                premium = bsm_result.price
                 if premium < 0.05:
                     self.equity_curve.append(self.cash + shares * S)
                     continue
@@ -413,6 +540,8 @@ class Backtester:
                     strike=round(strike, 2),
                     option_type="call",
                     premium=round(premium, 2),
+                    entry_iv=round(iv, 4),
+                    entry_delta=round(bsm_result.delta, 4),
                 )
                 self.cash += open_trade.net_credit()
 
@@ -427,9 +556,9 @@ class Backtester:
             dte = max((pd.Timestamp(open_trade.expiry_date) - df.index[-1]).days, 0)
             T = max(dte / 365.0, 0.001)
             if open_trade.option_type == "put":
-                current = bs_put_price(S, open_trade.strike, T, self.r, iv)
+                current = bsm_price(S, open_trade.strike, T, self.r, iv, OptionType.PUT).price
             else:
-                current = bs_call_price(S, open_trade.strike, T, self.r, iv)
+                current = bsm_price(S, open_trade.strike, T, self.r, iv, OptionType.CALL).price
             open_trade.exit_date = df.index[-1].strftime("%Y-%m-%d")
             open_trade.exit_premium = round(current, 2)
             open_trade.pnl = round((open_trade.premium - current) * 100, 2)
@@ -459,68 +588,51 @@ class Backtester:
             # Manage existing
             still_open = []
             for t in open_trades:
-                expiry = pd.Timestamp(t.expiry_date)
-                dte = (expiry - date).days
-                T = max(dte / 365.0, 0.001)
-
-                short_val = bs_put_price(S, t.strike, T, self.r, iv)
-                long_val = bs_put_price(S, t.long_strike, T, self.r, iv)
-                spread_val = short_val - long_val
-                initial_credit = t.premium - (t.long_premium or 0)
-
-                if spread_val <= initial_credit * 0.50:
-                    t.exit_date = date_str
-                    t.exit_premium = round(spread_val, 2)
-                    t.pnl = round((initial_credit - spread_val) * 100 * t.contracts, 2)
-                    t.reason = "profit_target_50pct"
-                    self.cash += t.pnl
-                    self.trades.append(t)
-                    continue
-
-                # Max loss = spread width - credit
-                max_loss = spread_width - initial_credit
-                if spread_val >= initial_credit + max_loss * 0.75:
-                    t.exit_date = date_str
-                    t.exit_premium = round(spread_val, 2)
-                    t.pnl = round((initial_credit - spread_val) * 100 * t.contracts, 2)
-                    t.reason = "stop_loss"
-                    self.cash += t.pnl
-                    self.trades.append(t)
-                    continue
-
-                if dte <= 0:
-                    short_itm = max(t.strike - S, 0)
-                    long_itm = max(t.long_strike - S, 0)
-                    net = short_itm - long_itm
-                    t.exit_date = date_str
-                    t.pnl = round((initial_credit - net) * 100 * t.contracts, 2)
-                    t.reason = "expired"
-                    self.cash += t.pnl
-                    self.trades.append(t)
-                    continue
-
-                still_open.append(t)
+                closed, closed_trade = self._manage_position(t, S, iv, date, date_str)
+                if closed:
+                    self.cash += closed_trade.pnl
+                    self.trades.append(closed_trade)
+                else:
+                    still_open.append(t)
             open_trades = still_open
 
-            # Entry
-            if row["RedDay"] and rsi < 45 and len(open_trades) < max_positions:
+            # Entry: adaptive signals (use base threshold of 45 for spreads)
+            iv_pctile = row.get("IV_Pctile", 50)
+            if np.isnan(iv_pctile):
+                iv_pctile = 50
+            rsi_thresh = 45.0
+            if self.config.rsi_relax_in_high_iv and iv_pctile >= 75:
+                rsi_thresh = 55.0
+
+            can_enter = row["RedDay"] and rsi < rsi_thresh
+            if self.config.use_regime_filter and row.get("regime") == 2:
+                can_enter = False
+            if self.config.use_iv_term_filter and not row.get("iv_contango", True):
+                can_enter = False
+
+            if can_enter and len(open_trades) < max_positions:
                 target_dte = 35
                 T = target_dte / 365.0
                 expiry_date = (date + timedelta(days=target_dte)).strftime("%Y-%m-%d")
 
-                short_strike = find_strike_for_delta(S, T, self.r, iv, 0.25, "put")
+                target_delta = self._get_target_delta(row, default=0.25)
+                short_strike = find_strike_for_delta(S, T, self.r, iv, target_delta, "put")
                 long_strike = short_strike - spread_width
 
-                short_prem = bs_put_price(S, short_strike, T, self.r, iv)
-                long_prem = bs_put_price(S, long_strike, T, self.r, iv)
+                short_result = bsm_price(S, short_strike, T, self.r, iv, OptionType.PUT)
+                long_result = bsm_price(S, long_strike, T, self.r, iv, OptionType.PUT)
+                short_prem = short_result.price
+                long_prem = long_result.price
                 net_credit = short_prem - long_prem
 
                 if net_credit < 0.15:
+                    self.equity_curve.append(self.cash)
                     continue
 
                 # Max risk per spread
                 max_risk = (spread_width - net_credit) * 100
                 if max_risk > self.cash * 0.15:
+                    self.equity_curve.append(self.cash)
                     continue
 
                 trade = Trade(
@@ -532,6 +644,8 @@ class Backtester:
                     premium=round(short_prem, 2),
                     long_strike=round(long_strike, 2),
                     long_premium=round(long_prem, 2),
+                    entry_iv=round(iv, 4),
+                    entry_delta=round(abs(short_result.delta), 4),
                 )
                 self.cash += trade.net_credit()
                 open_trades.append(trade)
@@ -547,8 +661,8 @@ class Backtester:
             initial_credit = t.premium - (t.long_premium or 0)
             dte = max((pd.Timestamp(t.expiry_date) - df.index[-1]).days, 0)
             T = max(dte / 365.0, 0.001)
-            short_val = bs_put_price(S, t.strike, T, self.r, iv)
-            long_val = bs_put_price(S, t.long_strike, T, self.r, iv)
+            short_val = bsm_price(S, t.strike, T, self.r, iv, OptionType.PUT).price
+            long_val = bsm_price(S, t.long_strike, T, self.r, iv, OptionType.PUT).price
             spread_val = short_val - long_val
             t.exit_date = df.index[-1].strftime("%Y-%m-%d")
             t.exit_premium = round(spread_val, 2)
@@ -603,6 +717,12 @@ class Backtester:
         else:
             sharpe = 0.0
 
+        # Exit reason breakdown
+        exit_reasons: dict[str, int] = {}
+        for t in trades:
+            r = t.reason or "unknown"
+            exit_reasons[r] = exit_reasons.get(r, 0) + 1
+
         result = {
             "strategy": strategy,
             "symbol": self.symbol,
@@ -620,6 +740,7 @@ class Backtester:
             "max_drawdown_pct": round(max_dd * 100, 2),
             "sharpe_ratio": round(sharpe, 2),
             "avg_days_in_trade": round(np.mean(days_in_trade), 1) if days_in_trade else 0,
+            "exit_reasons": exit_reasons,
             "trades": [t.to_dict() for t in trades],
         }
         return result
@@ -652,6 +773,20 @@ def print_summary(result: dict):
         f"{result['avg_days_in_trade']:.0f}",
     )
     c.print(t)
+
+    # Exit reasons breakdown
+    exit_reasons = result.get("exit_reasons", {})
+    if exit_reasons:
+        c.print("\n[bold]Exit Reasons:[/]")
+        er_table = Table(show_header=True, header_style="dim")
+        er_table.add_column("Reason")
+        er_table.add_column("Count", justify="right")
+        er_table.add_column("Pct", justify="right")
+        total = sum(exit_reasons.values())
+        for reason, count in sorted(exit_reasons.items(), key=lambda x: -x[1]):
+            pct = count / total * 100 if total else 0
+            er_table.add_row(reason, str(count), f"{pct:.0f}%")
+        c.print(er_table)
 
     # Trade log
     c.print(f"\n[bold]Trade Log ({len(result['trades'])} trades):[/]")

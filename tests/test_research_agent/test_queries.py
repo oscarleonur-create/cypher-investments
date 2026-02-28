@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from research_agent.models import InputMode, ResearchInput
-from research_agent.queries import step1_queries, step3_queries, subject_label
+from research_agent.queries import step1_queries, step3_queries, step3_sec_queries, subject_label
 
 EXPECTED_STEP3_KEYS = {
     "earnings",
@@ -53,6 +53,33 @@ class TestStep3Queries:
         cats = step3_queries(inp)
         assert set(cats.keys()) == EXPECTED_STEP3_KEYS
         assert all("EV battery demand" in v for v in cats.values())
+
+
+EXPECTED_SEC_KEYS = {
+    "earnings_sec",
+    "balance_sheet_sec",
+    "guidance_sec",
+    "valuation_sec",
+}
+
+
+class TestStep3SecQueries:
+    def test_ticker_mode_returns_four_sec_queries(self):
+        inp = ResearchInput(mode=InputMode.TICKER, value="AAPL")
+        cats = step3_sec_queries(inp)
+        assert set(cats.keys()) == EXPECTED_SEC_KEYS
+        assert all("AAPL" in v for v in cats.values())
+        assert any("10-Q" in v for v in cats.values())
+        assert any("10-K" in v for v in cats.values())
+        assert any("8-K" in v for v in cats.values())
+
+    def test_sector_mode_returns_empty(self):
+        inp = ResearchInput(mode=InputMode.SECTOR, value="Technology")
+        assert step3_sec_queries(inp) == {}
+
+    def test_thesis_mode_returns_empty(self):
+        inp = ResearchInput(mode=InputMode.THESIS, value="AI infrastructure spending")
+        assert step3_sec_queries(inp) == {}
 
 
 class TestSubjectLabel:

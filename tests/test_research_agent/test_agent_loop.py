@@ -29,7 +29,7 @@ from research_agent.search import SearchResult
 def _make_config(**overrides) -> ResearchConfig:
     defaults = dict(
         _env_file=None,
-        tavily_api_key="test",
+        perplexity_api_key="test",
         anthropic_api_key="test",
         max_iterations=4,
         min_evidence_items=2,  # Low threshold for testing

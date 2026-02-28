@@ -1,6 +1,6 @@
 """Sentiment agent — scores recent news sentiment via research agent infrastructure.
 
-Uses the same TavilyClient → SourceRegistry → ClaudeLLM pipeline as the
+Uses the same PerplexityClient → SourceRegistry → ClaudeLLM pipeline as the
 research agent, with a sentiment-scoring prompt and structured output.
 """
 
@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from research_agent.config import ResearchConfig
 from research_agent.evidence import SourceRegistry
 from research_agent.llm import ClaudeLLM
-from research_agent.search import SearchResult, TavilyClient
+from research_agent.search import PerplexityClient, SearchResult
 from research_agent.store import Store
 
 from advisor.confluence.models import SentimentResult, SourceInfo
@@ -70,13 +70,13 @@ def check_sentiment(symbol: str) -> SentimentResult:
     """Search for recent news and score sentiment using Claude.
 
     Wires up the research agent pipeline:
-      Store → TavilyClient (search + cache) → SourceRegistry (citations) → ClaudeLLM
+      Store → PerplexityClient (search + cache) → SourceRegistry (citations) → ClaudeLLM
 
     Returns SentimentResult with score, positive percentage, headlines, and sources.
     """
     config = ResearchConfig()
     store = Store(config.db_path)
-    search = TavilyClient(config, store)
+    search = PerplexityClient(config, store)
     llm = ClaudeLLM(config)
     registry = SourceRegistry()
 

@@ -5,14 +5,14 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from research_agent.config import ResearchConfig
-from research_agent.search import TavilyClient
+from research_agent.search import PerplexityClient, SearchOptions
 from research_agent.store import Store
 
 
 def _make_config(**overrides) -> ResearchConfig:
     defaults = dict(
         _env_file=None,
-        tavily_api_key="test-key",
+        perplexity_api_key="test-key",
         anthropic_api_key="test-key",
         curated_first=False,
         allow_fallback_web=True,
@@ -21,31 +21,42 @@ def _make_config(**overrides) -> ResearchConfig:
     return ResearchConfig(**defaults)
 
 
-def _mock_tavily_response(results=None):
-    """Create a mock Tavily API response."""
+def _mock_perplexity_response(results=None):
+    """Create a mock Perplexity Sonar API response."""
     if results is None:
         results = [
             {
                 "url": "https://reuters.com/article/1",
                 "title": "Test Article",
-                "content": "Test content about stock",
+                "snippet": "Test content about stock",
                 "score": 0.95,
             }
         ]
-    return {"results": results}
+    return {
+        "search_results": results,
+        "citations": [r["url"] for r in results],
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "Synthesized answer from Perplexity",
+                }
+            }
+        ],
+    }
 
 
-class TestTavilyClient:
+class TestPerplexityClient:
     def test_search_with_cache_hit(self, tmp_path):
         """Cached results are returned without API call."""
         config = _make_config()
         store = Store(tmp_path / "test.db")
         try:
             # Pre-populate cache
-            cached_data = _mock_tavily_response()
+            cached_data = _mock_perplexity_response()
             store.cache_search("AAPL stock", cached_data)
 
-            client = TavilyClient(config, store)
+            client = PerplexityClient(config, store)
             results = client.search("AAPL stock")
 
             assert len(results) == 1
@@ -56,16 +67,16 @@ class TestTavilyClient:
 
     @patch("research_agent.search.httpx.post")
     def test_search_calls_api(self, mock_post, tmp_path):
-        """When no cache, search calls the Tavily API."""
+        """When no cache, search calls the Perplexity API."""
         config = _make_config()
         store = Store(tmp_path / "test.db")
         try:
             mock_resp = MagicMock()
-            mock_resp.json.return_value = _mock_tavily_response()
+            mock_resp.json.return_value = _mock_perplexity_response()
             mock_resp.raise_for_status = MagicMock()
             mock_post.return_value = mock_resp
 
-            client = TavilyClient(config, store)
+            client = PerplexityClient(config, store)
             results = client.search("AAPL earnings")
 
             assert len(results) == 1
@@ -80,11 +91,11 @@ class TestTavilyClient:
         store = Store(tmp_path / "test.db")
         try:
             mock_resp = MagicMock()
-            mock_resp.json.return_value = _mock_tavily_response()
+            mock_resp.json.return_value = _mock_perplexity_response()
             mock_resp.raise_for_status = MagicMock()
             mock_post.return_value = mock_resp
 
-            client = TavilyClient(config, store)
+            client = PerplexityClient(config, store)
             client.search("AAPL earnings")
 
             # Second call should use cache
@@ -100,17 +111,17 @@ class TestTavilyClient:
         store = Store(tmp_path / "test.db")
         try:
             mock_resp = MagicMock()
-            mock_resp.json.return_value = _mock_tavily_response()
+            mock_resp.json.return_value = _mock_perplexity_response()
             mock_resp.raise_for_status = MagicMock()
             mock_post.return_value = mock_resp
 
-            client = TavilyClient(config, store)
+            client = PerplexityClient(config, store)
             client.search("AAPL stock")
 
-            # Should have been called with include_domains
+            # Should have been called with search_domain_filter
             call_args = mock_post.call_args
             payload = call_args.kwargs.get("json") or call_args[1].get("json")
-            assert "include_domains" in payload
+            assert "search_domain_filter" in payload
         finally:
             store.close()
 
@@ -120,7 +131,7 @@ class TestTavilyClient:
         config = _make_config(offline_mode=True)
         store = Store(tmp_path / "test.db")
         try:
-            client = TavilyClient(config, store)
+            client = PerplexityClient(config, store)
             results = client.search("AAPL earnings")
 
             assert results == []
@@ -133,10 +144,10 @@ class TestTavilyClient:
         config = _make_config(offline_mode=True)
         store = Store(tmp_path / "test.db")
         try:
-            cached_data = _mock_tavily_response()
+            cached_data = _mock_perplexity_response()
             store.cache_search("AAPL stock", cached_data)
 
-            client = TavilyClient(config, store)
+            client = PerplexityClient(config, store)
             results = client.search("AAPL stock")
 
             assert len(results) == 1
@@ -145,17 +156,202 @@ class TestTavilyClient:
             store.close()
 
     def test_parse_results_empty(self):
-        results = TavilyClient._parse_results({"results": []})
+        results = PerplexityClient._parse_results({"search_results": []})
         assert results == []
 
     def test_parse_results_filters_empty_urls(self):
-        results = TavilyClient._parse_results(
+        results = PerplexityClient._parse_results(
             {
-                "results": [
-                    {"url": "", "title": "No URL", "content": "test"},
-                    {"url": "https://example.com", "title": "Has URL", "content": "test"},
+                "search_results": [
+                    {"url": "", "title": "No URL", "snippet": "test"},
+                    {"url": "https://example.com", "title": "Has URL", "snippet": "test"},
                 ]
             }
         )
         assert len(results) == 1
         assert results[0].url == "https://example.com"
+
+    @patch("research_agent.search.httpx.post")
+    def test_api_sends_auth_header(self, mock_post, tmp_path):
+        """API calls include Bearer token authorization header."""
+        config = _make_config(perplexity_api_key="pplx-test-key")
+        store = Store(tmp_path / "test.db")
+        try:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = _mock_perplexity_response()
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
+
+            client = PerplexityClient(config, store)
+            client.search("AAPL stock")
+
+            call_args = mock_post.call_args
+            headers = call_args.kwargs.get("headers") or call_args[1].get("headers")
+            assert headers["Authorization"] == "Bearer pplx-test-key"
+        finally:
+            store.close()
+
+    @patch("research_agent.search.httpx.post")
+    def test_search_with_sec_mode(self, mock_post, tmp_path):
+        """Passing search_mode='sec' adds it to API payload."""
+        config = _make_config()
+        store = Store(tmp_path / "test.db")
+        try:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = _mock_perplexity_response()
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
+
+            client = PerplexityClient(config, store)
+            options = SearchOptions(search_mode="sec")
+            client.search("AAPL 10-K", options=options)
+
+            payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+            assert payload["search_mode"] == "sec"
+        finally:
+            store.close()
+
+    @patch("research_agent.search.httpx.post")
+    def test_search_sec_convenience(self, mock_post, tmp_path):
+        """search_sec() convenience method sends search_mode='sec'."""
+        config = _make_config()
+        store = Store(tmp_path / "test.db")
+        try:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = _mock_perplexity_response()
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
+
+            client = PerplexityClient(config, store)
+            client.search_sec("AAPL 10-K revenue")
+
+            payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+            assert payload["search_mode"] == "sec"
+        finally:
+            store.close()
+
+    @patch("research_agent.search.httpx.post")
+    def test_search_with_date_filter(self, mock_post, tmp_path):
+        """search_after_date_filter is included in API payload."""
+        config = _make_config()
+        store = Store(tmp_path / "test.db")
+        try:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = _mock_perplexity_response()
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
+
+            client = PerplexityClient(config, store)
+            options = SearchOptions(search_after_date_filter="1/1/2024")
+            client.search("AAPL earnings", options=options)
+
+            payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+            assert payload["search_after_date_filter"] == "1/1/2024"
+        finally:
+            store.close()
+
+    @patch("research_agent.search.httpx.post")
+    def test_sec_mode_skips_domain_filter(self, mock_post, tmp_path):
+        """When search_mode is set, search_domain_filter is not sent."""
+        config = _make_config(curated_first=True)
+        store = Store(tmp_path / "test.db")
+        try:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = _mock_perplexity_response()
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
+
+            client = PerplexityClient(config, store)
+            options = SearchOptions(search_mode="sec")
+            client.search("AAPL 10-K", options=options)
+
+            payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+            assert "search_domain_filter" not in payload
+            assert payload["search_mode"] == "sec"
+        finally:
+            store.close()
+
+    @patch("research_agent.search.httpx.post")
+    def test_cache_key_differs_by_mode(self, mock_post, tmp_path):
+        """Same query with different search_mode produces separate cache entries."""
+        config = _make_config()
+        store = Store(tmp_path / "test.db")
+        try:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = _mock_perplexity_response()
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
+
+            client = PerplexityClient(config, store)
+
+            # First call: web search
+            client.search("AAPL earnings")
+            # Second call: SEC search
+            client.search("AAPL earnings", options=SearchOptions(search_mode="sec"))
+
+            # Both should hit the API (different cache keys)
+            assert mock_post.call_count == 2
+        finally:
+            store.close()
+
+    @patch("research_agent.search.httpx.post")
+    def test_options_none_preserves_behavior(self, mock_post, tmp_path):
+        """Passing options=None produces same payload as before (no search_mode)."""
+        config = _make_config()
+        store = Store(tmp_path / "test.db")
+        try:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = _mock_perplexity_response()
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
+
+            client = PerplexityClient(config, store)
+            client.search("AAPL earnings")
+
+            payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+            assert "search_mode" not in payload
+            assert "search_after_date_filter" not in payload
+            assert payload["search_recency_filter"] == "month"
+        finally:
+            store.close()
+
+    @patch("research_agent.search.httpx.post")
+    def test_recency_filter_from_config(self, mock_post, tmp_path):
+        """search_recency_filter is read from config instead of hardcoded."""
+        config = _make_config(search_recency_filter="week")
+        store = Store(tmp_path / "test.db")
+        try:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = _mock_perplexity_response()
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
+
+            client = PerplexityClient(config, store)
+            client.search("AAPL earnings")
+
+            payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+            assert payload["search_recency_filter"] == "week"
+        finally:
+            store.close()
+
+    @patch("research_agent.search.httpx.post")
+    def test_sec_mode_skips_curated_first(self, mock_post, tmp_path):
+        """With curated_first=True and search_mode='sec', curated-first is bypassed."""
+        config = _make_config(curated_first=True)
+        store = Store(tmp_path / "test.db")
+        try:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = _mock_perplexity_response()
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
+
+            client = PerplexityClient(config, store)
+            options = SearchOptions(search_mode="sec")
+            client.search("AAPL 10-K", options=options)
+
+            # Should only call API once (no curated-first attempt)
+            assert mock_post.call_count == 1
+            payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+            assert payload["search_mode"] == "sec"
+        finally:
+            store.close()

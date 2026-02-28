@@ -12,7 +12,7 @@ def _make_config(**overrides):
 
     defaults = dict(
         _env_file=None,
-        tavily_api_key="test",
+        perplexity_api_key="test",
         anthropic_api_key="test",
         max_iterations=4,
         min_evidence_items=2,
@@ -24,9 +24,9 @@ def _make_config(**overrides):
 class TestPipeline:
     @patch("research_agent.pipeline.run_loop")
     @patch("research_agent.pipeline.ClaudeLLM")
-    @patch("research_agent.pipeline.TavilyClient")
+    @patch("research_agent.pipeline.PerplexityClient")
     @patch("research_agent.pipeline.Store")
-    def test_ticker_mode_calls_run_loop(self, MockStore, MockTavily, MockLLM, mock_run_loop):
+    def test_ticker_mode_calls_run_loop(self, MockStore, MockPerplexity, MockLLM, mock_run_loop):
         """Ticker mode initializes clients and calls run_loop."""
         from research_agent.models import OpportunityCard
         from research_agent.pipeline import run
@@ -47,9 +47,9 @@ class TestPipeline:
 
     @patch("research_agent.pipeline.run_loop")
     @patch("research_agent.pipeline.ClaudeLLM")
-    @patch("research_agent.pipeline.TavilyClient")
+    @patch("research_agent.pipeline.PerplexityClient")
     @patch("research_agent.pipeline.Store")
-    def test_sector_mode_calls_run_loop(self, MockStore, MockTavily, MockLLM, mock_run_loop):
+    def test_sector_mode_calls_run_loop(self, MockStore, MockPerplexity, MockLLM, mock_run_loop):
         """Sector mode initializes clients and calls run_loop."""
         from research_agent.models import OpportunityCard
         from research_agent.pipeline import run
@@ -70,9 +70,9 @@ class TestPipeline:
 
     @patch("research_agent.pipeline.run_loop")
     @patch("research_agent.pipeline.ClaudeLLM")
-    @patch("research_agent.pipeline.TavilyClient")
+    @patch("research_agent.pipeline.PerplexityClient")
     @patch("research_agent.pipeline.Store")
-    def test_thesis_mode_calls_run_loop(self, MockStore, MockTavily, MockLLM, mock_run_loop):
+    def test_thesis_mode_calls_run_loop(self, MockStore, MockPerplexity, MockLLM, mock_run_loop):
         """Thesis mode initializes clients and calls run_loop."""
         from research_agent.models import OpportunityCard
         from research_agent.pipeline import run

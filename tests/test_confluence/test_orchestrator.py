@@ -98,7 +98,7 @@ class TestRunConfluence:
         mock_sent.return_value = _sent(True)
         mock_fund.return_value = _fund(False)
 
-        result = run_confluence("AAPL")
+        result = run_confluence("AAPL", include_ml=False)
 
         assert result.verdict == ConfluenceVerdict.CAUTION
         assert result.suggested_hold_days == 3
@@ -113,7 +113,7 @@ class TestRunConfluence:
         mock_sent.return_value = _sent(False)
         mock_fund.return_value = _fund(True)
 
-        result = run_confluence("AAPL")
+        result = run_confluence("AAPL", include_ml=False)
 
         assert result.verdict == ConfluenceVerdict.CAUTION
         assert "sentiment below 70%" in result.reasoning
@@ -156,7 +156,7 @@ class TestRunConfluence:
         mock_sent.return_value = _sent(False)
         mock_fund.return_value = _fund(True, insider=True)
 
-        result = run_confluence("AAPL")
+        result = run_confluence("AAPL", include_ml=False)
 
         assert result.verdict == ConfluenceVerdict.CAUTION
         assert "Insider buying" in result.reasoning
@@ -304,7 +304,7 @@ class TestRunConfluence:
             ),
         )
 
-        result = run_confluence("AAPL", strategy_name="pead", force_all=True)
+        result = run_confluence("AAPL", strategy_name="pead", force_all=True, include_ml=False)
 
         assert result.verdict == ConfluenceVerdict.CAUTION
         assert "contrarian" in result.reasoning.lower()
