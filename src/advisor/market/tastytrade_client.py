@@ -1,12 +1,15 @@
 """TastyTrade API client for live options trading."""
 
+import asyncio
 import json
+import logging
 import os
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
 from tastytrade import Account, Session
+from tastytrade.dxfeed import Greeks, Quote
 from tastytrade.order import (
     InstrumentType,
     Leg,
@@ -16,6 +19,7 @@ from tastytrade.order import (
     OrderType,
     PriceEffect,
 )
+from tastytrade.streamer import DXLinkStreamer
 
 # Load env from project root .env
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -219,3 +223,161 @@ async def close_position(session, symbol: str, quantity: int, premium: float, dr
         price_effect=PriceEffect.DEBIT,
     )
     return await place_order(session, order, dry_run=dry_run)
+
+
+# ── Streamer-based quote & greeks functions ────────────────────────────────
+
+logger = logging.getLogger(__name__)
+
+
+async def get_option_quotes(
+    session, streamer_symbols: list[str], timeout: float = 5.0
+) -> dict[str, dict]:
+    """Subscribe to Quote events via DXLinkStreamer.
+
+    Returns {symbol: {bid, ask, mid, bid_size, ask_size}} per symbol.
+    """
+    results = {}
+    pending = set(streamer_symbols)
+
+    async with DXLinkStreamer(session) as streamer:
+        await streamer.subscribe(Quote, streamer_symbols)
+
+        deadline = asyncio.get_event_loop().time() + timeout
+        while pending and asyncio.get_event_loop().time() < deadline:
+            try:
+                quote = await asyncio.wait_for(
+                    streamer.get_event(Quote),
+                    timeout=max(0.1, deadline - asyncio.get_event_loop().time()),
+                )
+                sym = quote.event_symbol
+                bid = float(quote.bid_price or 0)
+                ask = float(quote.ask_price or 0)
+                results[sym] = {
+                    "bid": bid,
+                    "ask": ask,
+                    "mid": round((bid + ask) / 2, 4) if (bid + ask) > 0 else 0,
+                    "bid_size": int(quote.bid_size or 0),
+                    "ask_size": int(quote.ask_size or 0),
+                }
+                pending.discard(sym)
+            except asyncio.TimeoutError:
+                break
+
+    return results
+
+
+async def get_option_greeks(
+    session, streamer_symbols: list[str], timeout: float = 5.0
+) -> dict[str, dict]:
+    """Subscribe to Greeks events via DXLinkStreamer.
+
+    Returns {symbol: {delta, gamma, theta, vega, iv}} per symbol.
+    """
+    results = {}
+    pending = set(streamer_symbols)
+
+    async with DXLinkStreamer(session) as streamer:
+        await streamer.subscribe(Greeks, streamer_symbols)
+
+        deadline = asyncio.get_event_loop().time() + timeout
+        while pending and asyncio.get_event_loop().time() < deadline:
+            try:
+                greeks = await asyncio.wait_for(
+                    streamer.get_event(Greeks),
+                    timeout=max(0.1, deadline - asyncio.get_event_loop().time()),
+                )
+                sym = greeks.event_symbol
+                results[sym] = {
+                    "delta": float(greeks.delta or 0),
+                    "gamma": float(greeks.gamma or 0),
+                    "theta": float(greeks.theta or 0),
+                    "vega": float(greeks.vega or 0),
+                    "iv": float(greeks.volatility or 0),
+                }
+                pending.discard(sym)
+            except asyncio.TimeoutError:
+                break
+
+    return results
+
+
+async def get_enriched_chain(
+    session, symbol: str, min_dte: int = 25, max_dte: int = 45
+) -> list[dict]:
+    """Fetch full enriched chain: skeleton + quotes + greeks merged.
+
+    Each record contains: symbol, expiration, dte, strike, put_symbol,
+    bid, ask, mid, delta, gamma, theta, vega, iv, underlying_price.
+    """
+    # Get skeleton chain
+    chain = await get_option_chain(session, symbol, min_dte, max_dte)
+    if not chain:
+        return []
+
+    # Get underlying price via streamer Quote for the equity symbol
+    underlying_price = 0.0
+    try:
+        async with DXLinkStreamer(session) as eq_streamer:
+            await eq_streamer.subscribe(Quote, [symbol])
+            eq_quote = await asyncio.wait_for(eq_streamer.get_event(Quote), timeout=3.0)
+            bid = float(eq_quote.bid_price or 0)
+            ask = float(eq_quote.ask_price or 0)
+            underlying_price = round((bid + ask) / 2, 2) if (bid + ask) > 0 else 0.0
+    except Exception:
+        pass
+
+    # Fallback to yfinance if streamer failed
+    if underlying_price <= 0:
+        try:
+            import yfinance as yf
+
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period="1d")
+            if not hist.empty:
+                underlying_price = float(hist["Close"].iloc[-1])
+        except Exception:
+            underlying_price = 0.0
+
+    # Extract put streamer symbols
+    put_streamers = [r["put_streamer"] for r in chain if r.get("put_streamer")]
+    if not put_streamers:
+        return []
+
+    # Fetch quotes and greeks in parallel
+    quotes, greeks = await asyncio.gather(
+        get_option_quotes(session, put_streamers),
+        get_option_greeks(session, put_streamers),
+    )
+
+    # Merge into enriched records
+    enriched = []
+    for rec in chain:
+        streamer = rec.get("put_streamer", "")
+        if not streamer:
+            continue
+
+        q = quotes.get(streamer, {})
+        g = greeks.get(streamer, {})
+
+        enriched.append(
+            {
+                "symbol": symbol,
+                "expiration": rec["expiration"],
+                "dte": rec["dte"],
+                "strike": rec["strike"],
+                "put_symbol": rec.get("put_symbol", ""),
+                "put_streamer": streamer,
+                "bid": q.get("bid", 0),
+                "ask": q.get("ask", 0),
+                "mid": q.get("mid", 0),
+                "delta": g.get("delta", 0),
+                "gamma": g.get("gamma", 0),
+                "theta": g.get("theta", 0),
+                "vega": g.get("vega", 0),
+                "iv": g.get("iv", 0.30),
+                "underlying_price": underlying_price,
+            }
+        )
+
+    return enriched

@@ -13,6 +13,7 @@ from advisor.cli.market_cmds import app as market_app
 from advisor.cli.ml_cmds import app as ml_app
 from advisor.cli.options_cmds import app as options_app
 from advisor.cli.signal_cmds import app as signal_app
+from advisor.cli.simulator_cmds import app as simulator_app
 from advisor.cli.strategy_cmds import app as strategy_app
 
 app = typer.Typer(
@@ -28,6 +29,7 @@ app.add_typer(signal_app, name="signal")
 app.add_typer(confluence_app, name="confluence")
 app.add_typer(market_app, name="market")
 app.add_typer(options_app, name="options")
+app.add_typer(simulator_app, name="simulator")
 app.add_typer(ml_app, name="ml")
 
 
