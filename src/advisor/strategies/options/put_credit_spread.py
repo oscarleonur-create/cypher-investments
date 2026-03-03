@@ -1,6 +1,7 @@
-"""Put credit spread strategy — thin adapter over the BS backtester.
+"""Put credit spread strategy — BS backtester + Monte Carlo simulator.
 
-DEPRECATED: See advisor.backtesting.options_backtester.Backtester.
+Supports both the legacy Black-Scholes backtester and the new Monte Carlo
+simulator with real TastyTrade market data (--monte-carlo flag).
 """
 
 from __future__ import annotations
@@ -17,9 +18,10 @@ class PutCreditSpread(StrategyBase):
     strategy_name: ClassVar[str] = "put_credit_spread"
     strategy_type: ClassVar[StrategyType] = StrategyType.OPTIONS
     description: ClassVar[str] = (
-        "Sell put credit spreads on oversold stocks. Uses Black-Scholes backtester."
+        "Sell put credit spreads on oversold stocks. "
+        "Supports BS backtester and Monte Carlo simulator with real market data."
     )
-    version: ClassVar[str] = "2.0.0"
+    version: ClassVar[str] = "3.0.0"
     params: ClassVar[tuple] = ()
 
     def __init__(self):

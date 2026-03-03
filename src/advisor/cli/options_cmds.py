@@ -257,6 +257,352 @@ def scan(
     )
 
 
+# ── Simulate command ──────────────────────────────────────────────────────
+
+
+@app.command("simulate")
+def simulate(
+    account_size: float = typer.Option(5000.0, "--account-size", "-a", help="Account size in USD"),
+    universe: str = typer.Option(
+        "wheel", "--universe", "-u", help="Ticker universe: leveraged, wheel, blue_chip"
+    ),
+    tickers: Optional[str] = typer.Option(
+        None, "--tickers", "-t", help="Comma-separated tickers (overrides universe)"
+    ),
+    paths: int = typer.Option(10_000, "--paths", "-p", help="MC paths for quick sim"),
+    deep_paths: int = typer.Option(100_000, "--deep-paths", help="MC paths for deep sim"),
+    top: int = typer.Option(5, "--top", help="Number of top results to show"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output format: json"),
+):
+    """Monte Carlo PCS simulator — rank put credit spreads by risk-adjusted EV."""
+    from advisor.market.options_scanner import UNIVERSES
+    from advisor.simulator.db import SimulatorStore
+    from advisor.simulator.models import SimConfig
+    from advisor.simulator.pipeline import SimulatorPipeline
+
+    if tickers:
+        ticker_list = [t.strip().upper() for t in tickers.split(",")]
+    else:
+        ticker_list = UNIVERSES.get(universe, UNIVERSES["wheel"])
+
+    is_json = output == "json"
+
+    config = SimConfig(
+        n_paths=paths,
+        max_buying_power=account_size,
+    )
+
+    store = SimulatorStore()
+
+    def _progress(msg: str):
+        if not is_json:
+            console.print(f"[dim]{msg}[/dim]")
+
+    try:
+        pipeline = SimulatorPipeline(
+            config=config,
+            store=store,
+            progress_callback=_progress,
+        )
+        result = pipeline.run(
+            symbols=ticker_list,
+            top_n=top,
+            quick_paths=paths,
+            deep_paths=deep_paths,
+        )
+    except Exception as e:
+        console.print(f"[red]Simulation failed: {e}[/red]")
+        raise typer.Exit(1)
+    finally:
+        store.close()
+
+    if is_json:
+        from advisor.cli.formatters import output_json
+
+        output_json(result.model_dump())
+        return
+
+    # Summary
+    console.print(
+        f"\n[bold]MC Simulation Results[/bold]"
+        f" — {result.symbols_scanned} symbols, {result.candidates_generated} candidates,"
+        f" {result.candidates_simulated} simulated\n"
+    )
+
+    if not result.top_results:
+        console.print("[yellow]No simulation results.[/yellow]")
+        return
+
+    table = Table(title=f"Top {len(result.top_results)} Put Credit Spreads by EV/BP")
+    table.add_column("Symbol", style="cyan")
+    table.add_column("Short", justify="right")
+    table.add_column("Long", justify="right")
+    table.add_column("DTE", justify="right")
+    table.add_column("Credit", justify="right", style="green")
+    table.add_column("EV", justify="right", style="bold green")
+    table.add_column("POP", justify="right")
+    table.add_column("Touch%", justify="right")
+    table.add_column("CVaR95", justify="right", style="red")
+    table.add_column("Stop%", justify="right")
+    table.add_column("Hold", justify="right")
+    table.add_column("EV/BP", justify="right", style="bold")
+
+    for r in result.top_results:
+        ev_color = "green" if r.ev > 0 else "red"
+        table.add_row(
+            r.symbol,
+            f"${r.short_strike:.2f}",
+            f"${r.long_strike:.2f}",
+            str(r.dte),
+            f"${r.net_credit:.2f}",
+            f"[{ev_color}]${r.ev:+.2f}[/{ev_color}]",
+            f"{r.pop:.0%}",
+            f"{r.touch_prob:.0%}",
+            f"${r.cvar_95:.2f}",
+            f"{r.stop_prob:.0%}",
+            f"{r.avg_hold_days:.0f}d",
+            f"{r.ev_per_bp:.4f}",
+        )
+
+    console.print(table)
+
+    # Exit breakdown for top result
+    if result.top_results:
+        best = result.top_results[0]
+        console.print(
+            f"\n[dim]Best exit breakdown: "
+            f"Profit={best.exit_profit_target:.0%}, "
+            f"Stop={best.exit_stop_loss:.0%}, "
+            f"DTE={best.exit_dte:.0%}, "
+            f"Expiry={best.exit_expiration:.0%}[/dim]"
+        )
+
+    # Calibration info — cal_params is {symbol: {param: value, ...}}
+    cal = result.calibration_params
+    if cal:
+        for sym, params in cal.items():
+            if isinstance(params, dict):
+                vol_source = params.get("vol_source", "historical")
+                vol_label = "IV" if vol_source == "live_iv" else "HV"
+                console.print(
+                    f"[dim]Calibration ({sym}): "
+                    f"t-df={params.get('student_t_df', 0):.1f}, "
+                    f"vol={params.get('vol_mean_level', 0):.0%} ({vol_label}), "
+                    f"kappa={params.get('vol_mean_revert_speed', 0):.2f}, "
+                    f"leverage={params.get('leverage_effect', 0):.2f}[/dim]"
+                )
+        console.print()
+
+
+# ── Validate command ──────────────────────────────────────────────────────
+
+
+@app.command("validate")
+def validate(
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output format: json"),
+):
+    """Resolve expired MC predictions against historical prices and compute Brier scores."""
+    from advisor.simulator.db import SimulatorStore
+    from advisor.simulator.validation import resolve_outcomes
+
+    store = SimulatorStore()
+    try:
+        outcomes = resolve_outcomes(store, data_provider=None)
+        brier = store.compute_brier_scores(lookback_days=90)
+    finally:
+        store.close()
+
+    if output == "json":
+        from advisor.cli.formatters import output_json
+
+        output_json(
+            {
+                "outcomes": [
+                    {
+                        "candidate_id": o.candidate_id,
+                        "symbol": o.symbol,
+                        "actual_profit": o.actual_profit,
+                        "actual_touch": o.actual_touch,
+                        "actual_stop": o.actual_stop,
+                        "actual_pnl": o.actual_pnl,
+                        "exit_reason": o.exit_reason,
+                        "exit_day": o.exit_day,
+                    }
+                    for o in outcomes
+                ],
+                "brier_scores": brier,
+            }
+        )
+        return
+
+    if not outcomes:
+        console.print(
+            "[yellow]No pending predictions to resolve (all resolved or none expired).[/yellow]"
+        )
+        # Still show Brier scores if available
+        if brier["n_samples"] > 0:
+            _print_brier_scores(brier)
+        return
+
+    # Results table
+    table = Table(title=f"Resolved Outcomes ({len(outcomes)} predictions)")
+    table.add_column("Symbol", style="cyan")
+    table.add_column("Candidate", style="dim")
+    table.add_column("P&L", justify="right")
+    table.add_column("Profitable", justify="center")
+    table.add_column("Touched", justify="center")
+    table.add_column("Stopped", justify="center")
+    table.add_column("Exit Reason")
+    table.add_column("Hold Days", justify="right")
+
+    for o in outcomes:
+        pnl_color = "green" if o.actual_pnl > 0 else "red"
+        table.add_row(
+            o.symbol,
+            o.candidate_id[:8],
+            f"[{pnl_color}]${o.actual_pnl:+.2f}[/{pnl_color}]",
+            "Yes" if o.actual_profit > 0 else "No",
+            "Yes" if o.actual_touch > 0 else "No",
+            "Yes" if o.actual_stop > 0 else "No",
+            o.exit_reason,
+            str(o.exit_day),
+        )
+
+    console.print(table)
+    _print_brier_scores(brier)
+
+
+@app.command("backtest-validate")
+def backtest_validate_cmd(
+    symbol: str = typer.Option(..., "--symbol", "-s", help="Symbol to validate"),
+    start: str = typer.Option("2025-06-01", "--start", help="Start date (YYYY-MM-DD)"),
+    end: str = typer.Option("2025-12-31", "--end", help="End date (YYYY-MM-DD)"),
+    paths: int = typer.Option(10_000, "--paths", "-p", help="MC paths per simulation"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output format: json"),
+):
+    """Historical replay — re-run MC on past chain snapshots and validate against actuals."""
+    from advisor.simulator.db import SimulatorStore
+    from advisor.simulator.models import SimConfig
+    from advisor.simulator.validation import backtest_validate
+
+    is_json = output == "json"
+
+    def _progress(msg: str):
+        if not is_json:
+            console.print(f"[dim]{msg}[/dim]")
+
+    config = SimConfig(n_paths=paths)
+    store = SimulatorStore()
+
+    try:
+        result = backtest_validate(
+            store=store,
+            symbol=symbol.upper(),
+            start=start,
+            end=end,
+            config=config,
+            n_paths=paths,
+            progress_callback=_progress,
+        )
+    finally:
+        store.close()
+
+    if is_json:
+        from advisor.cli.formatters import output_json
+
+        output_json(
+            {
+                "symbol": symbol.upper(),
+                "n_predictions": result.n_predictions,
+                "n_resolved": result.n_resolved,
+                "pop_brier": result.pop_brier,
+                "touch_brier": result.touch_brier,
+                "stop_brier": result.stop_brier,
+                "ev_mae": result.ev_mae,
+                "ev_correlation": result.ev_correlation,
+                "calibration_buckets": result.calibration_buckets,
+                "per_trade": result.per_trade,
+            }
+        )
+        return
+
+    console.print(
+        f"\n[bold]Backtest Validation: {symbol.upper()}[/bold]"
+        f" ({start} to {end}, {paths:,} paths)\n"
+    )
+
+    if result.n_resolved == 0:
+        console.print(
+            "[yellow]No predictions could be resolved. Ensure chain snapshots exist "
+            "for the date range and expirations have passed.[/yellow]"
+        )
+        return
+
+    console.print(
+        f"Snapshot dates: {result.n_predictions} | Predictions resolved: {result.n_resolved}\n"
+    )
+
+    # Brier scores table
+    table = Table(title="Brier Scores")
+    table.add_column("Metric", style="bold")
+    table.add_column("Score", justify="right")
+    table.add_column("Quality")
+
+    for metric, score in [
+        ("POP", result.pop_brier),
+        ("Touch", result.touch_brier),
+        ("Stop", result.stop_brier),
+    ]:
+        if score is not None:
+            quality = _brier_quality_label(score)
+            table.add_row(metric, f"{score:.4f}", quality)
+
+    console.print(table)
+
+    # EV accuracy
+    if result.ev_mae is not None:
+        console.print("\n[bold]EV Accuracy[/bold]")
+        console.print(f"  MAE: ${result.ev_mae:.2f}")
+        if result.ev_correlation is not None:
+            console.print(f"  Correlation: {result.ev_correlation:.4f}")
+
+    console.print()
+
+
+def _brier_quality_label(score: float) -> str:
+    """Return a colored quality label for a Brier score."""
+    if score < 0.10:
+        return "[bold green]Excellent[/bold green]"
+    elif score < 0.20:
+        return "[green]Good[/green]"
+    elif score < 0.25:
+        return "[yellow]Fair[/yellow]"
+    else:
+        return "[red]Poor[/red]"
+
+
+def _print_brier_scores(brier: dict) -> None:
+    """Print Brier score summary to console."""
+    if brier["n_samples"] == 0:
+        return
+
+    console.print(f"\n[bold]Calibration Quality[/bold] ({brier['n_samples']} samples)")
+
+    table = Table()
+    table.add_column("Metric", style="bold")
+    table.add_column("Brier Score", justify="right")
+    table.add_column("Quality")
+
+    for metric, key in [("POP", "pop_brier"), ("Touch", "touch_brier"), ("Stop", "stop_brier")]:
+        score = brier[key]
+        if score is not None:
+            quality = _brier_quality_label(score)
+            table.add_row(metric, f"{score:.4f}", quality)
+
+    console.print(table)
+    console.print()
+
+
 # ── Track commands ─────────────────────────────────────────────────────────────
 
 

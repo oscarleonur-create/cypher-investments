@@ -54,12 +54,20 @@ def backtest_run(
     param: Annotated[
         Optional[list[str]], typer.Option("--param", help="Strategy params (k=v)")
     ] = None,
+    monte_carlo: Annotated[
+        bool, typer.Option("--monte-carlo", help="Use Monte Carlo simulator for PCS")
+    ] = False,
+    mc_paths: Annotated[int, typer.Option("--mc-paths", help="MC paths (default 10000)")] = 10_000,
     output: Annotated[Optional[str], typer.Option("--output", help="Output format")] = None,
 ) -> None:
     """Run a backtest for a strategy."""
     from advisor.storage.results_store import ResultsStore
     from advisor.strategies.options import OPTIONS_STRATEGIES
     from advisor.strategies.registry import StrategyRegistry
+
+    if strategy in OPTIONS_STRATEGIES and monte_carlo and strategy == "put_credit_spread":
+        _run_mc_backtest(symbol, cash, mc_paths, output)
+        return
 
     if strategy in OPTIONS_STRATEGIES:
         _run_options_backtest(strategy, symbol, start, end, cash, output)
@@ -214,6 +222,40 @@ def backtest_walk_forward(
 
 
 # ── Options backtest helper ──────────────────────────────────────────────────
+
+
+def _run_mc_backtest(symbol: str, cash: float, mc_paths: int, output: str | None) -> None:
+    """Run a Monte Carlo simulation for put credit spreads."""
+    from advisor.simulator.db import SimulatorStore
+    from advisor.simulator.models import SimConfig
+    from advisor.simulator.pipeline import SimulatorPipeline
+
+    config = SimConfig(n_paths=mc_paths, max_buying_power=cash)
+    store = SimulatorStore()
+
+    try:
+        pipeline = SimulatorPipeline(config=config, store=store)
+        result = pipeline.run(symbols=[symbol.upper()], top_n=5, quick_paths=mc_paths)
+    except Exception as e:
+        output_error(f"MC simulation failed: {e}")
+        return
+    finally:
+        store.close()
+
+    if output == "json":
+        output_json(result.model_dump())
+    else:
+        import typer
+
+        typer.echo(
+            f"MC Simulation: {result.candidates_generated} candidates, "
+            f"{result.candidates_simulated} simulated"
+        )
+        for r in result.top_results:
+            typer.echo(
+                f"  {r.symbol} ${r.short_strike}/{r.long_strike} "
+                f"EV=${r.ev:+.2f} POP={r.pop:.0%} EV/BP={r.ev_per_bp:.4f}"
+            )
 
 
 def _run_options_backtest(
