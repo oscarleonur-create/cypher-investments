@@ -151,6 +151,17 @@ class SimulatorPipeline:
         self.progress("Calibrating model parameters...")
         engines, cal_params = self._calibrate_per_symbol(symbols)
 
+        # Step 1.5: Drawdown analysis
+        dd_data = {}
+        for sym in symbols:
+            self.progress(f"Drawdown analysis for {sym}...")
+            try:
+                from advisor.market.drawdown_analysis import analyze_max_move
+
+                dd_data[sym] = analyze_max_move(sym, dtes=[21, 30, 45, 60])
+            except Exception:
+                logger.debug("Drawdown analysis failed for %s", sym, exc_info=True)
+
         # Step 2: SCAN — fetch chains + generate candidates
         # Pass store=None to scan_and_generate to avoid double-saving candidates.
         # We save only the final top results to DB below.
@@ -167,11 +178,15 @@ class SimulatorPipeline:
                 with concurrent.futures.ThreadPoolExecutor() as pool:
                     all_candidates = pool.submit(
                         asyncio.run,
-                        scan_and_generate(symbols, self.config, self.store, self.progress),
+                        scan_and_generate(
+                            symbols, self.config, self.store, self.progress, dd_data=dd_data
+                        ),
                     ).result()
             else:
                 all_candidates = asyncio.run(
-                    scan_and_generate(symbols, self.config, self.store, self.progress)
+                    scan_and_generate(
+                        symbols, self.config, self.store, self.progress, dd_data=dd_data
+                    )
                 )
         except Exception as e:
             logger.error("Scan failed: %s", e)

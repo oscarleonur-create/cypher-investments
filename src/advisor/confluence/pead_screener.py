@@ -305,6 +305,7 @@ def check_pead_fundamental(symbol: str) -> FundamentalResult:
     score = _compute_pead_score(surprise, fade)
 
     pead_result = PeadScreenerResult(
+        earnings_date=surprise.reported_date,
         earnings_surprise=surprise,
         fade_setup=fade,
         overall_score=score,

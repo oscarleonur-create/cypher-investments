@@ -40,41 +40,49 @@ def score_liquidity(bid: float, ask: float) -> float:
 def compute_sell_score(candidate: PCSCandidate, iv_percentile: float) -> float:
     """Compute composite sell score (0-100) for a PCS candidate.
 
-    Weighting mirrors premium_screener.compute_sell_score():
-    - IV Percentile: 25 pts
-    - POP: 20 pts
-    - Annualized Yield: 15 pts
-    - Liquidity: 15 pts
-    - Credit/Width ratio: 15 pts
-    - Delta quality: 10 pts
+    Weighting:
+    - IV Percentile: 20 pts
+    - POP: 18 pts
+    - Annualized Yield: 13 pts
+    - Liquidity: 13 pts
+    - Credit/Width ratio: 13 pts
+    - Delta quality: 8 pts
+    - DD cushion: 15 pts
     """
     score = 0.0
 
-    # IV percentile (25 pts): linear 0-100 -> 0-25
-    score += min(iv_percentile / 100.0, 1.0) * 25
+    # IV percentile (20 pts): linear 0-100 -> 0-20
+    score += min(iv_percentile / 100.0, 1.0) * 20
 
-    # POP (20 pts): linear 60-95%
+    # POP (18 pts): linear 60-95%
     pop = candidate.pop_estimate
-    score += max(0.0, min(1.0, (pop - 0.60) / 0.35)) * 20
+    score += max(0.0, min(1.0, (pop - 0.60) / 0.35)) * 18
 
-    # Annualized yield (15 pts): credit / buying_power * 365/dte
+    # Annualized yield (13 pts): credit / buying_power * 365/dte
     if candidate.buying_power > 0 and candidate.dte > 0:
         ann_yield = (candidate.net_credit * 100 / candidate.buying_power) * (365 / candidate.dte)
-        score += min(ann_yield / 2.0, 1.0) * 15  # Cap at 200% ann yield
+        score += min(ann_yield / 2.0, 1.0) * 13  # Cap at 200% ann yield
 
-    # Liquidity (15 pts): based on bid-ask spread tightness
+    # Liquidity (13 pts): based on bid-ask spread tightness
     liq = score_liquidity(candidate.short_bid, candidate.short_ask)
-    score += (liq / 100.0) * 15
+    score += (liq / 100.0) * 13
 
-    # Credit/width ratio (15 pts): higher is better
+    # Credit/width ratio (13 pts): higher is better
     if candidate.width > 0:
         ratio = candidate.net_credit / candidate.width
-        score += min(ratio / 0.40, 1.0) * 15  # Cap at 40% of width
+        score += min(ratio / 0.40, 1.0) * 13  # Cap at 40% of width
 
-    # Delta quality (10 pts): closer to adaptive target is better
+    # Delta quality (8 pts): closer to adaptive target is better
     target_delta = get_adaptive_delta(iv_percentile)
     delta_diff = abs(abs(candidate.short_delta) - target_delta)
-    score += max(0.0, 1.0 - delta_diff / 0.15) * 10
+    score += max(0.0, 1.0 - delta_diff / 0.15) * 8
+
+    # DD cushion (15 pts): linear scale ratio 0.5-1.5 -> 0-15, neutral 7.5 if unavailable
+    if candidate.dd_cushion_ratio is not None:
+        dd_score = max(0.0, min(1.0, (candidate.dd_cushion_ratio - 0.5) / 1.0))
+        score += dd_score * 15
+    else:
+        score += 7.5  # neutral when unavailable
 
     return round(score, 1)
 
@@ -85,6 +93,7 @@ def generate_pcs_candidates(
     config: SimConfig,
     iv_percentile: float = 50.0,
     iv_rank: float = 0.0,
+    dd_data: dict | None = None,
 ) -> list[PCSCandidate]:
     """Generate PCS candidates from enriched chain data.
 
@@ -180,6 +189,23 @@ def generate_pcs_candidates(
                     pop_estimate=round(1 - short_delta, 4),
                     buying_power=round(buying_power, 2),
                 )
+                # DD cushion ratio: OTM% / |DD_p95| for matching DTE
+                if dd_data and symbol in dd_data:
+                    from advisor.market.drawdown_analysis import get_regime_matched_quantile
+
+                    dd_result = dd_data[symbol]
+                    dd_tail = get_regime_matched_quantile(dd_result, cand.dte)
+                    if dd_tail is None:
+                        # Try nearest DTE
+                        for q in dd_result.quantiles:
+                            dd_tail = q.dd_p95
+                            break
+                    if dd_tail is not None and abs(dd_tail) > 0:
+                        otm_pct = (
+                            cand.underlying_price - cand.short_strike
+                        ) / cand.underlying_price
+                        cand.dd_cushion_ratio = round(otm_pct / abs(dd_tail), 4)
+
                 cand.sell_score = compute_sell_score(cand, iv_percentile)
                 candidates.append(cand)
 
@@ -201,6 +227,7 @@ async def scan_and_generate(
     config: SimConfig,
     store: SimulatorStore | None = None,
     progress_callback: Callable[[str], None] | None = None,
+    dd_data: dict | None = None,
 ) -> list[PCSCandidate]:
     """Async: fetch enriched chains, save snapshots, generate + score candidates."""
     from advisor.market.tastytrade_client import (
@@ -244,7 +271,9 @@ async def scan_and_generate(
             store.save_chain_snapshot(chain, symbol)
 
         # Generate candidates
-        candidates = generate_pcs_candidates(chain, symbol, config, iv_percentile, iv_rank)
+        candidates = generate_pcs_candidates(
+            chain, symbol, config, iv_percentile, iv_rank, dd_data=dd_data
+        )
         candidates = pre_score_candidates(candidates, iv_percentile)
         all_candidates.extend(candidates)
 

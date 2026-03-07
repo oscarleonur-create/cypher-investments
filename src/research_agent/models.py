@@ -121,6 +121,7 @@ class OpportunityCard(BaseModel):
     validation_checklist: list[str] = Field(default_factory=list)
     next_actions: list[str] = Field(default_factory=list)
     sources: list[Source] = Field(default_factory=list)
+    grounding_score: float = 1.0  # source verification confidence
     created_at: datetime = Field(default_factory=datetime.now)
 
 
