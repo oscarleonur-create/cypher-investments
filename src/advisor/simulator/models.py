@@ -83,6 +83,10 @@ class PCSCandidate(BaseModel):
     pop_estimate: float = Field(default=0.0, description="1 - abs(short_delta)")
     sell_score: float = 0.0
     buying_power: float = Field(description="(width - net_credit) * 100")
+    dd_cushion_ratio: float | None = Field(
+        default=None,
+        description="Strike OTM% / |DD_H^(95)|: >1 means strike beyond 95th pctile drawdown",
+    )
 
 
 class SimResult(BaseModel):

@@ -96,6 +96,138 @@ def account(
     console.print(pos_table)
 
 
+# ── Max-Move command ──────────────────────────────────────────────────────────
+
+
+@app.command("max-move")
+def max_move(
+    symbol: str = typer.Argument(..., help="Symbol to analyze"),
+    dtes: str = typer.Option("21,30,45,60", "--dte", "-d", help="Comma-separated DTEs"),
+    lookback: int = typer.Option(252, "--lookback", "-l", help="Trading days of history"),
+    regimes: bool = typer.Option(
+        True, "--regimes/--no-regimes", help="Include vol regime breakdown"
+    ),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output format: json"),
+):
+    """Historical intra-window max drawdown analysis for tail risk sizing."""
+    from advisor.market.drawdown_analysis import analyze_max_move
+
+    dte_list = [int(d.strip()) for d in dtes.split(",")]
+    is_json = output == "json"
+
+    if not is_json:
+        console.print(f"\n[bold]Max-Move Analysis: {symbol.upper()}[/bold]")
+        console.print(f"[dim]Lookback: {lookback} trading days, DTEs: {dte_list}[/dim]\n")
+
+    try:
+        result = analyze_max_move(
+            symbol,
+            dtes=dte_list,
+            lookback=lookback,
+            include_regimes=regimes,
+        )
+    except Exception as e:
+        console.print(f"[red]Analysis failed: {e}[/red]")
+        raise typer.Exit(1)
+
+    if is_json:
+        from advisor.cli.formatters import output_json
+
+        output_json(result.model_dump())
+        return
+
+    # Header
+    regime_color = {"low": "green", "mid": "yellow", "high": "red"}.get(
+        result.current_regime, "dim"
+    )
+    console.print(
+        f"  Price: ${result.current_price:,.2f}  |  "
+        f"HV20: {result.hv20_current:.1%}  |  "
+        f"Regime: [{regime_color}]{result.current_regime.upper()}[/{regime_color}]\n"
+    )
+
+    # Drawdown Quantiles table
+    if result.quantiles:
+        table = Table(title="Drawdown Quantiles (intra-window worst drop)")
+        table.add_column("DTE", justify="right", style="cyan")
+        table.add_column("TradDays", justify="right")
+        table.add_column("p95", justify="right", style="yellow")
+        table.add_column("p97.5", justify="right", style="yellow")
+        table.add_column("p99", justify="right", style="red")
+        table.add_column("Max", justify="right", style="bold red")
+        table.add_column("Windows", justify="right", style="dim")
+
+        for q in result.quantiles:
+            table.add_row(
+                str(q.dte),
+                str(q.trading_days),
+                f"{q.dd_p95:.1%}",
+                f"{q.dd_p97_5:.1%}",
+                f"{q.dd_p99:.1%}",
+                f"{q.dd_max:.1%}",
+                str(q.n_windows),
+            )
+        console.print(table)
+        console.print()
+
+    # Breach Speed table
+    breach_rows = []
+    for q in result.quantiles:
+        for b in q.breach_speed:
+            breach_rows.append((q.dte, b))
+
+    if breach_rows:
+        table = Table(title="Breach Speed (how fast drawdown thresholds are hit)")
+        table.add_column("DTE", justify="right", style="cyan")
+        table.add_column("Threshold", justify="right")
+        table.add_column("Breach%", justify="right", style="yellow")
+        table.add_column("Median Days", justify="right")
+        table.add_column("p25", justify="right", style="dim")
+        table.add_column("p75", justify="right", style="dim")
+
+        for dte_val, b in breach_rows:
+            table.add_row(
+                str(dte_val),
+                f"{b.threshold_pct:.0%}",
+                f"{b.breach_probability:.1%}",
+                f"{b.median_days:.0f}" if b.median_days is not None else "-",
+                f"{b.p25_days:.0f}" if b.p25_days is not None else "-",
+                f"{b.p75_days:.0f}" if b.p75_days is not None else "-",
+            )
+        console.print(table)
+        console.print()
+
+    # Vol Regime table
+    if regimes and result.regime_drawdowns:
+        table = Table(title="Vol Regime Drawdowns")
+        table.add_column("Regime", style="bold")
+        table.add_column("DTE", justify="right", style="cyan")
+        table.add_column("p95", justify="right", style="yellow")
+        table.add_column("p99", justify="right", style="red")
+        table.add_column("Max", justify="right", style="bold red")
+        table.add_column("HV20 Range", justify="right", style="dim")
+        table.add_column("Windows", justify="right", style="dim")
+
+        for rd in result.regime_drawdowns:
+            is_current = rd.regime == result.current_regime
+            marker = " *" if is_current else ""
+            label = f"{rd.regime.upper()}{marker}"
+            regime_cell = f"[bold]{label}[/bold]" if is_current else label
+            table.add_row(
+                regime_cell,
+                str(rd.dte),
+                f"{rd.dd_p95:.1%}",
+                f"{rd.dd_p99:.1%}",
+                f"{rd.dd_max:.1%}",
+                f"{rd.hv20_low:.0%}-{rd.hv20_high:.0%}",
+                str(rd.n_windows),
+            )
+        console.print(table)
+        console.print("[dim]* = current regime[/dim]")
+
+    console.print()
+
+
 # ── Scan command ───────────────────────────────────────────────────────────────
 
 

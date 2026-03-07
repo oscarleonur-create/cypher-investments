@@ -16,6 +16,7 @@ from research_agent.search import PerplexityClient, SearchResult
 from research_agent.store import Store
 
 from advisor.confluence.models import SentimentResult, SourceInfo
+from advisor.verification.grounding import verify_headline
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,21 @@ def check_sentiment(symbol: str) -> SentimentResult:
             response_model=_SentimentScore,
         )
 
+        # Verify headlines against source texts
+        source_texts = [r.content for r in all_results if r.content]
+        grounded_headlines: list[str] = []
+        ungrounded_headlines: list[str] = []
+        for headline in result.key_headlines[:5]:
+            if verify_headline(headline, source_texts):
+                grounded_headlines.append(headline)
+            else:
+                ungrounded_headlines.append(headline)
+                logger.debug("Ungrounded headline dropped: %s", headline)
+
+        # Compute confidence based on headline grounding ratio
+        total_headlines = len(grounded_headlines) + len(ungrounded_headlines)
+        confidence = len(grounded_headlines) / total_headlines if total_headlines > 0 else 1.0
+
         # Convert registry sources to SourceInfo for the result
         cited_sources = [
             SourceInfo(
@@ -127,9 +143,11 @@ def check_sentiment(symbol: str) -> SentimentResult:
         return SentimentResult(
             score=result.score,
             positive_pct=result.positive_pct,
-            key_headlines=result.key_headlines[:5],
+            key_headlines=grounded_headlines if grounded_headlines else result.key_headlines[:5],
             sources=cited_sources,
             is_bullish=result.positive_pct > 70,
+            confidence=round(confidence, 3),
+            ungrounded_headlines=ungrounded_headlines,
         )
 
     except Exception as e:

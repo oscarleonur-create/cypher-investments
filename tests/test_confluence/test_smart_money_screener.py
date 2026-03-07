@@ -52,7 +52,15 @@ class TestFetchInsiderActivity:
         search, llm = _setup(mock_cfg, mock_px, mock_llm_cls, mock_store)
 
         search.search_sec.return_value = [
-            SearchResult(url="https://sec.gov/1", title="Form 4", content="data"),
+            SearchResult(
+                url="https://sec.gov/1",
+                title="Form 4",
+                content=(
+                    "Filing Date: 2026-02-01 Alice VP Purchase 100 shares at $50.00\n"
+                    "Filing Date: 2026-02-05 Bob VP Purchase 200 shares at $51.00\n"
+                    "Filing Date: 2026-02-10 Carol VP Purchase 150 shares at $52.00"
+                ),
+            ),
         ]
         llm.complete.return_value = _InsiderTradesResponse(
             trades=[
@@ -108,7 +116,14 @@ class TestFetchInsiderActivity:
         search, llm = _setup(mock_cfg, mock_px, mock_llm_cls, mock_store)
 
         search.search_sec.return_value = [
-            SearchResult(url="https://sec.gov/1", title="Form 4", content="ceo buy"),
+            SearchResult(
+                url="https://sec.gov/1",
+                title="Form 4",
+                content=(
+                    "Filing Date: 2026-02-15 John CEO Chief Executive Officer"
+                    " Purchase 1000 shares at $150.00 value $150,000"
+                ),
+            ),
         ]
         llm.complete.return_value = _InsiderTradesResponse(
             trades=[
@@ -142,7 +157,18 @@ class TestFetchInsiderActivity:
         search, llm = _setup(mock_cfg, mock_px, mock_llm_cls, mock_store)
 
         search.search_sec.return_value = [
-            SearchResult(url="https://sec.gov/1", title="Form 4", content="sells"),
+            SearchResult(
+                url="https://sec.gov/1",
+                title="Form 4",
+                content=(
+                    "Filing Date: 2026-02-01\n"
+                    "Seller0 VP Sale 500 shares at $100.00\n"
+                    "Seller1 VP Sale 500 shares at $100.00\n"
+                    "Seller2 VP Sale 500 shares at $100.00\n"
+                    "Seller3 VP Sale 500 shares at $100.00\n"
+                    "Seller4 VP Sale 500 shares at $100.00"
+                ),
+            ),
         ]
         llm.complete.return_value = _InsiderTradesResponse(
             trades=[
@@ -223,7 +249,16 @@ class TestFetchCongressTrades:
         search, llm = _setup(mock_cfg, mock_px, mock_llm_cls, mock_store)
 
         search.search.return_value = [
-            SearchResult(url="https://news.com/1", title="Congress trades", content="data"),
+            SearchResult(
+                url="https://news.com/1",
+                title="Congress trades",
+                content=(
+                    "Congressional Stock Trading Disclosures\n"
+                    "Sen. Smith disclosed a Purchase of AAPL on 2026-01-15\n"
+                    "Rep. Jones disclosed a Purchase of AAPL on 2026-02-01\n"
+                    "Sen. Smith disclosed another Purchase of AAPL on 2026-02-10"
+                ),
+            ),
         ]
         llm.complete.return_value = _CongressTradesResponse(
             trades=[

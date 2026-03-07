@@ -29,6 +29,8 @@ from research_agent.llm import ClaudeLLM
 from research_agent.search import PerplexityClient
 from research_agent.store import Store
 
+from advisor.verification.grounding import verify_extraction
+
 if TYPE_CHECKING:
     import pandas as pd
 
@@ -59,6 +61,7 @@ class InsiderTrade(BaseModel):
     price: float = 0.0
     qty: int = 0
     value: float = 0.0
+    confidence: float = 1.0  # grounding confidence from source verification
 
 
 class InsiderScore(BaseModel):
@@ -71,6 +74,7 @@ class InsiderScore(BaseModel):
     cluster_sells: int = 0
     large_sells: int = 0
     csuite_sells: int = 0
+    grounding_score: float = 1.0  # average grounding confidence across trades
 
 
 class CongressScore(BaseModel):
@@ -235,6 +239,11 @@ def _fetch_ticker_data(symbol: str) -> tuple[yf.Ticker, "pd.DataFrame"]:
     return ticker, hist
 
 
+def _confidence_weight(confidence: float) -> float:
+    """Discount factor for low-confidence trades: <0.7 gets 50% weight."""
+    return 0.5 if confidence < 0.7 else 1.0
+
+
 # ── 1. Insider activity (SEC Form 4 via Perplexity) ──────────────────────────
 
 
@@ -285,6 +294,21 @@ def _fetch_insider_activity(symbol: str) -> InsiderScore:
             if filing_date < cutoff:
                 continue
 
+            # Verify extraction against source text
+            result = verify_extraction(
+                extracted=item.model_dump(),
+                source_text=context,
+                fields_to_check=["insider_name", "filing_date", "trade_type", "price", "qty"],
+            )
+            if result.grounding_score < 0.5:
+                logger.warning(
+                    "Rejected ungrounded insider trade: %s, score=%.2f, ungrounded=%s",
+                    item.insider_name,
+                    result.grounding_score,
+                    result.ungrounded_fields,
+                )
+                continue
+
             trade = InsiderTrade(
                 filing_date=item.filing_date,
                 ticker=symbol.upper(),
@@ -294,6 +318,7 @@ def _fetch_insider_activity(symbol: str) -> InsiderScore:
                 price=item.price,
                 qty=abs(item.qty),
                 value=abs(item.value),
+                confidence=result.grounding_score,
             )
 
             if item.trade_type == "Purchase":
@@ -309,16 +334,20 @@ def _fetch_insider_activity(symbol: str) -> InsiderScore:
     finally:
         store.close()
 
-    # Score buys (max +35)
+    # Score buys (max +35), weighted by confidence
     csuite_buys = csuite_sells = large_buys = large_sells = 0
     csuite_titles = ("CEO", "CFO", "COO", "PRES", "DIR")
 
+    large_buy_trades: list[InsiderTrade] = []
+    csuite_buy_trades: list[InsiderTrade] = []
     for t in buy_trades:
         title_upper = t.title.upper()
         if any(r in title_upper for r in csuite_titles):
             csuite_buys += 1
+            csuite_buy_trades.append(t)
         if t.value >= 100_000:
             large_buys += 1
+            large_buy_trades.append(t)
 
     buy_score = 0.0
     cluster_buys = len(buy_trades)
@@ -326,19 +355,24 @@ def _fetch_insider_activity(symbol: str) -> InsiderScore:
         buy_score += 13
     elif cluster_buys >= 2:
         buy_score += 7
-    buy_score += min(large_buys * 4, 9)
-    buy_score += min(csuite_buys * 4, 9)
+    # Weight by confidence: trades with confidence < 0.7 get 50% weight
+    buy_score += min(sum(_confidence_weight(t.confidence) * 4 for t in large_buy_trades), 9)
+    buy_score += min(sum(_confidence_weight(t.confidence) * 4 for t in csuite_buy_trades), 9)
     if buy_trades:
         buy_score += 4
     buy_score = min(buy_score, 35.0)
 
     # Score sells (max -35)
+    large_sell_trades: list[InsiderTrade] = []
+    csuite_sell_trades: list[InsiderTrade] = []
     for t in sell_trades:
         title_upper = t.title.upper()
         if any(r in title_upper for r in csuite_titles):
             csuite_sells += 1
+            csuite_sell_trades.append(t)
         if t.value >= 100_000:
             large_sells += 1
+            large_sell_trades.append(t)
 
     sell_score = 0.0
     cluster_sells = len(sell_trades)
@@ -346,11 +380,15 @@ def _fetch_insider_activity(symbol: str) -> InsiderScore:
         sell_score -= 15
     elif cluster_sells >= 3:
         sell_score -= 10
-    sell_score -= min(large_sells * 3, 9)
-    sell_score -= min(csuite_sells * 4, 9)
+    sell_score -= min(sum(_confidence_weight(t.confidence) * 3 for t in large_sell_trades), 9)
+    sell_score -= min(sum(_confidence_weight(t.confidence) * 4 for t in csuite_sell_trades), 9)
     sell_score = max(sell_score, -35.0)
 
     score = buy_score + sell_score
+
+    # Compute average grounding score across all trades
+    all_trades = buy_trades + sell_trades
+    avg_grounding = sum(t.confidence for t in all_trades) / len(all_trades) if all_trades else 1.0
 
     result = InsiderScore(
         score=score,
@@ -362,6 +400,7 @@ def _fetch_insider_activity(symbol: str) -> InsiderScore:
         cluster_sells=cluster_sells,
         large_sells=large_sells,
         csuite_sells=csuite_sells,
+        grounding_score=round(avg_grounding, 3),
     )
     _cache_set("insider", symbol, result.model_dump())
     return result
@@ -411,6 +450,21 @@ def _fetch_congress_trades(symbol: str) -> CongressScore:
                 tx_date = datetime.strptime(item.transaction_date[:10], "%Y-%m-%d")
             except (ValueError, TypeError):
                 continue
+
+            # Verify extraction against source text
+            cong_result = verify_extraction(
+                extracted=item.model_dump(),
+                source_text=context,
+                fields_to_check=["politician", "transaction_date", "transaction_type"],
+            )
+            if cong_result.grounding_score < 0.5:
+                logger.warning(
+                    "Rejected ungrounded congress trade: %s, score=%.2f",
+                    item.politician,
+                    cong_result.grounding_score,
+                )
+                continue
+
             if tx_date >= cutoff and item.transaction_type == "Purchase":
                 if item.politician not in politicians:
                     politicians.append(item.politician)

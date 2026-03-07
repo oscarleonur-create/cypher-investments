@@ -41,6 +41,8 @@ class SentimentResult(BaseModel):
     key_headlines: list[str] = Field(default_factory=list)
     sources: list[SourceInfo] = Field(default_factory=list)
     is_bullish: bool
+    confidence: float = 1.0  # grounding confidence from source verification
+    ungrounded_headlines: list[str] = Field(default_factory=list)
 
 
 class SafetyCheckResult(BaseModel):
@@ -119,6 +121,7 @@ class FadeSetupResult(BaseModel):
 class PeadScreenerResult(BaseModel):
     """Combined PEAD screener result."""
 
+    earnings_date: date | None = None
     earnings_surprise: EarningsSurpriseResult
     fade_setup: FadeSetupResult | None = None
     overall_score: str = "FAIL"

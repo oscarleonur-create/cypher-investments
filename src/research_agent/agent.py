@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from pydantic import BaseModel, Field
 
@@ -272,6 +273,38 @@ def step3_research_facts(
         state.errors.append(f"fact_extraction: {e}")
 
 
+def _verify_claims(claims: list[str], registry: SourceRegistry) -> tuple[list[str], int, int]:
+    """Verify that bull/bear case claims have valid source citations.
+
+    Returns (verified_claims, total_count, grounded_count).
+    """
+    verified: list[str] = []
+    grounded = 0
+    for claim in claims:
+        # Extract [sN] citations from the claim
+        cited_ids = re.findall(r"\[s(\d+)\]", claim)
+        if not cited_ids:
+            # No citation — keep claim but don't count as grounded
+            verified.append(claim)
+            continue
+
+        # Check that at least one cited source exists in the registry
+        has_valid_source = False
+        for sid_num in cited_ids:
+            source = registry.get_source(f"s{sid_num}")
+            if source and source.snippet:
+                has_valid_source = True
+                break
+
+        if has_valid_source:
+            verified.append(claim)
+            grounded += 1
+        else:
+            logger.debug("Dropping claim with invalid citations: %s", claim[:80])
+
+    return verified, len(claims), grounded
+
+
 def step4_generate_card(
     state: AgentState,
     llm: ClaudeLLM,
@@ -292,9 +325,21 @@ def step4_generate_card(
                 verdict = v
                 break
 
+        # Verify bull/bear case citations against source registry
+        verified_bull, bull_total, bull_grounded = _verify_claims(resp.bull_case, registry)
+        verified_bear, bear_total, bear_grounded = _verify_claims(resp.bear_case, registry)
+        resp.bull_case = verified_bull
+        resp.bear_case = verified_bear
+
+        # Compute grounding score from citation verification
+        total_claims = bull_total + bear_total
+        total_grounded = bull_grounded + bear_grounded
+        grounding_score = total_grounded / total_claims if total_claims > 0 else 1.0
+
         from research_agent.card import build_card
 
         state.card = build_card(state, registry, verdict, resp)
+        state.card.grounding_score = round(grounding_score, 3)
     except Exception as e:
         logger.error("Card synthesis failed: %s", e)
         state.errors.append(f"card_synthesis: {e}")
