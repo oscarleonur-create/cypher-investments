@@ -1,6 +1,6 @@
 # Options Advisor
 
-A CLI-based backtesting and strategy system for equities and options. Includes live signal scanning, multi-layer confluence analysis, market-wide screening, walk-forward testing, and an AI-powered research agent.
+A CLI-based backtesting and strategy system for equities and options. Includes live signal scanning, multi-layer confluence analysis, market-wide screening, walk-forward testing, Monte Carlo simulation, ML signal prediction, an integrated pipeline orchestrator, and an AI-powered research agent.
 
 ## Requirements
 
@@ -25,6 +25,7 @@ All commands are accessible through the `advisor` entrypoint:
 
 ```bash
 advisor --help
+advisor -v  # Enable verbose logging
 ```
 
 ### Strategy
@@ -50,6 +51,12 @@ advisor backtest run pead --symbol TSLA --start 2023-01-01 --end 2024-01-01 \
 # Use ATR-based position sizing and slippage
 advisor backtest run mean_reversion --symbol MSFT --start 2023-01-01 --end 2024-01-01 \
   --sizer atr --slippage 0.002
+
+# Options strategies use the Black-Scholes backtester
+advisor backtest run naked_put --symbol AAPL --start 2023-01-01 --end 2024-01-01
+
+# Monte Carlo simulation for put credit spreads
+advisor backtest run put_credit_spread --symbol AAPL --monte-carlo --mc-paths 10000
 
 # List saved results
 advisor backtest results
@@ -87,6 +94,9 @@ advisor signal scan AAPL
 
 # Scan with a specific strategy
 advisor signal scan AAPL --strategy pead
+
+# Scan with a different data interval
+advisor signal scan AAPL --interval 1h
 ```
 
 ### Confluence
@@ -95,11 +105,14 @@ Runs a 3-layer analysis pipeline (technical + sentiment + fundamental) and produ
 
 ```bash
 advisor confluence scan AAPL --strategy momentum_breakout --verbose
+
+# Force all layers to run even without a technical breakout (for dip analysis)
+advisor confluence scan AAPL --force
 ```
 
 ### Market
 
-Scans a stock universe (default: S&P 500) through layered filters, then runs the confluence pipeline on qualifiers:
+Market-wide scanning through layered filters, then confluence on qualifiers:
 
 ```bash
 # Full market scan
@@ -111,6 +124,181 @@ advisor market scan --strategy buy_the_dip \
 
 # Dry run (filters only, no confluence)
 advisor market scan --strategy momentum_breakout --dry-run
+
+# Scan a different universe
+advisor market scan --strategy pead --universe semiconductors
+```
+
+#### Smart Money Scanner
+
+Scans for insider buying, congressional trades, technicals, and options activity:
+
+```bash
+# Full S&P 500 scan
+advisor market smart-money
+
+# Single ticker deep-dive
+advisor market smart-money --ticker AAPL
+```
+
+#### Mispricing Scanner
+
+Finds mispriced stocks using fundamental, options market, and estimate revision signals:
+
+```bash
+# Full scan
+advisor market mispricing
+
+# Filter by sector
+advisor market mispricing --sector Technology
+
+# Single ticker
+advisor market mispricing --ticker AAPL
+```
+
+#### Alpha Score
+
+Computes a unified conviction score (0-100) across all signal layers:
+
+```bash
+# Full S&P 500 scan
+advisor market alpha
+
+# Single ticker with all layers
+advisor market alpha --ticker AAPL
+
+# Skip optional layers
+advisor market alpha --skip-sentiment --skip-ml
+```
+
+### Options
+
+Options scanning, analysis, trade tracking, and simulation:
+
+```bash
+# Scan for naked puts and credit spreads
+advisor options scan --account-size 5000 --universe wheel
+advisor options scan --tickers AAPL,MSFT,GOOG --live-iv
+
+# Smart premium scanner with composite scoring
+advisor options premium-scan --min-iv-pctile 30 --min-dte 25 --max-dte 45
+advisor options premium-scan --strategies naked_put --live-iv --top 10
+
+# Analyze an options chain (Greeks, yields, strikes)
+advisor options analyze AAPL
+advisor options analyze AAPL --expiry 2026-04-17
+
+# Historical max-move drawdown analysis for tail risk sizing
+advisor options max-move AAPL --dte 21,30,45 --lookback 252
+
+# Show live TastyTrade account balances and positions
+advisor options account
+```
+
+#### Monte Carlo Simulator
+
+```bash
+# Rank put credit spreads by risk-adjusted EV
+advisor options simulate --account-size 5000 --universe wheel --paths 10000
+
+# Deep simulation with custom tickers
+advisor options simulate --tickers AAPL,MSFT --deep-paths 100000 --top 10
+
+# Validate expired predictions against historical prices (Brier scores)
+advisor options validate
+
+# Historical replay validation
+advisor options backtest-validate --symbol AAPL --start 2025-06-01 --end 2025-12-31
+```
+
+#### Trade Tracking
+
+```bash
+# Log a new trade
+advisor options track open naked_put AAPL 150.0 2026-04-17 2.50
+advisor options track open put_credit_spread AAPL 150.0 2026-04-17 1.20 --long-strike 145.0
+
+# Close a trade
+advisor options track close <trade_id> 0.50 --reason profit
+
+# View open positions
+advisor options track status
+
+# View closed trades and win rate
+advisor options track history
+```
+
+### Simulator
+
+```bash
+# Launch the Streamlit Monte Carlo simulator GUI
+advisor simulator ui
+advisor simulator ui --port 8501 --no-browser
+```
+
+### ML
+
+ML signal tracking, model training, and prediction:
+
+```bash
+# Check ML system status
+advisor ml status
+
+# Train a model (logistic, lightgbm, or ensemble)
+advisor ml train --model lightgbm --symbols AAPL,MSFT --lookback 5y
+advisor ml train --compare  # Compare all model types
+
+# Train with meta-labeling for improved precision
+advisor ml train-meta --model lightgbm
+
+# Run live prediction for a symbol
+advisor ml predict AAPL
+advisor ml predict AAPL --explain  # Show feature breakdown
+
+# Inspect computed ML features
+advisor ml features AAPL
+
+# Backtest ML signals on out-of-sample data
+advisor ml backtest AAPL --buy-threshold 0.65
+
+# Precision at high probability thresholds
+advisor ml precision --model lightgbm
+
+# Walk-forward validation (IS vs OOS gap)
+advisor ml walk-forward --model lightgbm --windows 5
+
+# Detect current market regime (HMM)
+advisor ml regime
+advisor ml regime --fit --lookback 5y  # Force re-fit
+
+# Compute HRP portfolio weights
+advisor ml allocate AAPL,MSFT,GOOG
+
+# Model versioning
+advisor ml versions
+advisor ml rollback <version_id>
+
+# Manual signal logging and resolution
+advisor ml log AAPL scanner_name 0.85 --verdict BUY --price 180.0
+advisor ml resolve
+advisor ml stats --scanner scanner_name
+```
+
+### Pipeline
+
+Integrated daily trading pipeline — discovers opportunities, validates fundamentals, times IV, runs Monte Carlo simulation, and scores by conviction:
+
+```bash
+# Run the full pipeline on a universe
+advisor pipeline run --universe wheel --account-size 5000
+
+# Run on specific tickers with custom thresholds
+advisor pipeline run --tickers AAPL,MSFT --min-conviction 60 --top 10
+
+# Verbose mode shows per-layer conviction breakdown
+advisor pipeline run --universe semiconductors --verbose
+
+# Available universes: wheel, leveraged, blue_chip, sp500, semiconductors
 ```
 
 ## Strategies
@@ -133,6 +321,9 @@ All strategies extend `StrategyBase` and register via the `@StrategyRegistry.reg
 | Strategy | Key | Description |
 |---|---|---|
 | Covered Call | `covered_call` | Buys shares in lots of 100 and simulates selling OTM calls |
+| Naked Put | `naked_put` | Sells OTM puts; uses Black-Scholes backtester |
+| Put Credit Spread | `put_credit_spread` | Sells put spreads; supports Monte Carlo simulation |
+| Wheel | `wheel` | Sells puts, takes assignment, sells calls; BS backtester |
 
 ## Walk-Forward Testing
 
@@ -197,17 +388,23 @@ poetry run ruff format src tests
 ```
 src/
   advisor/
+    backtesting/   # Options backtester (Black-Scholes)
     cli/           # Typer CLI commands
-    confluence/    # 3-layer analysis pipeline
+    confluence/    # 3-layer analysis, alpha scorer, smart money, mispricing
     core/          # Pricing utilities
-    data/          # Data providers (Yahoo Finance)
+    data/          # Data providers (Yahoo Finance), cache, universe
     engine/        # Backtest runner, signal scanner, walk-forward
-    market/        # Market-wide scanner and filters
+    market/        # Options scanner, premium screener, drawdown analysis, trade tracker
+    ml/            # ML pipeline, features, regime detection, HRP, meta-labeling
+    pipeline/      # Integrated orchestrator with conviction scoring
+    simulator/     # Monte Carlo PCS simulator, Streamlit GUI, validation
+    storage/       # Results persistence
     strategies/
       equity/      # Equity strategies
-      options/     # Options strategies
+      options/     # Options strategies (naked_put, put_credit_spread, wheel)
       base.py      # Abstract strategy base class
       registry.py  # Strategy discovery and registration
+    verification/  # Grounding verification
   research_agent/  # AI-powered research tool
 config/            # YAML configuration
 data/              # Cache and results (gitignored)

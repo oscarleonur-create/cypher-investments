@@ -26,6 +26,15 @@ from advisor.confluence.models import (
 
 logger = logging.getLogger(__name__)
 
+
+def _safe_info(ticker: yf.Ticker) -> dict:
+    """Safely access ticker.info, returning empty dict on failure."""
+    try:
+        return ticker.info or {}
+    except Exception:
+        return {}
+
+
 # ── Thresholds ────────────────────────────────────────────────────────────────
 EPS_SURPRISE_MIN_PCT = 5.0
 PEAD_WINDOW_DAYS = 7  # single window: must report within 7 calendar days
@@ -112,7 +121,8 @@ def _check_revenue_surprise(ticker: yf.Ticker) -> bool | None:
         qf = ticker.quarterly_financials
         if qf is None or qf.empty:
             # Fall back to ticker.info revenueGrowth
-            growth = ticker.info.get("revenueGrowth")
+            info = _safe_info(ticker)
+            growth = info.get("revenueGrowth")
             return growth > 0 if growth is not None else None
 
         # Look for a revenue row
@@ -124,7 +134,8 @@ def _check_revenue_surprise(ticker: yf.Ticker) -> bool | None:
 
         if rev_row is None or len(rev_row) < 5:
             # Not enough quarters; fall back
-            growth = ticker.info.get("revenueGrowth")
+            info = _safe_info(ticker)
+            growth = info.get("revenueGrowth")
             return growth > 0 if growth is not None else None
 
         # Most recent quarter vs 4 quarters ago (year-over-year)
@@ -138,7 +149,8 @@ def _check_revenue_surprise(ticker: yf.Ticker) -> bool | None:
 
     # Final fallback
     try:
-        growth = ticker.info.get("revenueGrowth")
+        info = _safe_info(ticker)
+        growth = info.get("revenueGrowth")
         return growth > 0 if growth is not None else None
     except Exception:
         return None

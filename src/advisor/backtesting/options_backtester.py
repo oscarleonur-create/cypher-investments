@@ -7,6 +7,7 @@ Uses yfinance for price data, core/pricing.py for BSM pricing with full Greeks.
 
 import logging
 import sys
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import timedelta
 from typing import Optional
@@ -110,6 +111,9 @@ class Trade:
     # spread fields
     long_strike: Optional[float] = None
     long_premium: Optional[float] = None
+    # spread / multi-leg fields
+    spread_type: Optional[str] = None  # "put" or "call" — pricing dispatch for spreads
+    group_id: Optional[str] = None  # links iron condor / strangle legs
     # entry context
     entry_iv: Optional[float] = None
     entry_delta: Optional[float] = None
@@ -215,8 +219,9 @@ class Backtester:
 
         # Get full Greeks via bsm_price
         if trade.option_type == "spread":
-            short_result = bsm_price(S, trade.strike, T, self.r, iv, OptionType.PUT)
-            long_result = bsm_price(S, trade.long_strike, T, self.r, iv, OptionType.PUT)
+            opt = OptionType.PUT if trade.spread_type != "call" else OptionType.CALL
+            short_result = bsm_price(S, trade.strike, T, self.r, iv, opt)
+            long_result = bsm_price(S, trade.long_strike, T, self.r, iv, opt)
             current_premium = short_result.price - long_result.price
             gamma = short_result.gamma - long_result.gamma  # net gamma
         elif trade.option_type == "put":
@@ -267,8 +272,12 @@ class Backtester:
     def _close_at_expiry(self, trade: Trade, S: float, date_str: str) -> tuple[bool, Trade]:
         """Handle trade at expiration with intrinsic value settlement."""
         if trade.option_type == "spread":
-            short_itm = max(trade.strike - S, 0)
-            long_itm = max(trade.long_strike - S, 0)
+            if trade.spread_type == "call":
+                short_itm = max(S - trade.strike, 0)
+                long_itm = max(S - trade.long_strike, 0)
+            else:  # put spread (default, backward compatible)
+                short_itm = max(trade.strike - S, 0)
+                long_itm = max(trade.long_strike - S, 0)
             intrinsic = short_itm - long_itm
         elif trade.option_type == "put":
             intrinsic = max(trade.strike - S, 0)
@@ -302,6 +311,45 @@ class Backtester:
             return False
 
         if not row["RedDay"] or rsi >= rsi_thresh:
+            return False
+
+        return True
+
+    def _should_enter_bearish(self, row, rsi: float) -> bool:
+        """Check bearish entry signal filters (green day, RSI > 60, regime, IV term)."""
+        iv_pctile = row.get("IV_Pctile", 50)
+        if np.isnan(iv_pctile):
+            iv_pctile = 50
+
+        rsi_thresh = 60.0
+        if self.config.rsi_relax_in_high_iv and iv_pctile >= 75:
+            rsi_thresh = 50.0
+
+        if self.config.use_regime_filter and row.get("regime") == 2:
+            return False
+
+        if self.config.use_iv_term_filter and not row.get("iv_contango", True):
+            return False
+
+        # Bearish: green day (not RedDay) and RSI elevated
+        if row["RedDay"] or rsi <= rsi_thresh:
+            return False
+
+        return True
+
+    def _should_enter_neutral(self, row) -> bool:
+        """Check neutral entry signal filters (no directional bias, IV > 40)."""
+        iv_pctile = row.get("IV_Pctile", 50)
+        if np.isnan(iv_pctile):
+            iv_pctile = 50
+
+        if iv_pctile < 40:
+            return False
+
+        if self.config.use_regime_filter and row.get("regime") == 2:
+            return False
+
+        if self.config.use_iv_term_filter and not row.get("iv_contango", True):
             return False
 
         return True
@@ -644,6 +692,7 @@ class Backtester:
                     premium=round(short_prem, 2),
                     long_strike=round(long_strike, 2),
                     long_premium=round(long_prem, 2),
+                    spread_type="put",
                     entry_iv=round(iv, 4),
                     entry_delta=round(abs(short_result.delta), 4),
                 )
@@ -671,6 +720,308 @@ class Backtester:
             self.cash += t.pnl
             self.trades.append(t)
 
+    # ── Call Credit Spread ───────────────────────────────────────────────
+
+    def run_call_credit_spread(self):
+        df = self.df
+        open_trades: list[Trade] = []
+        spread_width = 5.0
+        max_positions = 3
+
+        for date, row in df.iterrows():
+            date_str = date.strftime("%Y-%m-%d")
+            S = row["Close"]
+            iv = row["IV"]
+            rsi = row["RSI"]
+            if np.isnan(iv) or np.isnan(rsi):
+                self.equity_curve.append(self.cash)
+                continue
+
+            # Manage existing
+            still_open = []
+            for t in open_trades:
+                closed, closed_trade = self._manage_position(t, S, iv, date, date_str)
+                if closed:
+                    self.cash += closed_trade.pnl
+                    self.trades.append(closed_trade)
+                else:
+                    still_open.append(t)
+            open_trades = still_open
+
+            # Entry: bearish signals
+            if self._should_enter_bearish(row, rsi) and len(open_trades) < max_positions:
+                target_dte = 35
+                T = target_dte / 365.0
+                expiry_date = (date + timedelta(days=target_dte)).strftime("%Y-%m-%d")
+
+                target_delta = self._get_target_delta(row, default=0.25)
+                short_strike = find_strike_for_delta(S, T, self.r, iv, target_delta, "call")
+                long_strike = short_strike + spread_width
+
+                short_result = bsm_price(S, short_strike, T, self.r, iv, OptionType.CALL)
+                long_result = bsm_price(S, long_strike, T, self.r, iv, OptionType.CALL)
+                short_prem = short_result.price
+                long_prem = long_result.price
+                net_credit = short_prem - long_prem
+
+                if net_credit < 0.15:
+                    self.equity_curve.append(self.cash)
+                    continue
+
+                # Max risk per spread
+                max_risk = (spread_width - net_credit) * 100
+                if max_risk > self.cash * 0.15:
+                    self.equity_curve.append(self.cash)
+                    continue
+
+                trade = Trade(
+                    strategy="call_credit_spread",
+                    entry_date=date_str,
+                    expiry_date=expiry_date,
+                    strike=round(short_strike, 2),
+                    option_type="spread",
+                    premium=round(short_prem, 2),
+                    long_strike=round(long_strike, 2),
+                    long_premium=round(long_prem, 2),
+                    spread_type="call",
+                    entry_iv=round(iv, 4),
+                    entry_delta=round(short_result.delta, 4),
+                )
+                self.cash += trade.net_credit()
+                open_trades.append(trade)
+
+            self.equity_curve.append(self.cash)
+
+        # Close remaining — mark-to-market
+        for t in open_trades:
+            S = df.iloc[-1]["Close"]
+            iv = df.iloc[-1]["IV"]
+            if np.isnan(iv):
+                iv = self.all_df["IV"].dropna().iloc[-1]
+            initial_credit = t.premium - (t.long_premium or 0)
+            dte = max((pd.Timestamp(t.expiry_date) - df.index[-1]).days, 0)
+            T = max(dte / 365.0, 0.001)
+            short_val = bsm_price(S, t.strike, T, self.r, iv, OptionType.CALL).price
+            long_val = bsm_price(S, t.long_strike, T, self.r, iv, OptionType.CALL).price
+            spread_val = short_val - long_val
+            t.exit_date = df.index[-1].strftime("%Y-%m-%d")
+            t.exit_premium = round(spread_val, 2)
+            t.pnl = round((initial_credit - spread_val) * 100 * t.contracts, 2)
+            t.reason = "end_of_backtest"
+            self.cash += t.pnl
+            self.trades.append(t)
+
+    # ── Iron Condor ───────────────────────────────────────────────────
+
+    def run_iron_condor(self):
+        df = self.df
+        open_trades: list[Trade] = []
+        spread_width = 5.0
+        max_condors = 2  # max 2 iron condors (4 legs)
+
+        for date, row in df.iterrows():
+            date_str = date.strftime("%Y-%m-%d")
+            S = row["Close"]
+            iv = row["IV"]
+            if np.isnan(iv):
+                self.equity_curve.append(self.cash)
+                continue
+
+            # Manage existing — each leg independently
+            still_open = []
+            for t in open_trades:
+                closed, closed_trade = self._manage_position(t, S, iv, date, date_str)
+                if closed:
+                    self.cash += closed_trade.pnl
+                    self.trades.append(closed_trade)
+                else:
+                    still_open.append(t)
+            open_trades = still_open
+
+            # Count open condors by unique group_id
+            open_groups = {t.group_id for t in open_trades if t.group_id}
+            if self._should_enter_neutral(row) and len(open_groups) < max_condors:
+                target_dte = 35
+                T = target_dte / 365.0
+                expiry_date = (date + timedelta(days=target_dte)).strftime("%Y-%m-%d")
+                target_delta = self._get_target_delta(row, default=0.20)
+                gid = uuid.uuid4().hex[:8]
+
+                # Put side
+                put_short = find_strike_for_delta(S, T, self.r, iv, target_delta, "put")
+                put_long = put_short - spread_width
+                put_short_result = bsm_price(S, put_short, T, self.r, iv, OptionType.PUT)
+                put_long_result = bsm_price(S, put_long, T, self.r, iv, OptionType.PUT)
+                put_credit = put_short_result.price - put_long_result.price
+
+                # Call side
+                call_short = find_strike_for_delta(S, T, self.r, iv, target_delta, "call")
+                call_long = call_short + spread_width
+                call_short_result = bsm_price(S, call_short, T, self.r, iv, OptionType.CALL)
+                call_long_result = bsm_price(S, call_long, T, self.r, iv, OptionType.CALL)
+                call_credit = call_short_result.price - call_long_result.price
+
+                total_credit = put_credit + call_credit
+                if total_credit < 0.30:
+                    self.equity_curve.append(self.cash)
+                    continue
+
+                # Max risk: only one side can be ITM at expiry
+                max_risk = (spread_width - total_credit) * 100
+                if max_risk > self.cash * 0.20:
+                    self.equity_curve.append(self.cash)
+                    continue
+
+                put_trade = Trade(
+                    strategy="iron_condor",
+                    entry_date=date_str,
+                    expiry_date=expiry_date,
+                    strike=round(put_short, 2),
+                    option_type="spread",
+                    premium=round(put_short_result.price, 2),
+                    long_strike=round(put_long, 2),
+                    long_premium=round(put_long_result.price, 2),
+                    spread_type="put",
+                    group_id=gid,
+                    entry_iv=round(iv, 4),
+                    entry_delta=round(abs(put_short_result.delta), 4),
+                )
+                call_trade = Trade(
+                    strategy="iron_condor",
+                    entry_date=date_str,
+                    expiry_date=expiry_date,
+                    strike=round(call_short, 2),
+                    option_type="spread",
+                    premium=round(call_short_result.price, 2),
+                    long_strike=round(call_long, 2),
+                    long_premium=round(call_long_result.price, 2),
+                    spread_type="call",
+                    group_id=gid,
+                    entry_iv=round(iv, 4),
+                    entry_delta=round(call_short_result.delta, 4),
+                )
+                self.cash += put_trade.net_credit() + call_trade.net_credit()
+                open_trades.extend([put_trade, call_trade])
+
+            self.equity_curve.append(self.cash)
+
+        # Close remaining — mark-to-market
+        for t in open_trades:
+            S = df.iloc[-1]["Close"]
+            iv = df.iloc[-1]["IV"]
+            if np.isnan(iv):
+                iv = self.all_df["IV"].dropna().iloc[-1]
+            initial_credit = t.premium - (t.long_premium or 0)
+            dte = max((pd.Timestamp(t.expiry_date) - df.index[-1]).days, 0)
+            T = max(dte / 365.0, 0.001)
+            opt = OptionType.PUT if t.spread_type != "call" else OptionType.CALL
+            short_val = bsm_price(S, t.strike, T, self.r, iv, opt).price
+            long_val = bsm_price(S, t.long_strike, T, self.r, iv, opt).price
+            spread_val = short_val - long_val
+            t.exit_date = df.index[-1].strftime("%Y-%m-%d")
+            t.exit_premium = round(spread_val, 2)
+            t.pnl = round((initial_credit - spread_val) * 100 * t.contracts, 2)
+            t.reason = "end_of_backtest"
+            self.cash += t.pnl
+            self.trades.append(t)
+
+    # ── Short Strangle ────────────────────────────────────────────────
+
+    def run_short_strangle(self):
+        df = self.df
+        open_trades: list[Trade] = []
+        max_strangles = 1  # conservative — undefined risk
+
+        for date, row in df.iterrows():
+            date_str = date.strftime("%Y-%m-%d")
+            S = row["Close"]
+            iv = row["IV"]
+            if np.isnan(iv):
+                self.equity_curve.append(self.cash)
+                continue
+
+            # Manage existing — each leg independently
+            still_open = []
+            for t in open_trades:
+                closed, closed_trade = self._manage_position(t, S, iv, date, date_str)
+                if closed:
+                    self.cash += closed_trade.pnl
+                    self.trades.append(closed_trade)
+                else:
+                    still_open.append(t)
+            open_trades = still_open
+
+            # Count open strangles by unique group_id
+            open_groups = {t.group_id for t in open_trades if t.group_id}
+            if self._should_enter_neutral(row) and len(open_groups) < max_strangles:
+                target_dte = 45
+                T = target_dte / 365.0
+                expiry_date = (date + timedelta(days=target_dte)).strftime("%Y-%m-%d")
+                # Wider delta (0.16) for strangles — more room vs naked put's 0.25
+                target_delta = 0.16
+                gid = uuid.uuid4().hex[:8]
+
+                put_strike = find_strike_for_delta(S, T, self.r, iv, target_delta, "put")
+                call_strike = find_strike_for_delta(S, T, self.r, iv, target_delta, "call")
+
+                put_result = bsm_price(S, put_strike, T, self.r, iv, OptionType.PUT)
+                call_result = bsm_price(S, call_strike, T, self.r, iv, OptionType.CALL)
+                total_credit = put_result.price + call_result.price
+
+                if total_credit < 0.30:
+                    self.equity_curve.append(self.cash)
+                    continue
+
+                # Margin: simplified Reg-T — underlying_price * 100 per strangle
+                margin_req = S * 100
+                if margin_req > self.cash * 0.50:
+                    self.equity_curve.append(self.cash)
+                    continue
+
+                put_trade = Trade(
+                    strategy="short_strangle",
+                    entry_date=date_str,
+                    expiry_date=expiry_date,
+                    strike=round(put_strike, 2),
+                    option_type="put",
+                    premium=round(put_result.price, 2),
+                    group_id=gid,
+                    entry_iv=round(iv, 4),
+                    entry_delta=round(abs(put_result.delta), 4),
+                )
+                call_trade = Trade(
+                    strategy="short_strangle",
+                    entry_date=date_str,
+                    expiry_date=expiry_date,
+                    strike=round(call_strike, 2),
+                    option_type="call",
+                    premium=round(call_result.price, 2),
+                    group_id=gid,
+                    entry_iv=round(iv, 4),
+                    entry_delta=round(call_result.delta, 4),
+                )
+                self.cash += put_trade.net_credit() + call_trade.net_credit()
+                open_trades.extend([put_trade, call_trade])
+
+            self.equity_curve.append(self.cash)
+
+        # Close remaining — mark-to-market
+        for t in open_trades:
+            S = df.iloc[-1]["Close"]
+            iv = df.iloc[-1]["IV"]
+            if np.isnan(iv):
+                iv = self.all_df["IV"].dropna().iloc[-1]
+            dte = max((pd.Timestamp(t.expiry_date) - df.index[-1]).days, 0)
+            T = max(dte / 365.0, 0.001)
+            opt = OptionType.PUT if t.option_type == "put" else OptionType.CALL
+            current = bsm_price(S, t.strike, T, self.r, iv, opt).price
+            t.exit_date = df.index[-1].strftime("%Y-%m-%d")
+            t.exit_premium = round(current, 2)
+            t.pnl = round((t.premium - current) * 100 * t.contracts, 2)
+            t.reason = "end_of_backtest"
+            self.cash += t.pnl
+            self.trades.append(t)
+
     # ── Run ──────────────────────────────────────────────────────────────
 
     def run(self, strategy: str):
@@ -678,6 +1029,9 @@ class Backtester:
             "naked_put": self.run_naked_put,
             "wheel": self.run_wheel,
             "put_credit_spread": self.run_put_credit_spread,
+            "call_credit_spread": self.run_call_credit_spread,
+            "iron_condor": self.run_iron_condor,
+            "short_strangle": self.run_short_strangle,
         }
         if strategy not in dispatch:
             raise ValueError(f"Unknown strategy: {strategy}. Choose from {list(dispatch)}")

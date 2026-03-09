@@ -177,6 +177,14 @@ class AlphaSignal(StrEnum):
     AVOID = "AVOID"
 
 
+class DipVerdict(StrEnum):
+    STRONG_BUY = "STRONG_BUY"
+    BUY = "BUY"
+    LEAN_BUY = "LEAN_BUY"
+    WATCH = "WATCH"
+    PASS = "PASS"
+
+
 class AlphaLayerScore(BaseModel):
     """Per-layer breakdown within the alpha score."""
 
@@ -198,4 +206,20 @@ class AlphaResult(BaseModel):
     layers: list[AlphaLayerScore] = Field(default_factory=list)
     active_layers: int = 0
     total_layers: int = 0
+    scanned_at: datetime = Field(default_factory=datetime.now)
+
+
+class DipAnalysisResult(BaseModel):
+    """Result from the unified dip-buying analysis."""
+
+    symbol: str
+    price: float = 0.0
+    dip_score: float = Field(ge=0, le=100, default=0.0)
+    verdict: DipVerdict
+    regime: str = "unknown"
+    regime_adjustment: float = 0.0
+    layers: list[AlphaLayerScore] = Field(default_factory=list)
+    active_layers: int = 0
+    total_layers: int = 0
+    reasoning: str = ""
     scanned_at: datetime = Field(default_factory=datetime.now)

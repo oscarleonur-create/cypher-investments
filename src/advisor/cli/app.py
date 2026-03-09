@@ -7,6 +7,7 @@ import logging
 import typer
 
 from advisor.cli.backtest_cmds import app as backtest_app
+from advisor.cli.case_cmds import app as case_app
 from advisor.cli.confluence_cmds import app as confluence_app
 from advisor.cli.data_cmds import app as data_app
 from advisor.cli.market_cmds import app as market_app
@@ -24,6 +25,7 @@ app = typer.Typer(
 )
 
 app.add_typer(strategy_app, name="strategy")
+app.add_typer(case_app, name="case")
 app.add_typer(backtest_app, name="backtest")
 app.add_typer(data_app, name="data")
 app.add_typer(signal_app, name="signal")

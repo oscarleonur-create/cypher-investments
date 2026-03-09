@@ -89,6 +89,37 @@ class PCSCandidate(BaseModel):
     )
 
 
+class SpreadCandidate(BaseModel):
+    """Generic credit spread candidate (put or call side)."""
+
+    symbol: str
+    expiration: str
+    dte: int
+    short_strike: float
+    long_strike: float
+    width: float
+    net_credit: float
+    short_iv: float
+    long_iv: float
+    underlying_price: float
+    buying_power: float = Field(description="(width - net_credit) * 100")
+    spread_side: str = Field(description="'put' or 'call'")
+
+
+class NakedCandidate(BaseModel):
+    """Naked option candidate (single leg) for strangle simulation."""
+
+    symbol: str
+    expiration: str
+    dte: int
+    strike: float
+    option_type: str = Field(description="'put' or 'call'")
+    premium: float
+    iv: float
+    delta: float
+    underlying_price: float
+
+
 class SimResult(BaseModel):
     """Per-candidate Monte Carlo simulation results."""
 

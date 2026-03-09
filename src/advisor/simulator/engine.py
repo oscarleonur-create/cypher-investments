@@ -8,7 +8,13 @@ import numpy as np
 from scipy.stats import norm
 from scipy.stats import t as student_t
 
-from advisor.simulator.models import PCSCandidate, SimConfig, SimResult
+from advisor.simulator.models import (
+    NakedCandidate,
+    PCSCandidate,
+    SimConfig,
+    SimResult,
+    SpreadCandidate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +57,42 @@ def bsm_put_price_vec(
     d2 = d1 - sigma_safe * sqrt_T
 
     result[live] = K * np.exp(-r * T_safe) * norm.cdf(-d2) - S_live * norm.cdf(-d1)
+    return result
+
+
+def bsm_call_price_vec(
+    S: np.ndarray,
+    K: float,
+    T: float | np.ndarray,
+    r: float,
+    sigma: np.ndarray,
+) -> np.ndarray:
+    """Vectorized Black-Scholes call price for arrays of S and sigma."""
+    if np.isscalar(T):
+        T = np.full_like(S, T, dtype=np.float64)
+
+    result = np.zeros_like(S, dtype=np.float64)
+    expired = T <= 0
+    live = ~expired
+
+    # Expired: intrinsic value
+    result[expired] = np.maximum(S[expired] - K, 0.0)
+
+    if not np.any(live):
+        return result
+
+    S_live = S[live]
+    T_live = T[live]
+    sigma_live = sigma[live]
+
+    sigma_safe = np.maximum(sigma_live, 1e-8)
+    T_safe = np.maximum(T_live, 1e-8)
+
+    sqrt_T = np.sqrt(T_safe)
+    d1 = (np.log(S_live / K) + (r + 0.5 * sigma_safe**2) * T_safe) / (sigma_safe * sqrt_T)
+    d2 = d1 - sigma_safe * sqrt_T
+
+    result[live] = S_live * norm.cdf(d1) - K * np.exp(-r * T_safe) * norm.cdf(d2)
     return result
 
 
@@ -426,6 +468,457 @@ class MonteCarloEngine:
         vrf = var_raw / var_adj if var_adj > 1e-12 else 1.0
 
         return pnl_adjusted, vrf
+
+    def _simulate_ccs(
+        self,
+        candidate: SpreadCandidate,
+        prices: np.ndarray,
+        ivs: np.ndarray,
+        return_raw_pnl: bool = False,
+    ) -> SimResult | tuple[SimResult, np.ndarray]:
+        """Simulate a call credit spread across all paths.
+
+        Mirror of _simulate_pcs() using bsm_call_price_vec() instead.
+        """
+        cfg = self.config
+        n_paths_count, n_days = prices.shape
+        dte = n_days - 1
+
+        credit = candidate.net_credit * 100
+        max_loss = (candidate.width - candidate.net_credit) * 100
+
+        short_iv_ratio = candidate.short_iv / max(candidate.short_iv, 1e-8)
+        long_iv_ratio = candidate.long_iv / max(candidate.short_iv, 1e-8)
+
+        # Initial BSM spread value at entry
+        S0 = prices[:, 0]
+        iv0 = ivs[:, 0]
+        T0 = dte / 252.0
+        short_iv_0 = iv0 * short_iv_ratio
+        long_iv_0 = iv0 * long_iv_ratio
+        short_call_0 = bsm_call_price_vec(
+            S0, candidate.short_strike, T0, cfg.risk_free_rate, short_iv_0
+        )
+        long_call_0 = bsm_call_price_vec(
+            S0, candidate.long_strike, T0, cfg.risk_free_rate, long_iv_0
+        )
+        entry_spread_value = (short_call_0 - long_call_0) * 100
+
+        profit_threshold = credit * cfg.profit_target_pct
+        stop_threshold = credit * cfg.stop_loss_multiplier
+
+        pnl = np.full(n_paths_count, np.nan)
+        hold_days = np.full(n_paths_count, dte, dtype=np.float64)
+        exit_reason = np.zeros(n_paths_count, dtype=np.int32)
+        touched_short = np.zeros(n_paths_count, dtype=bool)
+
+        active = np.ones(n_paths_count, dtype=bool)
+        slippage = cfg.slippage_pct * candidate.width * 100
+
+        for day in range(1, n_days):
+            if not np.any(active):
+                break
+
+            remaining_dte = dte - day
+            T = remaining_dte / 252.0
+            S = prices[active, day]
+            iv = ivs[active, day]
+
+            # Touch: price rises to short call strike
+            touched_short[active] |= S >= candidate.short_strike
+
+            short_iv = iv * short_iv_ratio
+            long_iv = iv * long_iv_ratio
+            short_call = bsm_call_price_vec(
+                S, candidate.short_strike, T, cfg.risk_free_rate, short_iv
+            )
+            long_call = bsm_call_price_vec(S, candidate.long_strike, T, cfg.risk_free_rate, long_iv)
+            current_spread = (short_call - long_call) * 100
+
+            entry_vals = entry_spread_value[active]
+            unrealized_pnl = entry_vals - current_spread
+            change = current_spread - entry_vals
+            mtm_pnl = credit - change - slippage
+
+            # DTE exit
+            if remaining_dte <= cfg.close_at_dte and remaining_dte > 0:
+                active_indices = np.where(active)[0]
+                pnl[active_indices] = mtm_pnl
+                hold_days[active_indices] = day
+                exit_reason[active_indices] = 3
+                active[active_indices] = False
+                continue
+
+            # Profit target
+            profit_mask = unrealized_pnl >= profit_threshold
+            if np.any(profit_mask):
+                active_indices = np.where(active)[0]
+                profit_indices = active_indices[profit_mask]
+                pnl[profit_indices] = mtm_pnl[profit_mask]
+                hold_days[profit_indices] = day
+                exit_reason[profit_indices] = 1
+                active[profit_indices] = False
+
+            if not np.any(active):
+                continue
+
+            # Stop loss
+            remaining_upnl = entry_spread_value[active] - (
+                (
+                    bsm_call_price_vec(
+                        prices[active, day],
+                        candidate.short_strike,
+                        T,
+                        cfg.risk_free_rate,
+                        ivs[active, day] * short_iv_ratio,
+                    )
+                    - bsm_call_price_vec(
+                        prices[active, day],
+                        candidate.long_strike,
+                        T,
+                        cfg.risk_free_rate,
+                        ivs[active, day] * long_iv_ratio,
+                    )
+                )
+                * 100
+            )
+
+            stop_mask = remaining_upnl <= -stop_threshold
+            if np.any(stop_mask):
+                active_indices = np.where(active)[0]
+                stop_indices = active_indices[stop_mask]
+                stop_change = -remaining_upnl[stop_mask]
+                pnl[stop_indices] = credit - stop_change - slippage
+                hold_days[stop_indices] = day
+                exit_reason[stop_indices] = 2
+                active[stop_indices] = False
+
+        # Remaining: settle at expiration
+        if np.any(active):
+            active_indices = np.where(active)[0]
+            S_final = prices[active, -1]
+            short_intrinsic = np.maximum(S_final - candidate.short_strike, 0.0) * 100
+            long_intrinsic = np.maximum(S_final - candidate.long_strike, 0.0) * 100
+            spread_intrinsic = short_intrinsic - long_intrinsic
+            entry_vals = entry_spread_value[active]
+            pnl[active_indices] = credit - (spread_intrinsic - entry_vals)
+            exit_reason[active_indices] = 0
+
+        pnl = np.maximum(pnl, -max_loss)
+
+        raw_pnl = pnl.copy()
+        variance_reduction_factor = 1.0
+
+        # Control variate for CCS (use call pricing)
+        if cfg.use_control_variate:
+            S_final = prices[:, -1]
+            short_intrinsic = np.maximum(S_final - candidate.short_strike, 0.0) * 100
+            long_intrinsic = np.maximum(S_final - candidate.long_strike, 0.0) * 100
+            european_pnl = credit - (short_intrinsic - long_intrinsic)
+
+            T_full = candidate.dte / 252.0
+            iv0_val = ivs[0, 0]
+            S0_arr = np.array([candidate.underlying_price])
+            iv0_arr = np.array([iv0_val])
+            short_analytical = bsm_call_price_vec(
+                S0_arr, candidate.short_strike, T_full, cfg.risk_free_rate, iv0_arr * short_iv_ratio
+            )[0]
+            long_analytical = bsm_call_price_vec(
+                S0_arr, candidate.long_strike, T_full, cfg.risk_free_rate, iv0_arr * long_iv_ratio
+            )[0]
+            analytical_spread = (short_analytical - long_analytical) * 100
+            analytical_value = credit - analytical_spread
+
+            valid = ~np.isnan(pnl)
+            if np.sum(valid) >= 10:
+                cov_matrix = np.cov(pnl[valid], european_pnl[valid])
+                var_control = cov_matrix[1, 1]
+                if var_control > 1e-12:
+                    beta = cov_matrix[0, 1] / var_control
+                    pnl_adjusted = pnl.copy()
+                    pnl_adjusted[valid] = pnl[valid] - beta * (
+                        european_pnl[valid] - analytical_value
+                    )
+                    var_raw = np.var(pnl[valid])
+                    var_adj = np.var(pnl_adjusted[valid])
+                    variance_reduction_factor = var_raw / var_adj if var_adj > 1e-12 else 1.0
+                    pnl = pnl_adjusted
+
+        # Compute statistics
+        valid_pnl = pnl[~np.isnan(pnl)]
+        ev = float(np.mean(valid_pnl))
+        pop = float(np.nanmean(pnl > 0))
+        touch_prob = float(np.mean(touched_short))
+        mc_std_err = float(np.std(valid_pnl) / np.sqrt(len(valid_pnl)))
+        sorted_pnl = np.sort(valid_pnl)
+        n_tail = max(int(len(sorted_pnl) * 0.05), 1)
+        cvar_95 = float(np.mean(sorted_pnl[:n_tail]))
+        stop_prob = float(np.mean(exit_reason == 2))
+        avg_hold = float(np.nanmean(hold_days))
+        buying_power = candidate.buying_power
+        ev_per_bp = ev / buying_power if buying_power > 0 else 0.0
+
+        percentiles = np.nanpercentile(pnl, [5, 25, 50, 75, 95])
+        n_total = len(pnl)
+
+        result = SimResult(
+            symbol=candidate.symbol,
+            short_strike=candidate.short_strike,
+            long_strike=candidate.long_strike,
+            dte=candidate.dte,
+            net_credit=candidate.net_credit,
+            ev=round(ev, 2),
+            pop=round(pop, 4),
+            touch_prob=round(touch_prob, 4),
+            cvar_95=round(cvar_95, 2),
+            stop_prob=round(stop_prob, 4),
+            avg_hold_days=round(avg_hold, 1),
+            ev_per_bp=round(ev_per_bp, 6),
+            mc_std_err=round(mc_std_err, 4),
+            variance_reduction_factor=round(variance_reduction_factor, 2),
+            pnl_p5=round(float(percentiles[0]), 2),
+            pnl_p25=round(float(percentiles[1]), 2),
+            pnl_p50=round(float(percentiles[2]), 2),
+            pnl_p75=round(float(percentiles[3]), 2),
+            pnl_p95=round(float(percentiles[4]), 2),
+            exit_profit_target=round(float(np.sum(exit_reason == 1) / n_total), 4),
+            exit_stop_loss=round(float(np.sum(exit_reason == 2) / n_total), 4),
+            exit_dte=round(float(np.sum(exit_reason == 3) / n_total), 4),
+            exit_expiration=round(float(np.sum(exit_reason == 0) / n_total), 4),
+        )
+
+        if return_raw_pnl:
+            return result, raw_pnl
+        return result
+
+    def simulate_iron_condor(
+        self,
+        put_candidate: PCSCandidate | SpreadCandidate,
+        call_candidate: SpreadCandidate,
+        n_paths: int | None = None,
+    ) -> SimResult:
+        """Run MC simulation for an iron condor (PCS + CCS on same paths)."""
+        atm_iv = (
+            self.config.vol_mean_level if self.config.vol_mean_level > 0 else put_candidate.short_iv
+        )
+        prices, ivs = self._generate_paths(
+            S0=put_candidate.underlying_price,
+            iv0=atm_iv,
+            dte=put_candidate.dte,
+            n_paths=n_paths,
+        )
+
+        _, pcs_pnl = self._simulate_pcs(put_candidate, prices, ivs, return_raw_pnl=True)
+        _, ccs_pnl = self._simulate_ccs(call_candidate, prices, ivs, return_raw_pnl=True)
+
+        combined_pnl = pcs_pnl + ccs_pnl
+        valid = ~np.isnan(combined_pnl)
+        valid_pnl = combined_pnl[valid]
+
+        ev = float(np.mean(valid_pnl))
+        pop = float(np.mean(valid_pnl > 0))
+        sorted_pnl = np.sort(valid_pnl)
+        n_tail = max(int(len(sorted_pnl) * 0.05), 1)
+        cvar_95 = float(np.mean(sorted_pnl[:n_tail]))
+        mc_std_err = float(np.std(valid_pnl) / np.sqrt(len(valid_pnl)))
+        percentiles = np.nanpercentile(combined_pnl, [5, 25, 50, 75, 95])
+
+        total_credit = put_candidate.net_credit + call_candidate.net_credit
+        total_bp = max(put_candidate.buying_power, call_candidate.buying_power)
+
+        return SimResult(
+            symbol=put_candidate.symbol,
+            short_strike=put_candidate.short_strike,
+            long_strike=put_candidate.long_strike,
+            dte=put_candidate.dte,
+            net_credit=total_credit,
+            ev=round(ev, 2),
+            pop=round(pop, 4),
+            touch_prob=0.0,
+            cvar_95=round(cvar_95, 2),
+            stop_prob=0.0,
+            avg_hold_days=round(float(put_candidate.dte), 1),
+            ev_per_bp=round(ev / total_bp if total_bp > 0 else 0.0, 6),
+            mc_std_err=round(mc_std_err, 4),
+            pnl_p5=round(float(percentiles[0]), 2),
+            pnl_p25=round(float(percentiles[1]), 2),
+            pnl_p50=round(float(percentiles[2]), 2),
+            pnl_p75=round(float(percentiles[3]), 2),
+            pnl_p95=round(float(percentiles[4]), 2),
+            exit_profit_target=0.0,
+            exit_stop_loss=0.0,
+            exit_dte=0.0,
+            exit_expiration=1.0,
+        )
+
+    def simulate_strangle(
+        self,
+        put_candidate: NakedCandidate,
+        call_candidate: NakedCandidate,
+        n_paths: int | None = None,
+    ) -> SimResult:
+        """Run MC simulation for a short strangle (naked put + naked call on same paths)."""
+        cfg = self.config
+        atm_iv = cfg.vol_mean_level if cfg.vol_mean_level > 0 else put_candidate.iv
+        prices, ivs = self._generate_paths(
+            S0=put_candidate.underlying_price,
+            iv0=atm_iv,
+            dte=put_candidate.dte,
+            n_paths=n_paths,
+        )
+
+        n_paths_count, n_days = prices.shape
+        dte = n_days - 1
+
+        put_credit = put_candidate.premium * 100
+        call_credit = call_candidate.premium * 100
+        total_credit = put_credit + call_credit
+
+        profit_threshold = total_credit * cfg.profit_target_pct
+        stop_threshold = total_credit * cfg.stop_loss_multiplier
+
+        # Track per-path outcomes
+        pnl = np.full(n_paths_count, np.nan)
+        hold_days = np.full(n_paths_count, dte, dtype=np.float64)
+        exit_reason = np.zeros(n_paths_count, dtype=np.int32)
+        touched = np.zeros(n_paths_count, dtype=bool)
+
+        active = np.ones(n_paths_count, dtype=bool)
+
+        # Initial straddle value
+        S0 = prices[:, 0]
+        iv0_paths = ivs[:, 0]
+        T0 = dte / 252.0
+        put_val_0 = bsm_put_price_vec(S0, put_candidate.strike, T0, cfg.risk_free_rate, iv0_paths)
+        call_val_0 = bsm_call_price_vec(
+            S0, call_candidate.strike, T0, cfg.risk_free_rate, iv0_paths
+        )
+        entry_value = (put_val_0 + call_val_0) * 100
+
+        for day in range(1, n_days):
+            if not np.any(active):
+                break
+
+            remaining_dte = dte - day
+            T = remaining_dte / 252.0
+            S = prices[active, day]
+            iv = ivs[active, day]
+
+            touched[active] |= (S <= put_candidate.strike) | (S >= call_candidate.strike)
+
+            put_val = bsm_put_price_vec(S, put_candidate.strike, T, cfg.risk_free_rate, iv)
+            call_val = bsm_call_price_vec(S, call_candidate.strike, T, cfg.risk_free_rate, iv)
+            current_value = (put_val + call_val) * 100
+
+            entry_vals = entry_value[active]
+            unrealized_pnl = entry_vals - current_value
+            change = current_value - entry_vals
+            mtm_pnl = total_credit - change
+
+            # DTE exit
+            if remaining_dte <= cfg.close_at_dte and remaining_dte > 0:
+                active_indices = np.where(active)[0]
+                pnl[active_indices] = mtm_pnl
+                hold_days[active_indices] = day
+                exit_reason[active_indices] = 3
+                active[active_indices] = False
+                continue
+
+            # Profit target
+            profit_mask = unrealized_pnl >= profit_threshold
+            if np.any(profit_mask):
+                active_indices = np.where(active)[0]
+                profit_indices = active_indices[profit_mask]
+                pnl[profit_indices] = mtm_pnl[profit_mask]
+                hold_days[profit_indices] = day
+                exit_reason[profit_indices] = 1
+                active[profit_indices] = False
+
+            if not np.any(active):
+                continue
+
+            # Stop loss
+            remaining_upnl = entry_value[active] - (
+                (
+                    bsm_put_price_vec(
+                        prices[active, day],
+                        put_candidate.strike,
+                        T,
+                        cfg.risk_free_rate,
+                        ivs[active, day],
+                    )
+                    + bsm_call_price_vec(
+                        prices[active, day],
+                        call_candidate.strike,
+                        T,
+                        cfg.risk_free_rate,
+                        ivs[active, day],
+                    )
+                )
+                * 100
+            )
+
+            stop_mask = remaining_upnl <= -stop_threshold
+            if np.any(stop_mask):
+                active_indices = np.where(active)[0]
+                stop_indices = active_indices[stop_mask]
+                stop_change = -remaining_upnl[stop_mask]
+                pnl[stop_indices] = total_credit - stop_change
+                hold_days[stop_indices] = day
+                exit_reason[stop_indices] = 2
+                active[stop_indices] = False
+
+        # Remaining: settle at expiration
+        if np.any(active):
+            active_indices = np.where(active)[0]
+            S_final = prices[active, -1]
+            put_intrinsic = np.maximum(put_candidate.strike - S_final, 0.0) * 100
+            call_intrinsic = np.maximum(S_final - call_candidate.strike, 0.0) * 100
+            total_intrinsic = put_intrinsic + call_intrinsic
+            entry_vals = entry_value[active]
+            pnl[active_indices] = total_credit - (total_intrinsic - entry_vals)
+            exit_reason[active_indices] = 0
+
+        # Statistics
+        valid_pnl = pnl[~np.isnan(pnl)]
+        ev = float(np.mean(valid_pnl))
+        pop = float(np.mean(valid_pnl > 0))
+        touch_prob = float(np.mean(touched))
+        mc_std_err = float(np.std(valid_pnl) / np.sqrt(len(valid_pnl)))
+        sorted_pnl = np.sort(valid_pnl)
+        n_tail = max(int(len(sorted_pnl) * 0.05), 1)
+        cvar_95 = float(np.mean(sorted_pnl[:n_tail]))
+        stop_prob = float(np.mean(exit_reason == 2))
+        avg_hold = float(np.nanmean(hold_days))
+        margin = put_candidate.underlying_price * 100
+        ev_per_bp = ev / margin if margin > 0 else 0.0
+        percentiles = np.nanpercentile(pnl, [5, 25, 50, 75, 95])
+        n_total = len(pnl)
+
+        return SimResult(
+            symbol=put_candidate.symbol,
+            short_strike=put_candidate.strike,
+            long_strike=call_candidate.strike,
+            dte=put_candidate.dte,
+            net_credit=round(total_credit / 100, 2),
+            ev=round(ev, 2),
+            pop=round(pop, 4),
+            touch_prob=round(touch_prob, 4),
+            cvar_95=round(cvar_95, 2),
+            stop_prob=round(stop_prob, 4),
+            avg_hold_days=round(avg_hold, 1),
+            ev_per_bp=round(ev_per_bp, 6),
+            mc_std_err=round(mc_std_err, 4),
+            pnl_p5=round(float(percentiles[0]), 2),
+            pnl_p25=round(float(percentiles[1]), 2),
+            pnl_p50=round(float(percentiles[2]), 2),
+            pnl_p75=round(float(percentiles[3]), 2),
+            pnl_p95=round(float(percentiles[4]), 2),
+            exit_profit_target=round(float(np.sum(exit_reason == 1) / n_total), 4),
+            exit_stop_loss=round(float(np.sum(exit_reason == 2) / n_total), 4),
+            exit_dte=round(float(np.sum(exit_reason == 3) / n_total), 4),
+            exit_expiration=round(float(np.sum(exit_reason == 0) / n_total), 4),
+        )
 
     def simulate(
         self,
