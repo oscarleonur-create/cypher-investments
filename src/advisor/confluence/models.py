@@ -84,6 +84,17 @@ class FastFundamentalsResult(BaseModel):
     has_confirmation: bool = False
 
 
+class VolumeConfirmationResult(BaseModel):
+    """Volume confirmation layer for dip-buying signals."""
+
+    volume_ratio: float = 0.0  # current vol / 20d avg
+    capitulation_detected: bool = False  # volume spike on recent down day
+    capitulation_ratio: float = 0.0  # peak down-day vol / avg vol
+    volume_dryup: bool = False  # declining volume trend (selling exhaustion)
+    obv_divergence: bool = False  # OBV rising while price falling
+    score: float = 0.0  # composite 0-100
+
+
 class DipScreenerResult(BaseModel):
     """Combined 3-layer dip screener result."""
 
@@ -177,6 +188,14 @@ class AlphaSignal(StrEnum):
     AVOID = "AVOID"
 
 
+class DipVerdict(StrEnum):
+    STRONG_BUY = "STRONG_BUY"
+    BUY = "BUY"
+    LEAN_BUY = "LEAN_BUY"
+    WATCH = "WATCH"
+    PASS = "PASS"
+
+
 class AlphaLayerScore(BaseModel):
     """Per-layer breakdown within the alpha score."""
 
@@ -198,4 +217,20 @@ class AlphaResult(BaseModel):
     layers: list[AlphaLayerScore] = Field(default_factory=list)
     active_layers: int = 0
     total_layers: int = 0
+    scanned_at: datetime = Field(default_factory=datetime.now)
+
+
+class DipAnalysisResult(BaseModel):
+    """Result from the unified dip-buying analysis."""
+
+    symbol: str
+    price: float = 0.0
+    dip_score: float = Field(ge=0, le=100, default=0.0)
+    verdict: DipVerdict
+    regime: str = "unknown"
+    regime_adjustment: float = 0.0
+    layers: list[AlphaLayerScore] = Field(default_factory=list)
+    active_layers: int = 0
+    total_layers: int = 0
+    reasoning: str = ""
     scanned_at: datetime = Field(default_factory=datetime.now)

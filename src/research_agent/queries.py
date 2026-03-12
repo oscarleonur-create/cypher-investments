@@ -84,6 +84,41 @@ def step3_sec_queries(input: ResearchInput) -> dict[str, str]:
     }
 
 
+TRANSCRIPT_DOMAINS = ["seekingalpha.com", "fool.com", "nasdaq.com"]
+
+
+def _infer_latest_quarter(today: date | None = None) -> tuple[str, int]:
+    """Return (quarter label, year) for the most recent completed fiscal quarter.
+
+    Q1 = Jan-Mar, Q2 = Apr-Jun, Q3 = Jul-Sep, Q4 = Oct-Dec.
+    If today is in Q1 (Jan-Mar), the latest completed quarter is Q4 of the prior year.
+    """
+    if today is None:
+        today = date.today()
+    month = today.month
+    if month <= 3:
+        return "Q4", today.year - 1
+    if month <= 6:
+        return "Q1", today.year
+    if month <= 9:
+        return "Q2", today.year
+    return "Q3", today.year
+
+
+def step3_transcript_queries(input: ResearchInput) -> list[str]:
+    """Return transcript-targeted search queries. Only meaningful for TICKER mode."""
+    if input.mode != InputMode.TICKER:
+        return []
+
+    ticker = input.value.upper()
+    quarter, year = _infer_latest_quarter()
+    return [
+        f"{ticker} earnings call transcript {quarter} {year}",
+        f"{ticker} earnings call management guidance commentary {year}",
+        f"{ticker} earnings call Q&A analyst questions {year}",
+    ]
+
+
 def subject_label(input: ResearchInput) -> str:
     """Return a labelled string for LLM prompts, e.g. 'Ticker: AAPL'."""
     if input.mode == InputMode.TICKER:

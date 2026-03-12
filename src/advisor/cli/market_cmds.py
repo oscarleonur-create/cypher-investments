@@ -10,6 +10,7 @@ from advisor.cli.formatters import console, output_error, output_json
 
 if TYPE_CHECKING:
     from advisor.confluence.alpha_scorer import AlphaResult
+    from advisor.confluence.dip_analyzer import DipAnalysisResult
     from advisor.confluence.mispricing_screener import MispricingResult
     from advisor.confluence.smart_money_screener import SmartMoneyResult
 
@@ -711,3 +712,275 @@ def _print_alpha_detail(r: "AlphaResult") -> None:
             table.add_row(ls.name, "-", "-", "-", status)
 
     console.print(table)
+
+
+# ── Dip Analysis ─────────────────────────────────────────────────────────
+
+
+@app.command("dip")
+def dip_scan(
+    ticker: Annotated[
+        Optional[str], typer.Option("--ticker", "-t", help="Single ticker deep-dive")
+    ] = None,
+    top: Annotated[int, typer.Option("--top", "-n", help="Top N results from S&P 500")] = 10,
+    sector: Annotated[
+        Optional[str], typer.Option("--sector", "-s", help="Filter by GICS sector")
+    ] = None,
+    output: Annotated[Optional[str], typer.Option("--output", help="Output format (json)")] = None,
+    skip_ml: Annotated[bool, typer.Option("--skip-ml", help="Skip ML signal layer")] = False,
+    skip_sentiment: Annotated[
+        bool, typer.Option("--skip-sentiment", help="Skip sentiment in confluence layer")
+    ] = False,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", "-v", help="Show dip screener detail tables")
+    ] = False,
+    workers: Annotated[int, typer.Option("--workers", "-w", help="Parallel workers")] = 3,
+) -> None:
+    """Unified dip-buying analysis combining 6 signal layers with regime adjustment."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn
+    from rich.table import Table
+
+    from advisor.confluence.dip_analyzer import analyze_dip
+
+    skip_layers: set[str] = set()
+    if skip_ml:
+        skip_layers.add("ml_signal")
+    if skip_sentiment:
+        skip_layers.add("confluence")
+
+    if ticker:
+        result = analyze_dip(ticker, skip_layers=skip_layers)
+        if output == "json":
+            output_json(result)
+            return
+        _print_dip_detail(result, verbose=verbose)
+        return
+
+    # ── Universe scan mode ───────────────────────────────────────────
+    from advisor.confluence.smart_money_screener import get_sp500_by_sector, get_sp500_tickers
+
+    tickers = get_sp500_tickers()
+
+    if sector:
+        by_sector = get_sp500_by_sector()
+        sector_lower = sector.lower()
+        matched: set[str] = set()
+        for s, s_tickers in by_sector.items():
+            if sector_lower in s.lower():
+                matched.update(s_tickers)
+        if matched:
+            tickers = [t for t in tickers if t in matched]
+        else:
+            console.print(f"[yellow]No tickers found for sector '{sector}'[/yellow]")
+            return
+
+    results: list[DipAnalysisResult] = []
+
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        console=console,
+    )
+
+    with progress:
+        task = progress.add_task("[cyan]Scanning dip opportunities...", total=len(tickers))
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(analyze_dip, t, skip_layers): t for t in tickers}
+            for future in as_completed(futures):
+                try:
+                    r = future.result()
+                    results.append(r)
+                except Exception:
+                    pass
+                progress.update(task, advance=1)
+
+    results.sort(key=lambda r: r.dip_score, reverse=True)
+    results = results[:top]
+
+    if output == "json":
+        output_json([r.model_dump(mode="json") for r in results])
+        return
+
+    # ── Summary table ────────────────────────────────────────────────
+    verdict_colors = {
+        "STRONG_BUY": "bold green",
+        "BUY": "green",
+        "LEAN_BUY": "cyan",
+        "WATCH": "yellow",
+        "PASS": "red",
+    }
+
+    title = f"Dip Analysis — Top {top}"
+    if sector:
+        title += f" ({sector})"
+
+    table = Table(title=title)
+    table.add_column("Symbol", style="cyan")
+    table.add_column("Score", justify="right")
+    table.add_column("Verdict")
+    table.add_column("Dip", justify="right")
+    table.add_column("Smart$", justify="right")
+    table.add_column("Misprice", justify="right")
+    table.add_column("Conflu", justify="right")
+    table.add_column("ML", justify="right")
+    table.add_column("Tech", justify="right")
+    table.add_column("Regime")
+
+    for r in results:
+        color = verdict_colors.get(r.verdict.value, "white")
+        layer_map = {ls.name: ls for ls in r.layers}
+
+        def _fmt(name: str) -> str:
+            ls = layer_map.get(name)
+            if ls is None or not ls.available:
+                return "[dim]-[/dim]"
+            return f"{ls.normalized:.0f}"
+
+        regime_label = {"low_vol": "Calm", "normal": "Normal", "high_vol": "Stressed"}.get(
+            r.regime, r.regime
+        )
+
+        table.add_row(
+            r.symbol,
+            f"{r.dip_score:.0f}",
+            f"[{color}]{r.verdict.value}[/{color}]",
+            _fmt("dip_screener"),
+            _fmt("smart_money"),
+            _fmt("mispricing"),
+            _fmt("confluence"),
+            _fmt("ml_signal"),
+            _fmt("technical_dip"),
+            regime_label,
+        )
+
+    console.print(table)
+
+
+def _print_dip_detail(r: "DipAnalysisResult", *, verbose: bool = False) -> None:
+    """Print detailed dip analysis for a single ticker."""
+    from rich.panel import Panel
+    from rich.table import Table
+
+    verdict_colors = {
+        "STRONG_BUY": "bold green",
+        "BUY": "green",
+        "LEAN_BUY": "cyan",
+        "WATCH": "yellow",
+        "PASS": "red",
+    }
+    color = verdict_colors.get(r.verdict.value, "white")
+
+    regime_label = {"low_vol": "Calm", "normal": "Normal", "high_vol": "Stressed"}.get(
+        r.regime, r.regime
+    )
+    adj_str = f"{r.regime_adjustment:+.0f}" if r.regime_adjustment else "+0"
+
+    header = (
+        f"[bold]{r.symbol}[/bold] — [{color}]{r.verdict.value}[/{color}]"
+        f"  (Score: {r.dip_score:.1f}/100)"
+        f"  Price: ${r.price:.2f}"
+        f"  Regime: {regime_label} ({adj_str})"
+        f"\n\n{r.reasoning}"
+    )
+    console.print(Panel(header, title="Dip Analysis", border_style="blue"))
+
+    # Layer breakdown table
+    table = Table(title="Layer Breakdown")
+    table.add_column("Layer", style="cyan")
+    table.add_column("Score", justify="right")
+    table.add_column("Weight", justify="right")
+    table.add_column("Contrib", justify="right")
+    table.add_column("Status")
+
+    for ls in r.layers:
+        if ls.available:
+            table.add_row(
+                ls.name,
+                f"{ls.normalized:.0f}",
+                f"{ls.weight:.0%}",
+                f"{ls.weighted_contribution:.1f}",
+                "[green]OK[/green]",
+            )
+        else:
+            table.add_row(
+                ls.name,
+                "-",
+                "-",
+                "-",
+                f"[dim]{ls.error or 'unavailable'}[/dim]",
+            )
+
+    console.print(table)
+
+    if not verbose:
+        return
+
+    # ── Verbose: dip screener detail ─────────────────────────────────
+    # Re-run dip screener to get raw detail (already cached in most cases)
+    try:
+        from advisor.confluence.dip_screener import check_dip_fundamental
+
+        fund = check_dip_fundamental(r.symbol)
+        ds = fund.dip_screener
+        if ds is None:
+            return
+
+        detail = Table(title="Dip Screener Detail")
+        detail.add_column("Check", style="cyan")
+        detail.add_column("Value", justify="right")
+        detail.add_column("Status")
+
+        # Safety gate
+        s = ds.safety
+        detail.add_row(
+            "Current Ratio",
+            f"{s.current_ratio:.2f}" if s.current_ratio is not None else "N/A",
+            "[green]OK[/green]" if s.current_ratio_ok else "[red]FAIL[/red]",
+        )
+        detail.add_row(
+            "Debt/Equity",
+            f"{s.debt_to_equity:.2f}" if s.debt_to_equity is not None else "N/A",
+            "[green]OK[/green]" if s.debt_to_equity_ok else "[red]FAIL[/red]",
+        )
+        detail.add_row(
+            "FCF (4Q > 0)",
+            str(len([f for f in s.fcf_values if f > 0])) + f"/{len(s.fcf_values)}",
+            "[green]OK[/green]" if s.fcf_ok else "[red]FAIL[/red]",
+        )
+
+        # Value trap
+        if ds.value_trap:
+            vt = ds.value_trap
+            detail.add_row(
+                "P/E Discount",
+                f"{vt.pe_discount_pct:.0f}%" if vt.pe_discount_pct is not None else "N/A",
+                "[green]ON SALE[/green]" if vt.pe_on_sale else "[dim]no[/dim]",
+            )
+            detail.add_row(
+                "RSI Divergence",
+                f"{vt.price_change_pct:.1f}% drop" if vt.price_change_pct else "N/A",
+                "[green]YES[/green]" if vt.rsi_divergence else "[dim]no[/dim]",
+            )
+
+        # Fast fundamentals
+        if ds.fast_fundamentals:
+            ff = ds.fast_fundamentals
+            detail.add_row(
+                "Insider Buying",
+                f"{len(ff.insider_details)} txns",
+                "[green]YES[/green]" if ff.insider_buying else "[dim]no[/dim]",
+            )
+            detail.add_row(
+                "Analyst Upside",
+                f"{ff.analyst_upside_pct:+.0f}%" if ff.analyst_upside_pct else "N/A",
+                "[green]BULLISH[/green]" if ff.analyst_bullish else "[dim]no[/dim]",
+            )
+
+        console.print(detail)
+    except Exception as e:
+        console.print(f"[dim]Could not load dip screener detail: {e}[/dim]")

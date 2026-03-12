@@ -113,6 +113,27 @@ Focus on extracting facts in these categories:
 Each item must have a factual text and list of source IDs that support it. \
 Only extract claims that are directly supported by the provided sources."""
 
+TRANSCRIPT_SUMMARIZATION_PROMPT = """\
+You are a financial analyst specializing in earnings call analysis. Given search results \
+containing earnings call transcript content, extract structured highlights.
+
+Extract the following:
+1. management_tone: Classify as "bullish", "cautious", "defensive", or "mixed". \
+Provide brief evidence for the classification.
+2. revenue_discussion: Key revenue data points, trends, and segment breakdowns mentioned \
+by management. Include specific numbers where available.
+3. earnings_discussion: Key earnings/profitability data points, margin commentary, \
+and cost trends. Include specific numbers where available.
+4. guidance_details: Forward guidance specifics — numeric targets, qualitative language, \
+any revisions vs prior guidance. Note whether guidance was raised, maintained, or lowered.
+5. qa_highlights: Up to 5 notable exchanges from the Q&A section — analyst concerns, \
+management pushback, or revealing moments. Format as brief summaries.
+6. key_quotes: Up to 5 direct quotes from the call with speaker attribution \
+(e.g. "CEO Jane Smith: '...'"). Choose quotes that reveal tone or contain critical data.
+
+Base your analysis ONLY on the search results provided. If transcript content is limited \
+or unavailable, leave fields empty rather than speculating."""
+
 CARD_SYNTHESIS_PROMPT = """\
 You are a senior financial analyst. Synthesize the research evidence into an \
 Opportunity Card for a "buy-the-dip" analysis.

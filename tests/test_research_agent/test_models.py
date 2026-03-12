@@ -13,6 +13,7 @@ from research_agent.models import (
     OpportunityCard,
     ResearchInput,
     Source,
+    TranscriptSummary,
     TriggerResult,
     Verdict,
 )
@@ -99,8 +100,46 @@ def test_agent_state_initial():
     assert state.iteration == 0
     assert state.trigger is None
     assert state.classification is None
+    assert state.transcript_summary is None
     assert state.card is None
     assert state.fact_pack.total_items == 0
+
+
+def test_transcript_summary_defaults():
+    ts = TranscriptSummary()
+    assert ts.management_tone == ""
+    assert ts.revenue_discussion == ""
+    assert ts.qa_highlights == []
+    assert ts.key_quotes == []
+
+
+def test_transcript_summary_roundtrip():
+    ts = TranscriptSummary(
+        management_tone="bullish",
+        revenue_discussion="Revenue up 10%",
+        qa_highlights=["Analyst asked about margins"],
+        key_quotes=["CEO: 'Best quarter ever'"],
+    )
+    json_str = ts.model_dump_json()
+    restored = TranscriptSummary.model_validate_json(json_str)
+    assert restored.management_tone == "bullish"
+    assert restored.qa_highlights == ["Analyst asked about margins"]
+
+
+def test_agent_state_with_transcript_summary_roundtrip():
+    inp = ResearchInput(mode=InputMode.TICKER, value="AAPL")
+    state = AgentState(
+        input=inp,
+        transcript_summary=TranscriptSummary(
+            management_tone="cautious",
+            guidance_details="Lowered Q2 guidance",
+        ),
+    )
+    json_str = state.model_dump_json()
+    restored = AgentState.model_validate_json(json_str)
+    assert restored.transcript_summary is not None
+    assert restored.transcript_summary.management_tone == "cautious"
+    assert restored.transcript_summary.guidance_details == "Lowered Q2 guidance"
 
 
 def test_opportunity_card_serialization():

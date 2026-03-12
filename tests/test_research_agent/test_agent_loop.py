@@ -9,6 +9,7 @@ from research_agent.agent import (
     _ClassificationResponse,
     _EvidenceItemRaw,
     _FactExtractionResponse,
+    _TranscriptSummaryResponse,
     _TriggerResponse,
     run_loop,
     step1_detect_trigger,
@@ -173,10 +174,16 @@ class TestRunLoop:
             next_actions=["Monitor earnings"],
         )
 
+        transcript_resp = _TranscriptSummaryResponse(
+            management_tone="bullish",
+            revenue_discussion="Revenue grew 5%",
+        )
+
         mock_llm = MagicMock()
         mock_llm.complete.side_effect = [
             trigger_resp,
             classification_resp,
+            transcript_resp,  # transcript summarization (TICKER mode)
             facts_resp,
             card_resp,
         ]
@@ -187,6 +194,76 @@ class TestRunLoop:
         assert card.verdict == Verdict.BUY_THE_DIP
         assert len(card.bull_case) > 0
         assert card.id == state.input.run_id()
+
+
+class TestTranscriptFlowsIntoCardSynthesis:
+    def test_card_synthesis_prompt_includes_transcript_highlights(self):
+        """Verify that when transcript summary is present, Step 4 (card synthesis)
+        receives the Earnings Call Highlights section in its evidence."""
+        state = _make_state()
+        config = _make_config()
+        registry = SourceRegistry()
+
+        mock_search = MagicMock()
+        mock_search.search.return_value = [
+            SearchResult(
+                url="https://seekingalpha.com/aapl-transcript",
+                title="AAPL Transcript",
+                content="CEO discussed strong revenue growth",
+            )
+        ]
+
+        trigger_resp = _TriggerResponse(
+            found=True,
+            trigger_type="earnings",
+            summary="Earnings miss",
+            source_urls=["https://seekingalpha.com/aapl-transcript"],
+        )
+        classification_resp = _ClassificationResponse(
+            dip_type="TEMPORARY",
+            confidence=0.85,
+            reasoning="One-time miss",
+        )
+        transcript_resp = _TranscriptSummaryResponse(
+            management_tone="bullish",
+            revenue_discussion="Revenue grew 12% YoY to $94B",
+            guidance_details="Full-year guidance raised by 3%",
+        )
+        facts_resp = _FactExtractionResponse(
+            earnings_highlights=[
+                _EvidenceItemRaw(text="Revenue grew 12%", source_urls=[]),
+                _EvidenceItemRaw(text="EPS beat estimates", source_urls=[]),
+            ],
+        )
+        card_resp = _CardSynthesisResponse(
+            verdict="BUY_THE_DIP",
+            catalyst_summary="Earnings dip on macro fears",
+            bull_case=["Strong revenue growth"],
+            bear_case=["Macro headwinds"],
+            key_metrics={"revenue_growth": "12%"},
+        )
+
+        mock_llm = MagicMock()
+        mock_llm.complete.side_effect = [
+            trigger_resp,
+            classification_resp,
+            transcript_resp,
+            facts_resp,
+            card_resp,
+        ]
+
+        card = run_loop(state, mock_search, mock_llm, registry, config)
+
+        # The last LLM call is card synthesis (Step 4) — check its user_prompt
+        card_synthesis_call = mock_llm.complete.call_args_list[-1]
+        user_prompt = card_synthesis_call.kwargs.get(
+            "user_prompt", card_synthesis_call.args[1] if len(card_synthesis_call.args) > 1 else ""
+        )
+        assert "Earnings Call Highlights" in user_prompt
+        assert "bullish" in user_prompt
+        assert "Revenue grew 12% YoY to $94B" in user_prompt
+        assert "Full-year guidance raised by 3%" in user_prompt
+        assert card is not None
 
 
 class TestStep1DetectTriggerSector:

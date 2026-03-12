@@ -125,6 +125,18 @@ class OpportunityCard(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
 
 
+# ── Transcript summary ──────────────────────────────────────────────────────
+
+
+class TranscriptSummary(BaseModel):
+    management_tone: str = ""  # bullish / cautious / defensive / mixed
+    revenue_discussion: str = ""
+    earnings_discussion: str = ""
+    guidance_details: str = ""
+    qa_highlights: list[str] = Field(default_factory=list)  # max 5
+    key_quotes: list[str] = Field(default_factory=list)  # max 5
+
+
 # ── Mutable agent state ─────────────────────────────────────────────────────
 
 
@@ -135,6 +147,7 @@ class AgentState(BaseModel):
     trigger: TriggerResult | None = None
     classification: ClassificationResult | None = None
     fact_pack: FactPack = Field(default_factory=FactPack)
+    transcript_summary: TranscriptSummary | None = None
     card: OpportunityCard | None = None
     queries_executed: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)

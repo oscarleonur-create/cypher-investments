@@ -34,9 +34,17 @@ ANALYST_COUNT_MIN = 3
 C_SUITE_TITLES = {"ceo", "cfo", "coo", "cto", "director", "president", "chairman"}
 
 
+def _safe_info(ticker: yf.Ticker) -> dict:
+    """Safely access ticker.info, returning empty dict on failure."""
+    try:
+        return ticker.info or {}
+    except Exception:
+        return {}
+
+
 def _check_safety(ticker: yf.Ticker) -> SafetyCheckResult:
     """Layer 1: Safety gate — all checks must pass."""
-    info = ticker.info
+    info = _safe_info(ticker)
 
     # Current ratio
     current_ratio = info.get("currentRatio")
@@ -77,7 +85,7 @@ def _check_safety(ticker: yf.Ticker) -> SafetyCheckResult:
 
 def _check_value_trap(ticker: yf.Ticker) -> ValueTrapResult:
     """Layer 2: Value trap detector — either P/E discount or RSI divergence."""
-    info = ticker.info
+    info = _safe_info(ticker)
     result = ValueTrapResult()
 
     # P/E vs 5-year average
@@ -130,7 +138,7 @@ def _check_value_trap(ticker: yf.Ticker) -> ValueTrapResult:
 
 def _check_fast_fundamentals(ticker: yf.Ticker) -> FastFundamentalsResult:
     """Layer 3: Timing confirmation — insider buying + analyst targets."""
-    info = ticker.info
+    info = _safe_info(ticker)
     result = FastFundamentalsResult()
 
     # Insider transactions
@@ -267,7 +275,11 @@ def check_dip_fundamental(symbol: str) -> FundamentalResult:
         logger.warning(f"Could not fetch earnings calendar for {symbol}: {e}")
 
     # --- Layer 1: Safety gate ---
-    safety = _check_safety(ticker)
+    try:
+        safety = _check_safety(ticker)
+    except Exception as e:
+        logger.warning(f"Safety check failed for {symbol}: {e}")
+        safety = SafetyCheckResult(passes=False)
 
     rejection_reason: str | None = None
     value_trap: ValueTrapResult | None = None
@@ -285,10 +297,16 @@ def check_dip_fundamental(symbol: str) -> FundamentalResult:
         rejection_reason = "; ".join(failures)
     else:
         # --- Layer 2: Value trap detector ---
-        value_trap = _check_value_trap(ticker)
+        try:
+            value_trap = _check_value_trap(ticker)
+        except Exception as e:
+            logger.warning(f"Value trap check failed for {symbol}: {e}")
 
         # --- Layer 3: Fast fundamentals ---
-        fast_fund = _check_fast_fundamentals(ticker)
+        try:
+            fast_fund = _check_fast_fundamentals(ticker)
+        except Exception as e:
+            logger.warning(f"Fast fundamentals check failed for {symbol}: {e}")
 
     score = _compute_score(safety, value_trap, fast_fund)
 

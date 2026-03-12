@@ -13,6 +13,7 @@ from research_agent.llm import (
     CARD_SYNTHESIS_PROMPT,
     DIP_CLASSIFICATION_PROMPT,
     FACT_EXTRACTION_PROMPT,
+    TRANSCRIPT_SUMMARIZATION_PROMPT,
     TRIGGER_DETECTION_PROMPT,
     ClaudeLLM,
 )
@@ -22,11 +23,20 @@ from research_agent.models import (
     DipType,
     EvidenceItem,
     FactPack,
+    InputMode,
     OpportunityCard,
+    TranscriptSummary,
     TriggerResult,
     Verdict,
 )
-from research_agent.queries import step1_queries, step3_queries, step3_sec_queries, subject_label
+from research_agent.queries import (
+    TRANSCRIPT_DOMAINS,
+    step1_queries,
+    step3_queries,
+    step3_sec_queries,
+    step3_transcript_queries,
+    subject_label,
+)
 from research_agent.search import PerplexityClient, SearchResult
 
 logger = logging.getLogger(__name__)
@@ -63,6 +73,15 @@ class _FactExtractionResponse(BaseModel):
     bear_rebuttals: list[_EvidenceItemRaw] = Field(default_factory=list)
 
 
+class _TranscriptSummaryResponse(BaseModel):
+    management_tone: str = ""
+    revenue_discussion: str = ""
+    earnings_discussion: str = ""
+    guidance_details: str = ""
+    qa_highlights: list[str] = Field(default_factory=list)
+    key_quotes: list[str] = Field(default_factory=list)
+
+
 class _CardSynthesisResponse(BaseModel):
     verdict: str = "WATCH"
     catalyst_summary: str = ""
@@ -88,6 +107,28 @@ def _format_search_results(results: list[SearchResult], registry: SourceRegistry
     return "\n---\n".join(parts)
 
 
+def _format_transcript_summary(summary: TranscriptSummary) -> str:
+    """Format a TranscriptSummary into a text section for LLM consumption."""
+    lines = ["## Earnings Call Highlights"]
+    if summary.management_tone:
+        lines.append(f"Management Tone: {summary.management_tone}")
+    if summary.revenue_discussion:
+        lines.append(f"Revenue Discussion: {summary.revenue_discussion}")
+    if summary.earnings_discussion:
+        lines.append(f"Earnings Discussion: {summary.earnings_discussion}")
+    if summary.guidance_details:
+        lines.append(f"Guidance Details: {summary.guidance_details}")
+    if summary.qa_highlights:
+        lines.append("Q&A Highlights:")
+        for h in summary.qa_highlights[:5]:
+            lines.append(f"- {h}")
+    if summary.key_quotes:
+        lines.append("Key Quotes:")
+        for q in summary.key_quotes[:5]:
+            lines.append(f'- "{q}"')
+    return "\n".join(lines)
+
+
 def _format_evidence_for_llm(state: AgentState, registry: SourceRegistry) -> str:
     """Format accumulated evidence for LLM synthesis."""
     parts = []
@@ -107,6 +148,10 @@ def _format_evidence_for_llm(state: AgentState, registry: SourceRegistry) -> str
             label = field_name.replace("_", " ").title()
             lines = [f"- {item.text} [{', '.join(item.source_ids)}]" for item in items]
             parts.append(f"## {label}\n" + "\n".join(lines))
+
+    # Transcript highlights
+    if state.transcript_summary:
+        parts.append(_format_transcript_summary(state.transcript_summary))
 
     # Source index
     sources = registry.all_sources()
@@ -240,12 +285,50 @@ def step3_research_facts(
                 state.queries_executed.append(q)
                 queries_this_step += 1
 
+    # Transcript search pass
+    transcript_results: list[SearchResult] = []
+    if config.transcript_search_enabled and state.input.mode == InputMode.TICKER:
+        transcript_queries = step3_transcript_queries(state.input)
+        for q in transcript_queries:
+            if q not in state.queries_executed:
+                results = search.search(
+                    q, domains=TRANSCRIPT_DOMAINS, max_results=config.max_urls_per_query
+                )
+                transcript_results.extend(results)
+                all_results.extend(results)
+                state.queries_executed.append(q)
+
     if not all_results:
         return
 
     # Register sources
     for r in all_results:
         registry.add(url=r.url, title=r.title, snippet=r.content)
+
+    # Summarize transcript results via dedicated LLM call
+    if transcript_results:
+        transcript_context = _format_search_results(transcript_results, registry)
+        try:
+            transcript_resp: _TranscriptSummaryResponse = llm.complete(
+                system_prompt=TRANSCRIPT_SUMMARIZATION_PROMPT,
+                user_prompt=(
+                    f"{subject_label(state.input)}\n\n"
+                    f"Transcript Search Results:\n{transcript_context}"
+                ),
+                response_model=_TranscriptSummaryResponse,
+            )
+            state.transcript_summary = TranscriptSummary(
+                management_tone=transcript_resp.management_tone,
+                revenue_discussion=transcript_resp.revenue_discussion,
+                earnings_discussion=transcript_resp.earnings_discussion,
+                guidance_details=transcript_resp.guidance_details,
+                qa_highlights=transcript_resp.qa_highlights[:5],
+                key_quotes=transcript_resp.key_quotes[:5],
+            )
+            logger.info("Transcript summary extracted: tone=%s", transcript_resp.management_tone)
+        except Exception as e:
+            logger.error("Transcript summarization failed: %s", e)
+            state.errors.append(f"transcript_summarization: {e}")
 
     context = _format_search_results(all_results, registry)
 
