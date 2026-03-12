@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+from collections import defaultdict
 from datetime import datetime
 from typing import Optional
 
@@ -31,6 +33,9 @@ app.add_typer(track_app, name="track")
 
 @app.command("account")
 def account(
+    acct: Optional[str] = typer.Option(
+        None, "--account", "-a", help="Account number or suffix (e.g. '82')"
+    ),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Output format: json"),
 ):
     """Show live TastyTrade account balances and open positions."""
@@ -38,8 +43,8 @@ def account(
 
     async def _fetch():
         session = await get_session()
-        balances = await get_balances(session)
-        positions = await get_positions(session)
+        balances = await get_balances(session, account_number=acct)
+        positions = await get_positions(session, account_number=acct)
         return balances, positions
 
     try:
@@ -70,30 +75,162 @@ def account(
         console.print("[yellow]No open positions.[/yellow]")
         return
 
-    pos_table = Table(title=f"Open Positions ({len(positions)})")
-    pos_table.add_column("Symbol", style="cyan")
-    pos_table.add_column("Type")
-    pos_table.add_column("Qty", justify="right")
-    pos_table.add_column("Avg Open", justify="right")
-    pos_table.add_column("Current", justify="right")
-    pos_table.add_column("P&L", justify="right")
+    # Separate equity and options, group options into spreads
+    equity_positions = [
+        p
+        for p in positions
+        if "OPTION" not in str(p["instrument_type"]).upper()
+        and "EQUITY" in str(p["instrument_type"]).upper()
+    ]
+    option_positions = [p for p in positions if "OPTION" in str(p["instrument_type"]).upper()]
 
-    for p in positions:
-        avg = p["average_open_price"]
-        cur = p["close_price"]
-        pnl = (avg - cur) * 100 * int(p["quantity"])
-        color = "green" if pnl >= 0 else "red"
-        inst = str(p["instrument_type"]).replace("InstrumentType.", "")
-        pos_table.add_row(
-            p["symbol"],
-            inst,
-            str(p["quantity"]),
-            f"${avg:.2f}",
-            f"${cur:.2f}",
-            f"[{color}]${pnl:+,.2f}[/{color}]",
+    # Group option legs by underlying + expiration + type into spreads
+    spread_groups: dict[str, list[dict]] = defaultdict(list)
+    for p in option_positions:
+        underlying = p.get("underlying_symbol") or p["symbol"].split()[0].strip()
+        # Extract expiration and type from OCC symbol (e.g. "AMD   260417P00175000")
+        match = re.search(r"(\d{6})([PC])", p["symbol"])
+        exp = match.group(1) if match else "unknown"
+        opt_type = match.group(2) if match else "?"
+        key = f"{underlying}_{exp}_{opt_type}"
+        spread_groups[key].append(p)
+
+    def _parse_strike(sym: str) -> float:
+        match = re.search(r"[PC](\d{8})", sym)
+        return int(match.group(1)) / 1000 if match else 0
+
+    def _parse_opt_type(sym: str) -> str:
+        match = re.search(r"\d{6}([PC])", sym)
+        return match.group(1) if match else "?"
+
+    def _format_exp(raw: str) -> str:
+        if len(raw) == 6:
+            return f"20{raw[:2]}-{raw[2:4]}-{raw[4:6]}"
+        return raw
+
+    # Display equity positions
+    if equity_positions:
+        eq_table = Table(title="Equity Positions")
+        eq_table.add_column("Symbol", style="cyan")
+        eq_table.add_column("Qty", justify="right")
+        eq_table.add_column("Dir", justify="center")
+        eq_table.add_column("Avg Open", justify="right")
+        eq_table.add_column("Current", justify="right")
+        eq_table.add_column("P&L", justify="right")
+        for p in equity_positions:
+            qty = int(p["quantity"])
+            direction = str(p.get("quantity_direction", "Long"))
+            is_long = "Long" in direction
+            avg = p["average_open_price"]
+            cur = p["close_price"]
+            pnl = (cur - avg) * qty if is_long else (avg - cur) * qty
+            color = "green" if pnl >= 0 else "red"
+            eq_table.add_row(
+                p["symbol"],
+                str(qty),
+                direction,
+                f"${avg:.2f}",
+                f"${cur:.2f}",
+                f"[{color}]${pnl:+,.2f}[/{color}]",
+            )
+        console.print(eq_table)
+        console.print()
+
+    # Display option spreads
+    if spread_groups:
+        sp_table = Table(
+            title=f"Option Positions ({len(spread_groups)} spreads, {len(option_positions)} legs)"
         )
+        sp_table.add_column("Position", style="cyan")
+        sp_table.add_column("Exp", justify="center")
+        sp_table.add_column("Qty", justify="right")
+        sp_table.add_column("Credit", justify="right")
+        sp_table.add_column("Mark", justify="right")
+        sp_table.add_column("P&L", justify="right")
 
-    console.print(pos_table)
+        total_pnl = 0.0
+        for _key, legs in sorted(spread_groups.items()):
+            underlying = legs[0].get("underlying_symbol") or legs[0]["symbol"].split()[0].strip()
+            match = re.search(r"(\d{6})[PC]", legs[0]["symbol"])
+            exp_raw = match.group(1) if match else ""
+            exp_str = _format_exp(exp_raw)
+
+            if len(legs) == 2:
+                # Identify short (sell) and long (buy) legs
+                short_leg = next(
+                    (lg for lg in legs if "Short" in str(lg.get("quantity_direction", ""))),
+                    None,
+                )
+                long_leg = next(
+                    (lg for lg in legs if "Long" in str(lg.get("quantity_direction", ""))),
+                    None,
+                )
+                if not short_leg or not long_leg:
+                    # Fallback: assume higher strike is the sell leg
+                    legs_sorted = sorted(legs, key=lambda lg: _parse_strike(lg["symbol"]))
+                    long_leg, short_leg = legs_sorted[0], legs_sorted[1]
+
+                short_strike = _parse_strike(short_leg["symbol"])
+                long_strike = _parse_strike(long_leg["symbol"])
+                opt_type = _parse_opt_type(short_leg["symbol"])
+                qty = int(short_leg["quantity"])
+
+                # Credit received = sell price - buy price
+                credit = short_leg["average_open_price"] - long_leg["average_open_price"]
+                # Current cost to close = sell mark - buy mark
+                cur_mark = short_leg["close_price"] - long_leg["close_price"]
+                pnl = (credit - cur_mark) * 100 * qty
+                total_pnl += pnl
+                color = "green" if pnl >= 0 else "red"
+
+                sp_table.add_row(
+                    f"{underlying} {short_strike:.0f}/{long_strike:.0f}{opt_type}",
+                    exp_str,
+                    str(qty),
+                    f"${credit:.2f}",
+                    f"${cur_mark:.2f}",
+                    f"[{color}]${pnl:+,.2f}[/{color}]",
+                )
+            else:
+                # Single leg or 3+ legs — display each individually
+                for p in legs:
+                    strike = _parse_strike(p["symbol"])
+                    opt_type = _parse_opt_type(p["symbol"])
+                    direction = str(p.get("quantity_direction", "Long"))
+                    is_short = "Short" in direction
+                    avg = p["average_open_price"]
+                    cur = p["close_price"]
+                    pnl = (
+                        (avg - cur) * 100 * int(p["quantity"])
+                        if is_short
+                        else (cur - avg) * 100 * int(p["quantity"])
+                    )
+                    total_pnl += pnl
+                    color = "green" if pnl >= 0 else "red"
+                    label = (
+                        f"{underlying} {strike:.0f}{opt_type} {'(short)' if is_short else '(long)'}"
+                    )
+
+                    sp_table.add_row(
+                        label,
+                        exp_str,
+                        str(int(p["quantity"])),
+                        f"${avg:.2f}" if is_short else "-",
+                        f"${cur:.2f}",
+                        f"[{color}]${pnl:+,.2f}[/{color}]",
+                    )
+
+        # Total row
+        total_color = "green" if total_pnl >= 0 else "red"
+        sp_table.add_row(
+            "",
+            "",
+            "",
+            "",
+            "[bold]Total[/bold]",
+            f"[bold {total_color}]${total_pnl:+,.2f}[/bold {total_color}]",
+        )
+        console.print(sp_table)
 
 
 # ── Max-Move command ──────────────────────────────────────────────────────────

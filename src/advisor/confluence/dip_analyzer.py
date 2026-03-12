@@ -1,8 +1,9 @@
 """Dip Analyzer — unified dip-buying conviction score across all signal layers.
 
-Runs 6 layers (dip_screener, smart_money, mispricing, confluence, ml_signal,
-technical_dip), normalizes each to 0-100, applies dip-specific weights and
-optional regime adjustment, then returns a single DipAnalysisResult.
+Runs 7 layers (dip_screener, smart_money, mispricing, volume_confirmation,
+confluence, ml_signal, technical_dip), normalizes each to 0-100, applies
+dip-specific weights and optional regime adjustment, then returns a single
+DipAnalysisResult.
 """
 
 from __future__ import annotations
@@ -32,12 +33,13 @@ logger = logging.getLogger(__name__)
 # ── Default weights (dip-specific) ──────────────────────────────────────
 
 DIP_WEIGHTS: dict[str, float] = {
-    "dip_screener": 0.25,
-    "smart_money": 0.20,
-    "mispricing": 0.20,
-    "confluence": 0.15,
-    "ml_signal": 0.10,
+    "dip_screener": 0.20,
+    "smart_money": 0.18,
+    "mispricing": 0.17,
+    "volume_confirmation": 0.15,
+    "confluence": 0.12,
     "technical_dip": 0.10,
+    "ml_signal": 0.08,
 }
 
 # ── Regime adjustments ──────────────────────────────────────────────────
@@ -77,6 +79,11 @@ def _normalize_confluence(result: Any) -> float:
     return _CONFLUENCE_SCORE_MAP.get(result.verdict.value, 15.0)
 
 
+def _normalize_volume(result: Any) -> float:
+    """Volume confirmation score is already 0-100."""
+    return max(0.0, min(100.0, result.score))
+
+
 def _normalize_technical_dip(result: Any) -> float:
     """Map buy_the_dip technical signal to 0-100.
 
@@ -101,6 +108,12 @@ def _run_confluence_layer(symbol: str) -> Any:
     return run_confluence(symbol, "buy_the_dip", force_all=True)
 
 
+def _run_volume(symbol: str) -> Any:
+    from advisor.confluence.volume_confirmation import check_volume_confirmation
+
+    return check_volume_confirmation(symbol)
+
+
 def _run_technical_dip(symbol: str) -> Any:
     from advisor.confluence.technical import check_technical
 
@@ -115,6 +128,7 @@ _DIP_LAYERS: list[_LayerDef] = [
     ("dip_screener", _run_dip, _normalize_dip),
     ("smart_money", _run_smart_money, _normalize_smart_money),
     ("mispricing", _run_mispricing, _normalize_mispricing),
+    ("volume_confirmation", _run_volume, _normalize_volume),
     ("confluence", _run_confluence_layer, _normalize_confluence),
     ("ml_signal", _run_ml, _normalize_ml),
     ("technical_dip", _run_technical_dip, _normalize_technical_dip),
@@ -152,6 +166,14 @@ def _build_dip_reasoning(
 
     # Layer highlights
     layer_map = {ls.name: ls for ls in layers}
+
+    vol = layer_map.get("volume_confirmation")
+    if vol and vol.available:
+        if vol.normalized >= 60:
+            parts.append(f"Volume confirmation strong ({vol.normalized:.0f})")
+        elif vol.normalized >= 30:
+            parts.append(f"Volume confirmation moderate ({vol.normalized:.0f})")
+
     sm = layer_map.get("smart_money")
     if sm and sm.available and sm.normalized >= 60:
         parts.append(f"Smart money bullish ({sm.normalized:.0f})")

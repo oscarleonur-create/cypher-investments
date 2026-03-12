@@ -84,6 +84,17 @@ class FastFundamentalsResult(BaseModel):
     has_confirmation: bool = False
 
 
+class VolumeConfirmationResult(BaseModel):
+    """Volume confirmation layer for dip-buying signals."""
+
+    volume_ratio: float = 0.0  # current vol / 20d avg
+    capitulation_detected: bool = False  # volume spike on recent down day
+    capitulation_ratio: float = 0.0  # peak down-day vol / avg vol
+    volume_dryup: bool = False  # declining volume trend (selling exhaustion)
+    obv_divergence: bool = False  # OBV rising while price falling
+    score: float = 0.0  # composite 0-100
+
+
 class DipScreenerResult(BaseModel):
     """Combined 3-layer dip screener result."""
 

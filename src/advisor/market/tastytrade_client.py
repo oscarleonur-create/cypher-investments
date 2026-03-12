@@ -39,17 +39,25 @@ async def get_session():
     )
 
 
-async def get_account(session):
-    """Get primary account."""
+async def get_account(session, account_number: str | None = None):
+    """Get account by number (or suffix), or first account if not specified."""
     accounts = await Account.get(session)
+    if account_number:
+        for acct in accounts:
+            if acct.account_number == account_number or acct.account_number.endswith(
+                account_number
+            ):
+                return acct
+        available = [a.account_number for a in accounts]
+        raise ValueError(f"Account matching '{account_number}' not found. Available: {available}")
     return accounts[0]
 
 
-async def get_balances(session=None):
+async def get_balances(session=None, account_number: str | None = None):
     """Get account balances."""
     if not session:
         session = await get_session()
-    account = await get_account(session)
+    account = await get_account(session, account_number)
     balances = await account.get_balances(session)
     return {
         "account": account.account_number,
@@ -59,19 +67,24 @@ async def get_balances(session=None):
     }
 
 
-async def get_positions(session=None):
+async def get_positions(session=None, account_number: str | None = None):
     """Get open positions."""
     if not session:
         session = await get_session()
-    account = await get_account(session)
+    account = await get_account(session, account_number)
     positions = await account.get_positions(session)
     return [
         {
             "symbol": p.symbol,
+            "underlying_symbol": getattr(p, "underlying_symbol", None) or p.symbol,
             "quantity": p.quantity,
+            "quantity_direction": str(getattr(p, "quantity_direction", "Long")),
             "instrument_type": p.instrument_type,
+            "multiplier": int(getattr(p, "multiplier", 100)),
             "average_open_price": float(p.average_open_price) if p.average_open_price else 0,
             "close_price": float(p.close_price) if p.close_price else 0,
+            "mark_price": float(getattr(p, "mark_price", 0) or 0),
+            "mark": float(getattr(p, "mark", 0) or 0),
         }
         for p in positions
     ]
