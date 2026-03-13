@@ -171,6 +171,7 @@ class ConfluenceResult(BaseModel):
     sentiment: SentimentResult
     fundamental: FundamentalResult
     ml_signal: MLResult | None = None
+    volume_confirmation: VolumeConfirmationResult | None = None
     reasoning: str
     suggested_hold_days: int = 4
     scanned_at: datetime = Field(default_factory=datetime.now)

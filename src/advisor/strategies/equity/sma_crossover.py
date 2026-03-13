@@ -39,8 +39,18 @@ class SMACrossover(StrategyBase):
         )
         self.crossover = bt.indicators.CrossOver(self.sma_short, self.sma_long)
 
+    def _validate_params(self):
+        if self.p.short_period >= self.p.long_period:
+            raise ValueError(
+                f"short_period ({self.p.short_period}) must be less than "
+                f"long_period ({self.p.long_period})"
+            )
+
     def next(self):
         if self.order:
+            return
+
+        if self.position and self._check_risk_exits():
             return
 
         if self.crossover > 0 and not self.position:
@@ -55,7 +65,3 @@ class SMACrossover(StrategyBase):
 
         elif self.crossover < 0 and self.position:
             self.order = self.close()
-
-    def notify_order(self, order):
-        if order.status in [order.Completed, order.Canceled, order.Margin, order.Rejected]:
-            self.order = None

@@ -11,7 +11,7 @@ import backtrader as bt
 
 from advisor.data.feeds import create_feed
 from advisor.data.yahoo import YahooDataProvider
-from advisor.engine.analyzers import TradeRecorder
+from advisor.engine.analyzers import DrawdownCircuitBreaker, TradeRecorder
 from advisor.engine.results import BacktestResult, TradeRecord
 from advisor.strategies.base import StrategyBase
 from advisor.strategies.registry import StrategyRegistry
@@ -28,8 +28,9 @@ class BacktestRunner:
         commission: float = 0.001,
         provider: YahooDataProvider | None = None,
         slippage_perc: float = 0.001,
-        sizer: str | None = None,
+        sizer: str | None = "atr",
         sizer_params: dict[str, Any] | None = None,
+        max_drawdown_pct: float = 15.0,
     ):
         self.initial_cash = initial_cash
         self.commission = commission
@@ -37,6 +38,7 @@ class BacktestRunner:
         self.slippage_perc = slippage_perc
         self.sizer = sizer
         self.sizer_params = sizer_params or {}
+        self.max_drawdown_pct = max_drawdown_pct
 
     def run(
         self,
@@ -83,6 +85,12 @@ class BacktestRunner:
         cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
         cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
         cerebro.addanalyzer(TradeRecorder, _name="trade_recorder")
+        if self.max_drawdown_pct > 0:
+            cerebro.addanalyzer(
+                DrawdownCircuitBreaker,
+                _name="circuit_breaker",
+                max_drawdown_pct=self.max_drawdown_pct,
+            )
 
         # Run
         logger.info(f"Running backtest: {strategy_name} on {symbol} ({start} to {end})")

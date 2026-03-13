@@ -6,6 +6,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from advisor.core.exit_rules import EXIT_RULE_DEFAULTS
+
 
 class SimConfig(BaseModel):
     """Monte Carlo simulation configuration."""
@@ -28,10 +30,28 @@ class SimConfig(BaseModel):
         default=None, description="RNG seed for reproducibility (None = random)"
     )
 
-    # Exit rules
-    profit_target_pct: float = Field(default=0.50, description="Close at 50% of credit collected")
-    stop_loss_multiplier: float = Field(default=2.0, description="Close at 2x credit loss")
-    close_at_dte: int = Field(default=7, description="Close when DTE <= this value")
+    # Exit rules (defaults from shared exit rules; simulator may override)
+    profit_target_pct: float = Field(
+        default=EXIT_RULE_DEFAULTS.profit_target_pct,
+        description="Close at 50% of credit collected",
+    )
+    stop_loss_multiplier: float = Field(
+        default=EXIT_RULE_DEFAULTS.stop_loss_multiplier,
+        description="Close at 3x credit loss",
+    )
+    close_at_dte: int = Field(
+        default=EXIT_RULE_DEFAULTS.close_at_dte,
+        description="Close when DTE <= this value",
+    )
+
+    # Trailing stop
+    use_trailing_stop: bool = Field(default=False, description="Enable trailing stop exit")
+    trailing_activation_pct: float = Field(
+        default=0.50, description="Activate after this fraction of credit captured"
+    )
+    trailing_floor_pct: float = Field(
+        default=0.25, description="Lock in at least this fraction of peak unrealized"
+    )
 
     # Slippage
     slippage_pct: float = Field(
@@ -159,6 +179,7 @@ class SimResult(BaseModel):
     exit_stop_loss: float = Field(description="Fraction exiting at stop loss")
     exit_dte: float = Field(description="Fraction exiting at DTE threshold")
     exit_expiration: float = Field(description="Fraction held to expiration")
+    exit_trailing_stop: float = Field(default=0.0, description="Fraction exiting via trailing stop")
 
 
 class CalibrationRecord(BaseModel):

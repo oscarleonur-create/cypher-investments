@@ -41,6 +41,5 @@ class BuyAndHold(StrategyBase):
                     self.order = self.buy(size=size)
                     self.bought = True
 
-    def notify_order(self, order):
-        if order.status in [order.Completed, order.Canceled, order.Margin, order.Rejected]:
-            self.order = None
+    # buy_hold is a benchmark strategy — no risk exits applied.
+    # notify_order is handled by StrategyBase.

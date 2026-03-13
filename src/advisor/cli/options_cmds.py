@@ -1160,6 +1160,103 @@ def analyze(
     console.print()
 
 
+# ── Exit Sensitivity command ──────────────────────────────────────────────────
+
+
+@app.command("exit-sensitivity")
+def exit_sensitivity(
+    symbol: str = typer.Argument(help="Ticker symbol"),
+    profit_targets: str = typer.Option(
+        "0.25,0.40,0.50,0.60,0.75", "--profit-targets", help="Comma-separated profit target pcts"
+    ),
+    stop_losses: str = typer.Option(
+        "1.0,1.5,2.0,3.0", "--stop-losses", help="Comma-separated stop loss multipliers"
+    ),
+    dte_exits: str = typer.Option(
+        "0,5,7,14,21", "--dte-exits", help="Comma-separated DTE exit values"
+    ),
+    paths: int = typer.Option(10_000, "--paths", "-p", help="Number of MC paths"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output format: json"),
+):
+    """Sweep exit parameters over shared MC paths for sensitivity analysis."""
+    from advisor.simulator.engine import MonteCarloEngine
+    from advisor.simulator.exit_sensitivity import ExitSensitivityAnalyzer
+    from advisor.simulator.models import SimConfig
+
+    pt_list = [float(x.strip()) for x in profit_targets.split(",")]
+    sl_list = [float(x.strip()) for x in stop_losses.split(",")]
+    dte_list = [int(x.strip()) for x in dte_exits.split(",")]
+
+    config = SimConfig(n_paths=paths)
+    engine = MonteCarloEngine(config)
+
+    # Generate a candidate from live chain
+    console.print(f"[bold]Scanning {symbol.upper()} for PCS candidate...[/]")
+    from advisor.simulator.candidates import scan_and_generate
+
+    try:
+        candidates = asyncio.run(scan_and_generate([symbol.upper()], config))
+    except Exception as e:
+        console.print(f"[red]Failed to scan {symbol}: {e}[/]")
+        return
+
+    if not candidates:
+        console.print(f"[yellow]No candidates found for {symbol}[/]")
+        return
+
+    # Pick best candidate by sell_score
+    candidates.sort(key=lambda c: c.sell_score, reverse=True)
+    candidate = candidates[0]
+    console.print(
+        f"Using: {candidate.symbol} ${candidate.short_strike}/{candidate.long_strike} "
+        f"DTE={candidate.dte} Credit=${candidate.net_credit:.2f}"
+    )
+
+    analyzer = ExitSensitivityAnalyzer(engine, candidate)
+    console.print(
+        f"Sweeping {len(pt_list) * len(sl_list) * len(dte_list)} combos " f"over {paths:,} paths..."
+    )
+    result = analyzer.sweep(
+        profit_targets=pt_list,
+        stop_losses=sl_list,
+        close_dtes=dte_list,
+    )
+
+    if output == "json":
+        from advisor.cli.formatters import output_json
+
+        output_json(result.model_dump())
+    else:
+        # Rich table
+        table = Table(title="Exit Sensitivity Results", show_lines=True)
+        table.add_column("#", justify="right", style="dim")
+        table.add_column("PT", justify="right")
+        table.add_column("SL", justify="right")
+        table.add_column("DTE", justify="right")
+        table.add_column("EV", justify="right")
+        table.add_column("POP", justify="right")
+        table.add_column("CVaR95", justify="right")
+        table.add_column("Sharpe", justify="right")
+        table.add_column("Hold", justify="right")
+
+        # Sort by EV descending
+        sorted_pts = sorted(result.points, key=lambda p: p.ev, reverse=True)
+        for i, p in enumerate(sorted_pts[:20], 1):
+            ev_style = "green" if p.ev >= 0 else "red"
+            table.add_row(
+                str(i),
+                f"{p.profit_target_pct:.0%}",
+                f"{p.stop_loss_multiplier:.1f}x",
+                str(p.close_at_dte),
+                f"[{ev_style}]${p.ev:+.2f}[/]",
+                f"{p.pop:.0%}",
+                f"${p.cvar_95:.2f}",
+                f"{p.sharpe_approx:.3f}",
+                f"{p.avg_hold_days:.0f}d",
+            )
+        console.print(table)
+
+
 # ── Premium Scan command ──────────────────────────────────────────────────────
 
 

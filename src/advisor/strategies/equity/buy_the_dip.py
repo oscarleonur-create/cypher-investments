@@ -60,6 +60,9 @@ class BuyTheDip(StrategyBase):
         if self.order:
             return
 
+        if self.position and self._check_risk_exits():
+            return
+
         if not self.position:
             # BUY: RSI oversold + price near lower Bollinger Band + volume confirmation
             lower = self.bband.lines.bot[0]
@@ -81,10 +84,6 @@ class BuyTheDip(StrategyBase):
             near_upper = self.data.close[0] >= upper * (1 - self.p.bb_proximity_pct)
             if self.rsi[0] > self.p.rsi_overbought or near_upper:
                 self.order = self.close()
-
-    def notify_order(self, order):
-        if order.status in [order.Completed, order.Canceled, order.Margin, order.Rejected]:
-            self.order = None
 
 
 def scan(symbol: str):

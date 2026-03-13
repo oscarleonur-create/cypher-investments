@@ -12,6 +12,8 @@ from advisor.simulator.charts import (
     brier_trend_chart,
     calibration_curve_chart,
     exit_breakdown_chart,
+    exit_sensitivity_heatmap,
+    exit_sensitivity_parallel_coords,
     pnl_distribution_chart,
     prediction_scatter_chart,
     risk_comparison_chart,
@@ -115,8 +117,8 @@ run_clicked = st.sidebar.button("Run Simulation", type="primary", use_container_
 
 # ── Main area ──────────────────────────────────────────────────────────────────
 
-tab_run, tab_results, tab_history, tab_validation = st.tabs(
-    ["Run Sim", "Results", "History", "Validation"]
+tab_run, tab_results, tab_history, tab_validation, tab_exit_sens = st.tabs(
+    ["Run Sim", "Results", "History", "Validation", "Exit Sensitivity"]
 )
 
 # ── Run Sim tab ────────────────────────────────────────────────────────────────
@@ -396,3 +398,108 @@ with tab_validation:
 
         # Full-width Brier trend chart below
         st.plotly_chart(brier_trend_chart(resolved, window=30), use_container_width=True)
+
+# ── Exit Sensitivity tab ─────────────────────────────────────────────────────
+
+with tab_exit_sens:
+    st.subheader("Exit Parameter Sensitivity")
+    st.caption(
+        "Sweep exit parameters over shared MC paths to find optimal settings. "
+        "Inherits simulation config from sidebar."
+    )
+
+    es_col1, es_col2, es_col3 = st.columns(3)
+    with es_col1:
+        es_pt_input = st.text_input(
+            "Profit targets (comma-separated)", value="0.25,0.40,0.50,0.60,0.75", key="es_pt"
+        )
+    with es_col2:
+        es_sl_input = st.text_input(
+            "Stop losses (comma-separated)", value="1.0,1.5,2.0,3.0", key="es_sl"
+        )
+    with es_col3:
+        es_dte_input = st.text_input(
+            "DTE exits (comma-separated)", value="0,5,7,14,21", key="es_dte"
+        )
+
+    es_metric = st.selectbox(
+        "Heatmap metric",
+        ["ev", "pop", "cvar_95", "sharpe_approx", "avg_hold_days"],
+        index=0,
+        key="es_metric",
+    )
+
+    es_run = st.button("Run Sensitivity Sweep", key="es_run")
+
+    if es_run:
+        result = st.session_state.get("pipeline_result")
+        if not result or not result.top_results:
+            st.warning("Run a simulation first to generate candidates.")
+        else:
+            from advisor.simulator.engine import MonteCarloEngine
+            from advisor.simulator.exit_sensitivity import ExitSensitivityAnalyzer
+            from advisor.simulator.models import PCSCandidate
+
+            config = _build_config()
+            engine = MonteCarloEngine(config)
+
+            # Use top candidate
+            top = result.top_results[0]
+            candidate = PCSCandidate(
+                symbol=top.symbol,
+                expiration="",
+                dte=top.dte,
+                short_strike=top.short_strike,
+                long_strike=top.long_strike,
+                width=top.short_strike - top.long_strike,
+                short_bid=0,
+                short_ask=0,
+                long_bid=0,
+                long_ask=0,
+                net_credit=top.net_credit,
+                mid_credit=top.net_credit,
+                short_delta=0.25,
+                short_gamma=0,
+                short_theta=0,
+                short_vega=0,
+                short_iv=config.vol_mean_level,
+                long_delta=0,
+                long_iv=config.vol_mean_level,
+                underlying_price=top.short_strike / 0.95,
+                buying_power=(top.short_strike - top.long_strike - top.net_credit) * 100,
+            )
+
+            pt_list = [float(x.strip()) for x in es_pt_input.split(",")]
+            sl_list = [float(x.strip()) for x in es_sl_input.split(",")]
+            dte_list = [int(x.strip()) for x in es_dte_input.split(",")]
+
+            with st.spinner(f"Sweeping {len(pt_list) * len(sl_list) * len(dte_list)} combos..."):
+                analyzer = ExitSensitivityAnalyzer(engine, candidate)
+                sens_result = analyzer.sweep(pt_list, sl_list, dte_list)
+                st.session_state["exit_sensitivity_result"] = sens_result
+
+    sens_result = st.session_state.get("exit_sensitivity_result")
+    if sens_result and sens_result.points:
+        st.success(
+            f"{len(sens_result.points)} combos evaluated over " f"{sens_result.n_paths:,} paths"
+        )
+
+        # Heatmap
+        st.plotly_chart(
+            exit_sensitivity_heatmap(sens_result, metric=es_metric),
+            use_container_width=True,
+        )
+
+        # Parallel coordinates
+        st.plotly_chart(
+            exit_sensitivity_parallel_coords(sens_result),
+            use_container_width=True,
+        )
+
+        # Data table
+        st.subheader("All Results")
+        sens_df = pd.DataFrame([p.model_dump() for p in sens_result.points])
+        sens_df = sens_df.sort_values("ev", ascending=False)
+        st.dataframe(sens_df, use_container_width=True, hide_index=True)
+    elif not es_run:
+        st.info("Configure sweep ranges above and click **Run Sensitivity Sweep**.")
