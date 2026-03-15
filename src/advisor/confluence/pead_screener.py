@@ -145,7 +145,8 @@ def _check_revenue_surprise(ticker: yf.Ticker) -> bool | None:
         info = safe_info(ticker)
         growth = info.get("revenueGrowth")
         return growth > 0 if growth is not None else None
-    except Exception:
+    except Exception as e:
+        logger.debug("Revenue surprise fallback failed: %s", e)
         return None
 
 

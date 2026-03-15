@@ -310,7 +310,8 @@ def backtest_validate(
     progress(f"Calibrating {symbol}...")
     try:
         cal_cfg = calibrate(symbol, cfg)
-    except Exception:
+    except Exception as e:
+        logger.debug("Calibration failed for %s, using defaults: %s", symbol, e)
         cal_cfg = cfg
     engine = MonteCarloEngine(cal_cfg)
 

@@ -82,8 +82,8 @@ def _pead_prescreen(
             try:
                 if future.result():
                     passed.append(sym)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("PEAD pre-screen future failed for %s: %s", sym, e)
             if on_progress:
                 on_progress("pead_prescreen_tick", 1)
 

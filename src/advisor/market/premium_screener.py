@@ -156,8 +156,8 @@ def get_regime_name() -> str:
             detector = RegimeDetector.load()
             result = detector.detect_regime()
             return result["regime_name"]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("HMM regime detection failed: %s", e)
 
     # VIX fallback
     try:
@@ -169,8 +169,8 @@ def get_regime_name() -> str:
                 return "high_vol"
             elif vix_level <= 15:
                 return "low_vol"
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("VIX fallback failed: %s", e)
 
     return "normal"
 
@@ -380,7 +380,8 @@ class PremiumScreener:
 
             try:
                 chain = ticker.option_chain(exp_str)
-            except Exception:
+            except Exception as e:
+                logger.debug("Failed to fetch option chain for %s %s: %s", symbol, exp_str, e)
                 continue
 
             puts = chain.puts

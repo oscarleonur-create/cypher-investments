@@ -575,7 +575,8 @@ def _check_options_activity(
                 total_oi += int(chain.calls["openInterest"].fillna(0).sum())
                 total_oi += int(chain.puts["openInterest"].fillna(0).sum())
                 all_calls_frames.append(chain.calls)
-            except Exception:
+            except Exception as e:
+                logger.debug("Option chain fetch failed for %s %s: %s", symbol, exp, e)
                 continue
 
         total_volume = total_call_vol + total_put_vol
@@ -652,7 +653,8 @@ def screen_smart_money(symbol: str) -> SmartMoneyResult:
     # Share a single yf.Ticker + history across technical & options checks
     try:
         ticker, hist = _fetch_ticker_data(symbol)
-    except Exception:
+    except Exception as e:
+        logger.debug("Ticker data fetch failed for %s: %s", symbol, e)
         ticker, hist = None, None  # type: ignore[assignment]
 
     insider = _fetch_insider_activity(symbol)

@@ -131,7 +131,8 @@ def _is_streamlit() -> bool:
         from streamlit.runtime.scriptrunner import get_script_run_ctx
 
         return get_script_run_ctx() is not None
-    except Exception:
+    except Exception as e:
+        logger.debug("Streamlit detection failed: %s", e)
         return False
 
 

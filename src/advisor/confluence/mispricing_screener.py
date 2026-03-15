@@ -360,7 +360,8 @@ def _get_sector_medians(sector: str) -> dict:
                     pb_vals.append(pb)
                 if ev is not None and 0 < ev < 100:
                     ev_vals.append(ev)
-            except Exception:
+            except Exception as e:
+                logger.debug("Sector median fetch failed for %s: %s", sym, e)
                 continue
 
         result = {
@@ -585,7 +586,8 @@ def _fetch_options_market_score(symbol: str, ticker: yf.Ticker | None = None) ->
                     exp_iv.extend(exp_puts["impliedVolatility"].dropna().tolist())
                 if exp_iv:
                     term_ivs.append(float(np.mean(exp_iv)))
-            except Exception:
+            except Exception as e:
+                logger.debug("IV term structure fetch failed for expiry %s: %s", exp, e)
                 continue
 
         if len(term_ivs) >= 3:
@@ -767,7 +769,8 @@ def screen_mispricing(symbol: str) -> MispricingResult:
         _yf_throttle()
         ticker = yf.Ticker(symbol)
         sector = (ticker.info or {}).get("sector", "")
-    except Exception:
+    except Exception as e:
+        logger.debug("Ticker info fetch failed for %s: %s", symbol, e)
         ticker = None
 
     fundamental = _fetch_fundamental_score(symbol, ticker=ticker)
