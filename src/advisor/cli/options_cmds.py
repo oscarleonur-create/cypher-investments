@@ -1406,3 +1406,306 @@ def premium_scan(
         console.print(f"\n[dim]Errors: {', '.join(scan_result.errors[:5])}[/dim]")
 
     console.print(f"\n[dim]Scanned at {scan_result.scanned_at:%H:%M:%S}[/dim]\n")
+
+
+# ── Pipeline command ──────────────────────────────────────────────────────────
+
+
+@app.command("pipeline")
+def options_pipeline(
+    account_size: float = typer.Option(5000.0, "--account-size", "-a", help="Account size in USD"),
+    universe: str = typer.Option(
+        "wheel", "--universe", "-u", help="Ticker universe: leveraged, wheel, blue_chip"
+    ),
+    tickers: Optional[str] = typer.Option(
+        None, "--tickers", "-t", help="Comma-separated tickers (overrides universe)"
+    ),
+    live_iv: bool = typer.Option(False, "--live-iv", help="Fetch live IV from TastyTrade"),
+    top: int = typer.Option(10, "--top", help="Number of top opportunities to show"),
+    skip_ml: bool = typer.Option(False, "--skip-ml", help="Skip ML signal layer"),
+    skip_sentiment: bool = typer.Option(
+        False, "--skip-sentiment", help="Skip sentiment in confluence layer"
+    ),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output format: json"),
+):
+    """Scan → score → exit rules pipeline for live trading.
+
+    Combines the premium scanner with conviction scoring and adaptive exit
+    recommendations. For each opportunity found, runs dip analysis on the
+    underlying to determine conviction and vol regime, then recommends
+    exit rules (profit target, stop loss, DTE close) tuned to current
+    conditions.
+
+    Examples:
+        # Scan wheel universe with conviction + exit rules
+        advisor options pipeline
+
+        # Specific tickers with live IV
+        advisor options pipeline -t PLTR,AMD,SOFI --live-iv
+
+        # Blue chips, top 5
+        advisor options pipeline -u blue_chip --top 5
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from rich.panel import Panel
+    from rich.table import Table
+
+    from advisor.backtesting.adaptive_exits import REGIME_PARAMS, AdaptiveExitPolicy
+    from advisor.backtesting.options_backtester import BacktestConfig
+    from advisor.market.options_scanner import UNIVERSES
+    from advisor.market.premium_screener import PremiumScreener
+
+    # ── Regime mapping: dip_analyzer → adaptive_exits ──
+    _REGIME_MAP = {"low_vol": "low", "normal": "mid", "high_vol": "high"}
+
+    if tickers:
+        ticker_list = [t.strip().upper() for t in tickers.split(",")]
+    else:
+        ticker_list = UNIVERSES.get(universe, UNIVERSES["wheel"])
+
+    is_json = output == "json"
+
+    # ── Step 1: Premium scan ──────────────────────────────────────────
+
+    if not is_json:
+        console.print(
+            f"\n[bold]Pipeline[/bold] — scanning {len(ticker_list)} tickers"
+            f" (account=${account_size:,.0f})\n"
+        )
+
+    # Optional live IV
+    tt_iv_data: dict = {}
+    if live_iv:
+        try:
+            from advisor.market.tastytrade_client import get_market_metrics, get_session
+
+            async def _fetch_iv():
+                session = await get_session()
+                return await get_market_metrics(session, ticker_list)
+
+            tt_iv_data = asyncio.run(_fetch_iv())
+            if not is_json:
+                console.print(f"[green]TastyTrade IV loaded for {len(tt_iv_data)} symbols[/green]")
+        except Exception as e:
+            if not is_json:
+                console.print(f"[yellow]TastyTrade IV unavailable: {e}[/yellow]")
+
+    screener = PremiumScreener(
+        account_size=account_size,
+        top_n=top * 2,  # scan more, then filter by conviction
+        tt_data=tt_iv_data or None,
+    )
+    scan_result = screener.scan(ticker_list)
+
+    if not scan_result.opportunities:
+        console.print("[yellow]No premium opportunities found.[/yellow]")
+        return
+
+    if not is_json:
+        console.print(
+            f"[dim]Regime: {scan_result.regime} | "
+            f"Delta: {scan_result.target_delta:.2f} | "
+            f"Found: {len(scan_result.opportunities)} opportunities[/dim]\n"
+        )
+
+    # ── Step 2: Score conviction per underlying ───────────────────────
+
+    symbols = list({opp.symbol for opp in scan_result.opportunities})
+
+    if not is_json:
+        console.print(f"Scoring conviction for {len(symbols)} underlyings...")
+
+    skip_layers: set[str] = set()
+    if skip_ml:
+        skip_layers.add("ml_signal")
+    if skip_sentiment:
+        skip_layers.add("confluence")
+
+    from advisor.confluence.dip_analyzer import analyze_dip
+
+    conviction_map: dict[str, dict] = {}
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = {pool.submit(analyze_dip, sym, skip_layers): sym for sym in symbols}
+        for future in as_completed(futures):
+            sym = futures[future]
+            try:
+                dip = future.result()
+                conviction_map[sym] = {
+                    "score": dip.dip_score,
+                    "regime": dip.regime,
+                    "verdict": dip.verdict.value,
+                }
+            except Exception:
+                conviction_map[sym] = {
+                    "score": 50.0,
+                    "regime": scan_result.regime,
+                    "verdict": "N/A",
+                }
+
+    # ── Step 3: Compute adaptive exits per underlying ─────────────────
+
+    exit_map: dict[str, dict] = {}
+    for sym, conv in conviction_map.items():
+        regime_key = _REGIME_MAP.get(conv["regime"], "mid")
+        config = BacktestConfig()
+        policy = AdaptiveExitPolicy(config, vol_regime=regime_key, conviction_score=conv["score"])
+        adapted = policy.adapt()
+        exit_map[sym] = {
+            "profit_target_pct": adapted.profit_target_pct,
+            "stop_loss_multiplier": adapted.stop_loss_multiplier,
+            "close_at_dte": adapted.close_at_dte,
+        }
+
+    # ── Step 4: Build enriched results ────────────────────────────────
+
+    enriched = []
+    for opp in scan_result.opportunities:
+        conv = conviction_map.get(opp.symbol, {"score": 50, "regime": "normal", "verdict": "N/A"})
+        exits = exit_map.get(opp.symbol, REGIME_PARAMS["mid"])
+        enriched.append(
+            {
+                "opportunity": opp,
+                "conviction": conv,
+                "exits": exits,
+            }
+        )
+
+    # Sort by conviction * sell_score composite
+    enriched.sort(
+        key=lambda e: e["conviction"]["score"] * 0.4 + e["opportunity"].sell_score * 0.6,
+        reverse=True,
+    )
+    enriched = enriched[:top]
+
+    # ── Output ────────────────────────────────────────────────────────
+
+    if is_json:
+        from advisor.cli.formatters import output_json
+
+        output_json(
+            [
+                {
+                    "symbol": e["opportunity"].symbol,
+                    "strategy": e["opportunity"].strategy,
+                    "strike": e["opportunity"].strike,
+                    "long_strike": e["opportunity"].long_strike,
+                    "expiry": str(e["opportunity"].expiry),
+                    "dte": e["opportunity"].dte,
+                    "credit": e["opportunity"].credit,
+                    "pop": e["opportunity"].pop,
+                    "iv_percentile": e["opportunity"].iv_percentile,
+                    "annualized_yield": e["opportunity"].annualized_yield,
+                    "sell_score": e["opportunity"].sell_score,
+                    "conviction_score": e["conviction"]["score"],
+                    "conviction_verdict": e["conviction"]["verdict"],
+                    "regime": e["conviction"]["regime"],
+                    "exit_rules": e["exits"],
+                }
+                for e in enriched
+            ]
+        )
+        return
+
+    # ── Rich output ───────────────────────────────────────────────────
+
+    verdict_colors = {
+        "STRONG_BUY": "bold green",
+        "BUY": "green",
+        "LEAN_BUY": "cyan",
+        "WATCH": "yellow",
+        "PASS": "red",
+    }
+
+    table = Table(title="Pipeline — Opportunities + Conviction + Exit Rules")
+    table.add_column("Sym", style="cyan")
+    table.add_column("Type")
+    table.add_column("Strike", justify="right")
+    table.add_column("Exp")
+    table.add_column("Credit", justify="right", style="green")
+    table.add_column("POP", justify="right")
+    table.add_column("Sell", justify="right")
+    table.add_column("Conv", justify="right")
+    table.add_column("Verdict")
+    table.add_column("PT", justify="right")
+    table.add_column("SL", justify="right")
+    table.add_column("DTE", justify="right")
+
+    for e in enriched:
+        opp = e["opportunity"]
+        conv = e["conviction"]
+        exits = e["exits"]
+
+        strike_str = f"${opp.strike:.0f}"
+        if opp.long_strike is not None:
+            strike_str += f"/${opp.long_strike:.0f}"
+
+        strategy_label = "NP" if opp.strategy == "naked_put" else "PCS"
+
+        # Sell score color
+        if opp.sell_score >= 70:
+            sell_str = f"[bold green]{opp.sell_score:.0f}[/bold green]"
+        elif opp.sell_score >= 50:
+            sell_str = f"[yellow]{opp.sell_score:.0f}[/yellow]"
+        else:
+            sell_str = f"[dim]{opp.sell_score:.0f}[/dim]"
+
+        # Conviction color
+        if conv["score"] >= 60:
+            conv_str = f"[green]{conv['score']:.0f}[/green]"
+        elif conv["score"] >= 40:
+            conv_str = f"[yellow]{conv['score']:.0f}[/yellow]"
+        else:
+            conv_str = f"[dim]{conv['score']:.0f}[/dim]"
+
+        vcolor = verdict_colors.get(conv["verdict"], "white")
+        verdict_str = f"[{vcolor}]{conv['verdict']}[/{vcolor}]"
+
+        table.add_row(
+            opp.symbol,
+            strategy_label,
+            strike_str,
+            str(opp.expiry),
+            f"${opp.credit:.2f}",
+            f"{opp.pop:.0%}",
+            sell_str,
+            conv_str,
+            verdict_str,
+            f"{exits['profit_target_pct']:.0%}",
+            f"{exits['stop_loss_multiplier']:.1f}x",
+            f"{exits['close_at_dte']}d",
+        )
+
+    console.print(table)
+
+    # Per-symbol exit rule summary
+    seen: set[str] = set()
+    exit_lines: list[str] = []
+    for e in enriched:
+        sym = e["opportunity"].symbol
+        if sym in seen:
+            continue
+        seen.add(sym)
+        conv = e["conviction"]
+        exits = e["exits"]
+        regime_label = {"low_vol": "Calm", "normal": "Normal", "high_vol": "Stressed"}.get(
+            conv["regime"], conv["regime"]
+        )
+        exit_lines.append(
+            f"  [cyan]{sym}[/cyan]: regime={regime_label}, conviction={conv['score']:.0f} "
+            f"-> close at {exits['profit_target_pct']:.0%} profit / "
+            f"{exits['stop_loss_multiplier']:.1f}x loss / "
+            f"{exits['close_at_dte']}d before expiry"
+        )
+
+    if exit_lines:
+        console.print(
+            Panel(
+                "\n".join(exit_lines),
+                title="Adaptive Exit Rules",
+                border_style="blue",
+            )
+        )
+
+    console.print()

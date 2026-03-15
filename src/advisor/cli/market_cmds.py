@@ -984,3 +984,403 @@ def _print_dip_detail(r: "DipAnalysisResult", *, verbose: bool = False) -> None:
         console.print(detail)
     except Exception as e:
         console.print(f"[dim]Could not load dip screener detail: {e}[/dim]")
+
+
+# ── Pipeline command ──────────────────────────────────────────────────────────
+
+
+@app.command("pipeline")
+def market_pipeline(
+    strategy: Annotated[
+        str, typer.Option("--strategy", "-s", help="Equity strategy for signals")
+    ] = "momentum_breakout",
+    ticker: Annotated[
+        Optional[str], typer.Option("--ticker", "-t", help="Single ticker (skip scanner)")
+    ] = None,
+    universe: Annotated[
+        str, typer.Option("--universe", "-u", help="Universe to scan (sp500, semiconductors)")
+    ] = "sp500",
+    min_volume: Annotated[
+        int, typer.Option("--min-volume", help="Minimum avg daily volume")
+    ] = 500_000,
+    min_cap: Annotated[
+        float, typer.Option("--min-cap", help="Minimum market cap in billions")
+    ] = 2.0,
+    top_n: Annotated[int, typer.Option("--top-n", help="Max stocks to show")] = 10,
+    workers: Annotated[int, typer.Option("--workers", help="Parallel workers")] = 3,
+    skip_ml: Annotated[bool, typer.Option("--skip-ml", help="Skip ML signal layer")] = False,
+    skip_sentiment: Annotated[
+        bool, typer.Option("--skip-sentiment", help="Skip sentiment layer")
+    ] = False,
+    cash: Annotated[float, typer.Option("--cash", help="Portfolio equity for sizing")] = 100_000.0,
+    risk_pct: Annotated[
+        float, typer.Option("--risk-pct", help="Risk per trade as decimal (e.g. 0.02 = 2%%)")
+    ] = 0.02,
+    output: Annotated[Optional[str], typer.Option("--output", help="Output format (json)")] = None,
+) -> None:
+    """Signal → score → size pipeline for live equity trades.
+
+    Scans for stocks with active entry signals, scores conviction via the
+    dip/alpha layers, computes ATR-based position sizes, and recommends
+    stop-loss / trailing-stop levels — all in one shot.
+
+    Examples:
+        # Single ticker deep-dive
+        advisor market pipeline -t AAPL
+
+        # Full universe scan → signal → size
+        advisor market pipeline --strategy buy_the_dip --top-n 5
+
+        # Custom sizing
+        advisor market pipeline -t NVDA --cash 50000 --risk-pct 0.01
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from rich.panel import Panel
+    from rich.table import Table
+
+    from advisor.confluence.dip_analyzer import analyze_dip
+    from advisor.engine.scanner import SignalScanner
+
+    # ── Step 1: Gather candidate symbols ──────────────────────────────
+
+    if ticker:
+        symbols = [ticker.upper()]
+    else:
+        # Use the market scanner to filter the universe down to qualifiers
+        from advisor.data.cache import DiskCache
+        from advisor.market.filters import FilterConfig
+        from advisor.market.scanner import MarketScanner
+
+        console.print(f"Filtering {universe} universe...")
+
+        filter_config = FilterConfig(
+            min_avg_volume=min_volume,
+            min_market_cap=min_cap * 1e9,
+        )
+        scanner = MarketScanner(cache=DiskCache())
+        scan_result = scanner.scan(
+            strategy_name=strategy,
+            filter_config=filter_config,
+            max_workers=workers,
+            dry_run=True,  # filters only, no confluence API cost
+            universe=universe,
+        )
+        symbols = scan_result.qualifiers
+        console.print(
+            f"  {scan_result.filter_stats.universe_total} tickers " f"-> {len(symbols)} qualifiers"
+        )
+
+    if not symbols:
+        console.print("[yellow]No qualifying stocks found.[/yellow]")
+        return
+
+    # ── Step 2: Live signals + conviction scoring (parallel) ──────────
+
+    console.print(f"Scanning signals + conviction for {len(symbols)} stocks...")
+
+    skip_layers: set[str] = set()
+    if skip_ml:
+        skip_layers.add("ml_signal")
+    if skip_sentiment:
+        skip_layers.add("confluence")
+
+    sig_scanner = SignalScanner()
+    candidates: list[dict] = []
+
+    def _analyze_symbol(sym: str) -> dict | None:
+        """Run signal scan + dip analysis + ATR sizing for one symbol."""
+        try:
+            # Signal scan
+            scan = sig_scanner.scan(sym, strategy_names=[strategy])
+            sig = scan.signals[0] if scan.signals else None
+            if sig is None:
+                return None
+
+            # Conviction score
+            dip_result = None
+            try:
+                dip_result = analyze_dip(sym, skip_layers=skip_layers)
+                conviction = dip_result.dip_score
+                regime = dip_result.regime
+                verdict = dip_result.verdict.value
+            except Exception:
+                conviction = 50.0
+                regime = "normal"
+                verdict = "N/A"
+
+            # ATR-based sizing from live data
+            price = sig.price
+            atr = _compute_live_atr(sym)
+            if atr > 0 and price > 0:
+                risk_amount = cash * risk_pct
+                shares = int(risk_amount / (atr * 2.0))
+                shares = min(shares, int(cash * 0.25 / price))  # max 25% in one name
+                position_value = shares * price
+            else:
+                shares = 0
+                position_value = 0.0
+                atr = 0.0
+
+            # Stop levels
+            stop_loss = price - (atr * 2.0) if atr > 0 else 0.0
+            trailing_stop_pct = 0.08  # default 8% trail
+
+            # Layer breakdown
+            layers = {}
+            regime_adj = 0.0
+            reasoning = ""
+            if dip_result is not None:
+                for ls in dip_result.layers:
+                    layers[ls.name] = {
+                        "normalized": ls.normalized,
+                        "weight": ls.weight,
+                        "contribution": ls.weighted_contribution,
+                        "available": ls.available,
+                        "error": ls.error,
+                    }
+                regime_adj = dip_result.regime_adjustment
+                reasoning = dip_result.reasoning
+
+            return {
+                "symbol": sym,
+                "price": price,
+                "signal": sig.action.value,
+                "reason": sig.reason,
+                "conviction": conviction,
+                "regime": regime,
+                "regime_adj": regime_adj,
+                "verdict": verdict,
+                "reasoning": reasoning,
+                "layers": layers,
+                "atr": atr,
+                "shares": shares,
+                "position_value": position_value,
+                "pct_of_portfolio": position_value / cash * 100 if cash > 0 else 0,
+                "stop_loss": stop_loss,
+                "trailing_stop_pct": trailing_stop_pct,
+                "risk_per_share": atr * 2.0,
+                "risk_total": shares * atr * 2.0,
+            }
+        except Exception:
+            return None
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_analyze_symbol, sym): sym for sym in symbols}
+        for future in as_completed(futures):
+            result = future.result()
+            if result is not None:
+                candidates.append(result)
+
+    if not candidates:
+        console.print("[yellow]No signals generated.[/yellow]")
+        return
+
+    # Sort: BUY/HOLD signals first, then by conviction descending
+    signal_priority = {"BUY": 0, "HOLD": 1, "SELL": 2, "NEUTRAL": 3}
+    candidates.sort(
+        key=lambda c: (signal_priority.get(c["signal"], 9), -c["conviction"]),
+    )
+    candidates = candidates[:top_n]
+
+    # ── Step 3: Output ────────────────────────────────────────────────
+
+    if output == "json":
+        output_json(candidates)
+        return
+
+    # Signal colors
+    sig_colors = {"BUY": "bold green", "HOLD": "cyan", "SELL": "red", "NEUTRAL": "dim"}
+    verdict_colors = {
+        "STRONG_BUY": "bold green",
+        "BUY": "green",
+        "LEAN_BUY": "cyan",
+        "WATCH": "yellow",
+        "PASS": "red",
+    }
+
+    table = Table(title=f"Pipeline — {strategy} Signals + Sizing")
+    table.add_column("Sym", style="cyan")
+    table.add_column("Price", justify="right")
+    table.add_column("Signal")
+    table.add_column("Conv", justify="right")
+    table.add_column("Verdict")
+    table.add_column("ATR", justify="right")
+    table.add_column("Shares", justify="right")
+    table.add_column("Size", justify="right")
+    table.add_column("Port%", justify="right")
+    table.add_column("Stop", justify="right")
+    table.add_column("Risk$", justify="right")
+
+    for c in candidates:
+        sc = sig_colors.get(c["signal"], "white")
+        vc = verdict_colors.get(c["verdict"], "white")
+
+        # Conviction color
+        if c["conviction"] >= 60:
+            conv_str = f"[green]{c['conviction']:.0f}[/green]"
+        elif c["conviction"] >= 40:
+            conv_str = f"[yellow]{c['conviction']:.0f}[/yellow]"
+        else:
+            conv_str = f"[dim]{c['conviction']:.0f}[/dim]"
+
+        table.add_row(
+            c["symbol"],
+            f"${c['price']:.2f}",
+            f"[{sc}]{c['signal']}[/{sc}]",
+            conv_str,
+            f"[{vc}]{c['verdict']}[/{vc}]",
+            f"${c['atr']:.2f}",
+            str(c["shares"]),
+            f"${c['position_value']:,.0f}",
+            f"{c['pct_of_portfolio']:.1f}%",
+            f"${c['stop_loss']:.2f}",
+            f"${c['risk_total']:.0f}",
+        )
+
+    console.print(table)
+
+    # ── Per-symbol detail ─────────────────────────────────────────────
+
+    regime_labels = {"low_vol": "Calm", "normal": "Normal", "high_vol": "Stressed"}
+
+    for c in candidates:
+        sc = sig_colors.get(c["signal"], "white")
+        vc = verdict_colors.get(c["verdict"], "white")
+        regime_label = regime_labels.get(c["regime"], c["regime"])
+
+        console.print(
+            f"\n[bold cyan]{'─' * 60}[/bold cyan]"
+            f"\n[bold cyan]{c['symbol']}[/bold cyan]"
+            f"  ${c['price']:.2f}"
+        )
+
+        # Signal
+        console.print(f"\n  [bold]Signal:[/bold]  [{sc}]{c['signal']}[/{sc}]" f"  — {c['reason']}")
+
+        # Conviction layers
+        console.print(
+            f"\n  [bold]Conviction:[/bold]  [{vc}]{c['verdict']}[/{vc}]"
+            f"  ({c['conviction']:.1f}/100)"
+            f"  |  Regime: {regime_label}"
+            f" ({c['regime_adj']:+.0f} pts)"
+        )
+
+        if c["layers"]:
+            layer_table = Table(show_header=True, header_style="dim", box=None, padding=(0, 2))
+            layer_table.add_column("Layer")
+            layer_table.add_column("Score", justify="right")
+            layer_table.add_column("Weight", justify="right")
+            layer_table.add_column("Contrib", justify="right")
+            layer_table.add_column("Status")
+
+            for name, info in c["layers"].items():
+                if info["available"]:
+                    score_val = info["normalized"]
+                    if score_val >= 60:
+                        score_str = f"[green]{score_val:.0f}[/green]"
+                    elif score_val >= 40:
+                        score_str = f"[yellow]{score_val:.0f}[/yellow]"
+                    else:
+                        score_str = f"[dim]{score_val:.0f}[/dim]"
+                    layer_table.add_row(
+                        name,
+                        score_str,
+                        f"{info['weight']:.0%}",
+                        f"{info['contribution']:.1f}",
+                        "[green]OK[/green]",
+                    )
+                else:
+                    layer_table.add_row(
+                        name,
+                        "-",
+                        "-",
+                        "-",
+                        f"[dim]{info['error'] or 'skipped'}[/dim]",
+                    )
+            console.print(layer_table)
+
+        if c["reasoning"]:
+            console.print(f"\n  [dim]{c['reasoning']}[/dim]")
+
+        # Sizing
+        risk_budget = cash * risk_pct
+        console.print("\n  [bold]Position Sizing:[/bold]")
+        console.print(
+            f"    ATR(14):        ${c['atr']:.2f}/day\n"
+            f"    Risk budget:    ${risk_budget:,.0f}"
+            f"  ({risk_pct:.0%} of ${cash:,.0f})\n"
+            f"    Risk/share:     ${c['risk_per_share']:.2f}"
+            f"  (2 x ATR)\n"
+            f"    Shares:         {c['shares']}"
+            f"  = ${risk_budget:,.0f} / ${c['risk_per_share']:.2f}\n"
+            f"    Position value: ${c['position_value']:,.0f}"
+            f"  ({c['pct_of_portfolio']:.1f}% of portfolio)"
+        )
+
+        # Risk management
+        console.print("\n  [bold]Risk Management:[/bold]")
+        console.print(
+            f"    Stop loss:      ${c['stop_loss']:.2f}"
+            f"  (entry - 2×ATR)\n"
+            f"    Trailing stop:  {c['trailing_stop_pct']:.0%} from peak\n"
+            f"    Max loss:       ${c['risk_total']:.0f}"
+            f"  ({c['risk_total'] / cash * 100:.2f}% of portfolio)"
+        )
+
+    # ── Action plan ───────────────────────────────────────────────────
+
+    buys = [c for c in candidates if c["signal"] == "BUY"]
+    if buys:
+        total_capital = sum(c["position_value"] for c in buys)
+        total_risk = sum(c["risk_total"] for c in buys)
+        lines = [
+            f"  [bold]Active BUY signals: {len(buys)}[/bold]",
+            f"  Total capital needed: ${total_capital:,.0f} "
+            f"({total_capital / cash * 100:.1f}% of ${cash:,.0f})",
+            f"  Total risk: ${total_risk:,.0f} ({total_risk / cash * 100:.2f}% of portfolio)",
+            "",
+        ]
+        for c in buys:
+            lines.append(
+                f"  [cyan]{c['symbol']}[/cyan]: "
+                f"buy {c['shares']} @ ${c['price']:.2f} = ${c['position_value']:,.0f}, "
+                f"stop ${c['stop_loss']:.2f} (risk ${c['risk_total']:.0f})"
+            )
+        console.print(Panel("\n".join(lines), title="Action Plan", border_style="green"))
+
+    console.print()
+
+
+def _compute_live_atr(symbol: str, period: int = 14) -> float:
+    """Compute current ATR from live price data."""
+    try:
+        import yfinance as yf
+
+        df = yf.download(symbol, period="3mo", interval="1d", progress=False)
+        if df.empty or len(df) < period + 1:
+            return 0.0
+
+        # Handle multi-level columns from yfinance
+        if hasattr(df.columns, "levels") and len(df.columns.levels) > 1:
+            df.columns = df.columns.droplevel(1)
+
+        highs = df["High"].values
+        lows = df["Low"].values
+        closes = df["Close"].values
+
+        trs = []
+        for i in range(1, len(closes)):
+            tr = max(
+                highs[i] - lows[i],
+                abs(highs[i] - closes[i - 1]),
+                abs(lows[i] - closes[i - 1]),
+            )
+            trs.append(tr)
+
+        if len(trs) < period:
+            return 0.0
+
+        return float(sum(trs[-period:]) / period)
+    except Exception:
+        return 0.0
