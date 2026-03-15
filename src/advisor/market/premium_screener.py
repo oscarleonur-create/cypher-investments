@@ -15,6 +15,7 @@ import yfinance as yf
 from pydantic import BaseModel, Field
 
 from advisor.core.enums import OptionType
+from advisor.core.helpers import safe_float, safe_int
 from advisor.core.pricing import bsm_price
 from advisor.market.iv_analysis import (
     IVPercentileResult,
@@ -27,32 +28,6 @@ from advisor.market.iv_analysis import (
 from advisor.market.options_scanner import _filter_expirations, _get_price
 
 logger = logging.getLogger(__name__)
-
-
-def _safe_int(val, default: int = 0) -> int:
-    """Convert a value to int, returning default on NaN/None/error."""
-    if val is None:
-        return default
-    try:
-        import math as _math
-
-        f = float(val)
-        return int(f) if _math.isfinite(f) else default
-    except (ValueError, TypeError):
-        return default
-
-
-def _safe_float(val, default: float = 0.0) -> float:
-    """Convert a value to float, returning default on NaN/None/error."""
-    if val is None:
-        return default
-    try:
-        import math as _math
-
-        f = float(val)
-        return f if _math.isfinite(f) else default
-    except (ValueError, TypeError):
-        return default
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -471,9 +446,9 @@ class PremiumScreener:
         r = 0.05  # risk-free rate assumption
 
         for _, row in puts.iterrows():
-            strike = _safe_float(row["strike"])
-            bid = _safe_float(row.get("bid", 0))
-            ask = _safe_float(row.get("ask", 0))
+            strike = safe_float(row["strike"])
+            bid = safe_float(row.get("bid", 0))
+            ask = safe_float(row.get("ask", 0))
 
             if bid < 0.10 or strike >= price or strike <= 0:
                 continue
@@ -487,9 +462,9 @@ class PremiumScreener:
                 continue
 
             mid = (bid + ask) / 2
-            iv = _safe_float(row.get("impliedVolatility", 0)) or current_iv
-            volume = _safe_int(row.get("volume", 0))
-            oi = _safe_int(row.get("openInterest", 0))
+            iv = safe_float(row.get("impliedVolatility", 0)) or current_iv
+            volume = safe_int(row.get("volume", 0))
+            oi = safe_int(row.get("openInterest", 0))
 
             # Delta via BSM
             bsm = bsm_price(price, strike, T, r, iv, OptionType.PUT)
@@ -581,17 +556,17 @@ class PremiumScreener:
         # Collect OTM put candidates
         candidates = []
         for _, row in puts.iterrows():
-            strike = _safe_float(row["strike"])
+            strike = safe_float(row["strike"])
             if strike <= 0 or strike >= price:
                 continue
             otm_pct = (price - strike) / price
             if not (0.03 <= otm_pct <= 0.30):
                 continue
-            bid = _safe_float(row.get("bid", 0))
-            ask = _safe_float(row.get("ask", 0))
-            iv = _safe_float(row.get("impliedVolatility", 0)) or current_iv
-            volume = _safe_int(row.get("volume", 0))
-            oi = _safe_int(row.get("openInterest", 0))
+            bid = safe_float(row.get("bid", 0))
+            ask = safe_float(row.get("ask", 0))
+            iv = safe_float(row.get("impliedVolatility", 0)) or current_iv
+            volume = safe_int(row.get("volume", 0))
+            oi = safe_int(row.get("openInterest", 0))
             candidates.append((strike, bid, ask, iv, volume, oi))
 
         candidates.sort(key=lambda x: x[0], reverse=True)

@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import math
 import os
 import tempfile
 import threading
@@ -23,6 +22,8 @@ from pathlib import Path
 import numpy as np
 import yfinance as yf
 from pydantic import BaseModel, Field
+
+from advisor.core.helpers import safe_float
 
 logger = logging.getLogger(__name__)
 
@@ -157,20 +158,6 @@ def _yf_throttle() -> None:
     delay = wait_until - time.time()
     if delay > 0:
         time.sleep(delay)
-
-
-# ── Helper: safe float from info dict ────────────────────────────────────────
-
-
-def _safe_float(val) -> float | None:
-    """Convert a value to float, returning None on failure."""
-    if val is None:
-        return None
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else None
-    except (ValueError, TypeError):
-        return None
 
 
 # ── 1. Fundamental Mispricing ────────────────────────────────────────────────
@@ -393,9 +380,9 @@ def _get_sector_medians(sector: str) -> dict:
             try:
                 _yf_throttle()
                 info = yf.Ticker(sym).info or {}
-                pe = _safe_float(info.get("trailingPE"))
-                pb = _safe_float(info.get("priceToBook"))
-                ev = _safe_float(info.get("enterpriseToEbitda"))
+                pe = safe_float(info.get("trailingPE"))
+                pb = safe_float(info.get("priceToBook"))
+                ev = safe_float(info.get("enterpriseToEbitda"))
                 if pe is not None and 0 < pe < 200:
                     pe_vals.append(pe)
                 if pb is not None and 0 < pb < 50:
@@ -424,11 +411,11 @@ def _score_relative_valuation(info: dict, sector: str) -> tuple[float, dict]:
     medians = _get_sector_medians(sector)
     score = 0.0
     details = {
-        "pe_ratio": _safe_float(info.get("trailingPE")),
+        "pe_ratio": safe_float(info.get("trailingPE")),
         "sector_pe": medians.get("pe"),
-        "pb_ratio": _safe_float(info.get("priceToBook")),
+        "pb_ratio": safe_float(info.get("priceToBook")),
         "sector_pb": medians.get("pb"),
-        "ev_ebitda": _safe_float(info.get("enterpriseToEbitda")),
+        "ev_ebitda": safe_float(info.get("enterpriseToEbitda")),
         "sector_ev_ebitda": medians.get("ev_ebitda"),
     }
 
@@ -694,11 +681,11 @@ def _fetch_estimate_revisions(
             ticker = yf.Ticker(symbol)
 
         info = ticker.info or {}
-        current_price = _safe_float(info.get("currentPrice")) or _safe_float(
+        current_price = safe_float(info.get("currentPrice")) or safe_float(
             info.get("regularMarketPrice")
         )
-        target_price = _safe_float(info.get("targetMeanPrice"))
-        rec_mean = _safe_float(info.get("recommendationMean"))
+        target_price = safe_float(info.get("targetMeanPrice"))
+        rec_mean = safe_float(info.get("recommendationMean"))
 
         score = 0.0
 
@@ -772,8 +759,8 @@ def _fetch_estimate_revisions(
                 score += 3
 
         # Earnings growth estimate
-        earnings_growth = _safe_float(info.get("earningsGrowth"))
-        earnings_quarterly_growth = _safe_float(info.get("earningsQuarterlyGrowth"))
+        earnings_growth = safe_float(info.get("earningsGrowth"))
+        earnings_quarterly_growth = safe_float(info.get("earningsQuarterlyGrowth"))
         eg_val = earnings_growth or earnings_quarterly_growth
         if eg_val is not None:
             if eg_val > 0.20:

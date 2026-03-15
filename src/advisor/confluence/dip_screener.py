@@ -29,6 +29,7 @@ from advisor.confluence.models import (
     SafetyCheckResult,
     ValueTrapResult,
 )
+from advisor.core.helpers import safe_info
 
 logger = logging.getLogger(__name__)
 
@@ -43,17 +44,9 @@ ANALYST_COUNT_MIN = 3
 C_SUITE_TITLES = {"ceo", "cfo", "coo", "cto", "director", "president", "chairman"}
 
 
-def _safe_info(ticker: yf.Ticker) -> dict:
-    """Safely access ticker.info, returning empty dict on failure."""
-    try:
-        return ticker.info or {}
-    except Exception:
-        return {}
-
-
 def _check_safety(ticker: yf.Ticker) -> SafetyCheckResult:
     """Layer 1: Safety gate — all checks must pass."""
-    info = _safe_info(ticker)
+    info = safe_info(ticker)
 
     # Current ratio
     current_ratio = info.get("currentRatio")
@@ -94,7 +87,7 @@ def _check_safety(ticker: yf.Ticker) -> SafetyCheckResult:
 
 def _check_value_trap(ticker: yf.Ticker) -> ValueTrapResult:
     """Layer 2: Value trap detector — either P/E discount or RSI divergence."""
-    info = _safe_info(ticker)
+    info = safe_info(ticker)
     result = ValueTrapResult()
 
     # P/E vs 5-year average
@@ -147,7 +140,7 @@ def _check_value_trap(ticker: yf.Ticker) -> ValueTrapResult:
 
 def _check_fast_fundamentals(ticker: yf.Ticker) -> FastFundamentalsResult:
     """Layer 3: Timing confirmation — insider buying + analyst targets."""
-    info = _safe_info(ticker)
+    info = safe_info(ticker)
     result = FastFundamentalsResult()
 
     # Insider transactions
