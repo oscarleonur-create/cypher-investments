@@ -1034,6 +1034,10 @@ def market_pipeline(
         # Custom sizing
         advisor market pipeline -t NVDA --cash 50000 --risk-pct 0.01
     """
+    if cash <= 0:
+        console.print("[red]--cash must be positive[/red]")
+        return
+
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     from rich.panel import Panel
@@ -1122,8 +1126,11 @@ def market_pipeline(
                 position_value = 0.0
                 atr = 0.0
 
-            # Stop levels
-            stop_loss = price - (atr * 2.0) if atr > 0 else 0.0
+            # Stop levels (flip direction for short/sell signals)
+            if sig.action.value == "SELL":
+                stop_loss = price + (atr * 2.0) if atr > 0 else 0.0
+            else:
+                stop_loss = price - (atr * 2.0) if atr > 0 else 0.0
             trailing_stop_pct = 0.08  # default 8% trail
 
             # Layer breakdown
