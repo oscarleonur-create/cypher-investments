@@ -241,8 +241,14 @@ class MonteCarloEngine:
         # Track per-path outcomes
         pnl = np.full(n_paths, np.nan)
         hold_days = np.full(n_paths, dte, dtype=np.float64)
-        exit_reason = np.zeros(n_paths, dtype=np.int32)  # 0=expiry, 1=profit, 2=stop, 3=dte
+        exit_reason = np.zeros(
+            n_paths, dtype=np.int32
+        )  # 0=expiry, 1=profit, 2=stop, 3=dte, 4=trailing
         touched_short = np.zeros(n_paths, dtype=bool)
+
+        # Trailing stop high-water mark
+        max_upnl = np.zeros(n_paths, dtype=np.float64)
+        trailing_activation = credit * cfg.trailing_activation_pct if cfg.use_trailing_stop else 0.0
 
         active = np.ones(n_paths, dtype=bool)
         slippage = cfg.slippage_pct * candidate.width * 100
@@ -294,6 +300,45 @@ class MonteCarloEngine:
                 hold_days[profit_indices] = day
                 exit_reason[profit_indices] = 1
                 active[profit_indices] = False
+
+            if not np.any(active):
+                continue
+
+            # Trailing stop
+            if cfg.use_trailing_stop:
+                # Update high-water mark for active paths
+                current_upnl = entry_spread_value[active] - (
+                    (
+                        bsm_put_price_vec(
+                            prices[active, day],
+                            candidate.short_strike,
+                            T,
+                            cfg.risk_free_rate,
+                            ivs[active, day] * short_iv_ratio,
+                        )
+                        - bsm_put_price_vec(
+                            prices[active, day],
+                            candidate.long_strike,
+                            T,
+                            cfg.risk_free_rate,
+                            ivs[active, day] * long_iv_ratio,
+                        )
+                    )
+                    * 100
+                )
+                active_indices = np.where(active)[0]
+                max_upnl[active_indices] = np.maximum(max_upnl[active_indices], current_upnl)
+
+                # Check trailing stop: activated and current profit fell below floor
+                activated = max_upnl[active_indices] >= trailing_activation
+                below_floor = current_upnl < (cfg.trailing_floor_pct * max_upnl[active_indices])
+                trail_mask = activated & below_floor
+                if np.any(trail_mask):
+                    trail_indices = active_indices[trail_mask]
+                    pnl[trail_indices] = credit + current_upnl[trail_mask] - slippage
+                    hold_days[trail_indices] = day
+                    exit_reason[trail_indices] = 4
+                    active[trail_indices] = False
 
             if not np.any(active):
                 continue
@@ -399,6 +444,7 @@ class MonteCarloEngine:
             exit_stop_loss=round(float(np.sum(exit_reason == 2) / n_total), 4),
             exit_dte=round(float(np.sum(exit_reason == 3) / n_total), 4),
             exit_expiration=round(float(np.sum(exit_reason == 0) / n_total), 4),
+            exit_trailing_stop=round(float(np.sum(exit_reason == 4) / n_total), 4),
         )
 
         if return_raw_pnl:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:
@@ -10,6 +11,8 @@ if TYPE_CHECKING:
 import backtrader as bt
 
 from advisor.core.enums import StrategyType
+
+logger = logging.getLogger(__name__)
 
 
 class StrategyParams(bt.MetaParams):
@@ -32,7 +35,84 @@ class StrategyBase(bt.Strategy):
     version: ClassVar[str] = "1.0.0"
     force_all_confluence: ClassVar[bool] = False
 
-    params: ClassVar[tuple] = (("use_sizer", False),)
+    params: ClassVar[tuple] = (
+        ("use_sizer", False),
+        ("stop_loss_pct", -0.10),  # -10% hard stop; 0 = disabled
+        ("trailing_stop_pct", 0.0),  # 0 = disabled; e.g. 0.08 for 8% trail
+    )
+
+    def __init__(self):
+        super().__init__()
+        self.order = None
+        self._risk_entry_price: float | None = None
+        self._risk_peak_price: float | None = None
+        self._circuit_breaker_tripped = False
+        self._validate_params()
+
+    def _validate_params(self):
+        """Override in subclasses to validate strategy parameters."""
+        pass
+
+    def _check_risk_exits(self) -> bool:
+        """Check stop-loss and trailing-stop. Returns True if exit order issued.
+
+        Call at the top of next() when in position:
+            if self.position and self._check_risk_exits():
+                return
+        """
+        if not self.position or self._risk_entry_price is None:
+            return False
+
+        # Circuit breaker — close everything, stop trading
+        if self._circuit_breaker_tripped:
+            self.order = self.close()
+            return True
+
+        price = self.data.close[0]
+
+        # Update peak price for trailing stop
+        if self._risk_peak_price is None or price > self._risk_peak_price:
+            self._risk_peak_price = price
+
+        # Hard stop-loss
+        if self.p.stop_loss_pct < 0:
+            pct_change = (price - self._risk_entry_price) / self._risk_entry_price
+            if pct_change <= self.p.stop_loss_pct:
+                logger.info(
+                    "Stop-loss triggered at %.2f (entry %.2f, loss %.1f%%)",
+                    price,
+                    self._risk_entry_price,
+                    pct_change * 100,
+                )
+                self.order = self.close()
+                return True
+
+        # Trailing stop
+        if self.p.trailing_stop_pct > 0 and self._risk_peak_price is not None:
+            drawdown = (price - self._risk_peak_price) / self._risk_peak_price
+            if drawdown <= -self.p.trailing_stop_pct:
+                logger.info(
+                    "Trailing stop triggered at %.2f (peak %.2f, drawdown %.1f%%)",
+                    price,
+                    self._risk_peak_price,
+                    drawdown * 100,
+                )
+                self.order = self.close()
+                return True
+
+        return False
+
+    def notify_order(self, order):
+        """Track entry prices for risk exits and clear pending order reference."""
+        if order.status == order.Completed:
+            if order.isbuy():
+                self._risk_entry_price = order.executed.price
+                self._risk_peak_price = order.executed.price
+            elif order.issell() and not self.position:
+                self._risk_entry_price = None
+                self._risk_peak_price = None
+        if order.status in [order.Completed, order.Canceled, order.Margin, order.Rejected]:
+            self.order = None
 
     def get_info(self) -> dict[str, Any]:
         """Return strategy metadata for the registry."""

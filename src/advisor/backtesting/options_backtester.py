@@ -17,6 +17,7 @@ import pandas as pd
 import yfinance as yf
 
 from advisor.core.enums import OptionType
+from advisor.core.exit_rules import EXIT_RULE_DEFAULTS
 from advisor.core.pricing import bsm_price
 from advisor.market.premium_screener import get_adaptive_delta
 
@@ -37,15 +38,38 @@ class BacktestConfig:
     use_regime_filter: bool = True  # skip entries in high-vol HMM regime
     use_iv_term_filter: bool = False  # require near-term HV > long-term HV
 
-    # Position management
-    profit_target_pct: float = 0.50  # close at 50% of credit
-    stop_loss_multiplier: float = 3.0  # close at 3x credit
-    close_at_dte: int = 21  # close when DTE <= 21
+    # Position management (defaults from shared exit rules)
+    profit_target_pct: float = EXIT_RULE_DEFAULTS.profit_target_pct
+    stop_loss_multiplier: float = EXIT_RULE_DEFAULTS.stop_loss_multiplier
+    close_at_dte: int = EXIT_RULE_DEFAULTS.close_at_dte
     use_gamma_exit: bool = True  # close on gamma spike
     gamma_threshold: float = 0.03  # gamma * S threshold
     use_iv_crush_exit: bool = True  # close early on IV drop
     iv_crush_pnl_pct: float = 0.30  # min unrealized P&L for crush exit
     iv_crush_drop_pct: float = 0.20  # min IV drop from entry
+
+    # Trailing stop
+    use_trailing_stop: bool = False
+    trailing_activation_pct: float = 0.50  # activate after 50% profit captured
+    trailing_floor_pct: float = 0.25  # lock in at least 25% of peak unrealized
+
+    # Theta decay exit
+    use_theta_decay_exit: bool = False
+    theta_decay_target_pct: float = 0.70  # exit when 70% of expected theta captured
+
+    # Delta breach exit
+    use_delta_breach_exit: bool = False
+    delta_breach_threshold: float = 0.50  # exit if short leg |delta| > 0.50
+
+    # Adaptive exits (regime-based)
+    adaptive_exits: bool = False
+
+    # Bid-ask slippage modeling
+    slippage_pct: float = 0.05  # 5% of premium lost to bid-ask spread
+
+    # IV skew modeling
+    use_iv_skew: bool = True  # apply linear skew: IV increases ~2% per 10% OTM for puts
+    skew_slope: float = 0.20  # IV increase per unit moneyness (put side)
 
 
 # ── IV estimation ────────────────────────────────────────────────────────────
@@ -117,6 +141,10 @@ class Trade:
     # entry context
     entry_iv: Optional[float] = None
     entry_delta: Optional[float] = None
+    # trailing stop tracking
+    max_unrealized_pnl: float = 0.0
+    # theta decay tracking
+    cumulative_theta: float = 0.0
 
     def net_credit(self) -> float:
         """Total credit received (per contract = 100 shares)."""
@@ -201,11 +229,15 @@ class Backtester:
     def _close_trade(
         self, trade: Trade, date_str: str, exit_premium: float, reason: str
     ) -> tuple[bool, Trade]:
-        """Close a trade with given exit premium and reason."""
+        """Close a trade with given exit premium and reason.
+
+        Applies exit slippage: cost to close increases by slippage_pct.
+        """
         initial_credit = trade.premium - (trade.long_premium or 0)
+        slipped_exit = self._apply_exit_slippage(exit_premium)
         trade.exit_date = date_str
-        trade.exit_premium = round(exit_premium, 2)
-        trade.pnl = round((initial_credit - exit_premium) * 100 * trade.contracts, 2)
+        trade.exit_premium = round(slipped_exit, 2)
+        trade.pnl = round((initial_credit - slipped_exit) * 100 * trade.contracts, 2)
         trade.reason = reason
         return (True, trade)
 
@@ -217,15 +249,18 @@ class Backtester:
         dte = (expiry - date).days
         T = max(dte / 365.0, 0.001)
 
-        # Get full Greeks via bsm_price
+        # Get full Greeks via bsm_price (with IV skew)
         if trade.option_type == "spread":
             opt = OptionType.PUT if trade.spread_type != "call" else OptionType.CALL
-            short_result = bsm_price(S, trade.strike, T, self.r, iv, opt)
-            long_result = bsm_price(S, trade.long_strike, T, self.r, iv, opt)
+            short_iv = self._apply_skew(iv, trade.strike, S) if opt == OptionType.PUT else iv
+            long_iv = self._apply_skew(iv, trade.long_strike, S) if opt == OptionType.PUT else iv
+            short_result = bsm_price(S, trade.strike, T, self.r, short_iv, opt)
+            long_result = bsm_price(S, trade.long_strike, T, self.r, long_iv, opt)
             current_premium = short_result.price - long_result.price
             gamma = short_result.gamma - long_result.gamma  # net gamma
         elif trade.option_type == "put":
-            result = bsm_price(S, trade.strike, T, self.r, iv, OptionType.PUT)
+            skewed_iv = self._apply_skew(iv, trade.strike, S)
+            result = bsm_price(S, trade.strike, T, self.r, skewed_iv, OptionType.PUT)
             current_premium = result.price
             gamma = result.gamma
         else:  # call
@@ -262,6 +297,54 @@ class Backtester:
                 and unrealized_pnl_pct > self.config.iv_crush_pnl_pct
             ):
                 return self._close_trade(trade, date_str, current_premium, "iv_crush_exit")
+
+        # --- Trailing stop ---
+        if self.config.use_trailing_stop and initial_credit > 0:
+            unrealized = initial_credit - current_premium
+            trade.max_unrealized_pnl = max(trade.max_unrealized_pnl, unrealized)
+            activation = self.config.trailing_activation_pct * initial_credit
+            if trade.max_unrealized_pnl >= activation and unrealized < (
+                self.config.trailing_floor_pct * trade.max_unrealized_pnl
+            ):
+                return self._close_trade(trade, date_str, current_premium, "trailing_stop")
+
+        # --- Theta decay exit ---
+        if self.config.use_theta_decay_exit and initial_credit > 0:
+            if trade.option_type == "spread":
+                opt = OptionType.PUT if trade.spread_type != "call" else OptionType.CALL
+                s_iv = self._apply_skew(iv, trade.strike, S) if opt == OptionType.PUT else iv
+                l_iv = self._apply_skew(iv, trade.long_strike, S) if opt == OptionType.PUT else iv
+                short_theta = bsm_price(S, trade.strike, T, self.r, s_iv, opt).theta
+                long_theta = bsm_price(S, trade.long_strike, T, self.r, l_iv, opt).theta
+                net_theta = abs(short_theta - long_theta)
+            elif trade.option_type == "put":
+                skewed = self._apply_skew(iv, trade.strike, S)
+                net_theta = abs(bsm_price(S, trade.strike, T, self.r, skewed, OptionType.PUT).theta)
+            else:
+                net_theta = abs(bsm_price(S, trade.strike, T, self.r, iv, OptionType.CALL).theta)
+            # BSM theta is annualized; scale to daily
+            trade.cumulative_theta += net_theta / 365.0
+            if (
+                trade.cumulative_theta / initial_credit >= self.config.theta_decay_target_pct
+                and current_premium < initial_credit  # position is profitable
+            ):
+                return self._close_trade(trade, date_str, current_premium, "theta_decay_exit")
+
+        # --- Delta breach exit ---
+        if self.config.use_delta_breach_exit:
+            if trade.option_type == "spread":
+                opt = OptionType.PUT if trade.spread_type != "call" else OptionType.CALL
+                s_iv = self._apply_skew(iv, trade.strike, S) if opt == OptionType.PUT else iv
+                short_delta = abs(bsm_price(S, trade.strike, T, self.r, s_iv, opt).delta)
+            elif trade.option_type == "put":
+                skewed = self._apply_skew(iv, trade.strike, S)
+                short_delta = abs(
+                    bsm_price(S, trade.strike, T, self.r, skewed, OptionType.PUT).delta
+                )
+            else:
+                short_delta = abs(bsm_price(S, trade.strike, T, self.r, iv, OptionType.CALL).delta)
+            if short_delta > self.config.delta_breach_threshold:
+                return self._close_trade(trade, date_str, current_premium, "delta_breach_exit")
 
         # --- Expiry ---
         if dte <= 0:
@@ -363,6 +446,27 @@ class Backtester:
             return get_adaptive_delta(iv_pctile)
         return default
 
+    def _apply_skew(self, base_iv: float, strike: float, spot: float) -> float:
+        """Apply linear IV skew for OTM puts (calls use unadjusted IV).
+
+        Linear model: IV increases ~skew_slope per unit of moneyness below ATM.
+        E.g., a put 10% OTM with skew_slope=0.20 gets +2% absolute IV.
+        """
+        if not self.config.use_iv_skew:
+            return base_iv
+        moneyness = (spot - strike) / spot  # positive for OTM puts
+        if moneyness > 0:  # OTM put
+            return base_iv * (1 + self.config.skew_slope * moneyness)
+        return base_iv
+
+    def _apply_entry_slippage(self, credit: float) -> float:
+        """Reduce credit received at entry by slippage."""
+        return credit * (1 - self.config.slippage_pct)
+
+    def _apply_exit_slippage(self, cost: float) -> float:
+        """Increase cost to close at exit by slippage."""
+        return cost * (1 + self.config.slippage_pct)
+
     # ── Naked Put ────────────────────────────────────────────────────────
 
     def run_naked_put(self):
@@ -400,15 +504,16 @@ class Backtester:
                 target_delta = self._get_target_delta(row, default=0.25)
                 strike = find_strike_for_delta(S, T, self.r, iv, target_delta, "put")
 
-                # Margin: max(20% underlying - OTM, 10% strike) * 100 + premium
+                # Margin: max(20% underlying - OTM, 10% strike, $2.50/share) * 100
                 otm_amount = max(S - strike, 0)
-                margin_req = max(0.20 * S - otm_amount, 0.10 * strike) * 100
+                margin_req = max(0.20 * S - otm_amount, 0.10 * strike, 2.50) * 100
                 if margin_req > self.cash * 0.80:
                     self.equity_curve.append(self.cash)
                     continue
 
-                bsm_result = bsm_price(S, strike, T, self.r, iv, OptionType.PUT)
-                premium = bsm_result.price
+                skewed_iv = self._apply_skew(iv, strike, S)
+                bsm_result = bsm_price(S, strike, T, self.r, skewed_iv, OptionType.PUT)
+                premium = self._apply_entry_slippage(bsm_result.price)
                 if premium < 0.10:  # skip tiny premiums
                     self.equity_curve.append(self.cash)
                     continue
@@ -421,7 +526,7 @@ class Backtester:
                     option_type="put",
                     premium=round(premium, 2),
                     contracts=1,
-                    entry_iv=round(iv, 4),
+                    entry_iv=round(skewed_iv, 4),
                     entry_delta=round(abs(bsm_result.delta), 4),
                 )
                 self.cash += trade.net_credit()  # receive premium
@@ -549,8 +654,9 @@ class Backtester:
                 target_delta = self._get_target_delta(row, default=0.25)
                 strike = find_strike_for_delta(S, T, self.r, iv, target_delta, "put")
                 strike = min(strike, affordable_strike)
-                bsm_result = bsm_price(S, strike, T, self.r, iv, OptionType.PUT)
-                premium = bsm_result.price
+                skewed_iv = self._apply_skew(iv, strike, S)
+                bsm_result = bsm_price(S, strike, T, self.r, skewed_iv, OptionType.PUT)
+                premium = self._apply_entry_slippage(bsm_result.price)
                 if premium < 0.10:
                     self.equity_curve.append(self.cash + shares * S)
                     continue
@@ -562,7 +668,7 @@ class Backtester:
                     strike=round(strike, 2),
                     option_type="put",
                     premium=round(premium, 2),
-                    entry_iv=round(iv, 4),
+                    entry_iv=round(skewed_iv, 4),
                     entry_delta=round(abs(bsm_result.delta), 4),
                 )
                 self.cash += open_trade.net_credit()
@@ -576,7 +682,7 @@ class Backtester:
                 strike = find_strike_for_delta(S, T, self.r, iv, target_delta, "call")
                 strike = max(strike, cost_basis * 1.02)  # at least break even
                 bsm_result = bsm_price(S, strike, T, self.r, iv, OptionType.CALL)
-                premium = bsm_result.price
+                premium = self._apply_entry_slippage(bsm_result.price)
                 if premium < 0.05:
                     self.equity_curve.append(self.cash + shares * S)
                     continue
@@ -667,11 +773,13 @@ class Backtester:
                 short_strike = find_strike_for_delta(S, T, self.r, iv, target_delta, "put")
                 long_strike = short_strike - spread_width
 
-                short_result = bsm_price(S, short_strike, T, self.r, iv, OptionType.PUT)
-                long_result = bsm_price(S, long_strike, T, self.r, iv, OptionType.PUT)
+                short_iv = self._apply_skew(iv, short_strike, S)
+                long_iv = self._apply_skew(iv, long_strike, S)
+                short_result = bsm_price(S, short_strike, T, self.r, short_iv, OptionType.PUT)
+                long_result = bsm_price(S, long_strike, T, self.r, long_iv, OptionType.PUT)
                 short_prem = short_result.price
                 long_prem = long_result.price
-                net_credit = short_prem - long_prem
+                net_credit = self._apply_entry_slippage(short_prem - long_prem)
 
                 if net_credit < 0.15:
                     self.equity_curve.append(self.cash)
@@ -762,7 +870,7 @@ class Backtester:
                 long_result = bsm_price(S, long_strike, T, self.r, iv, OptionType.CALL)
                 short_prem = short_result.price
                 long_prem = long_result.price
-                net_credit = short_prem - long_prem
+                net_credit = self._apply_entry_slippage(short_prem - long_prem)
 
                 if net_credit < 0.15:
                     self.equity_curve.append(self.cash)
@@ -847,21 +955,23 @@ class Backtester:
                 target_delta = self._get_target_delta(row, default=0.20)
                 gid = uuid.uuid4().hex[:8]
 
-                # Put side
+                # Put side (with IV skew)
                 put_short = find_strike_for_delta(S, T, self.r, iv, target_delta, "put")
                 put_long = put_short - spread_width
-                put_short_result = bsm_price(S, put_short, T, self.r, iv, OptionType.PUT)
-                put_long_result = bsm_price(S, put_long, T, self.r, iv, OptionType.PUT)
+                put_short_iv = self._apply_skew(iv, put_short, S)
+                put_long_iv = self._apply_skew(iv, put_long, S)
+                put_short_result = bsm_price(S, put_short, T, self.r, put_short_iv, OptionType.PUT)
+                put_long_result = bsm_price(S, put_long, T, self.r, put_long_iv, OptionType.PUT)
                 put_credit = put_short_result.price - put_long_result.price
 
-                # Call side
+                # Call side (no skew for calls)
                 call_short = find_strike_for_delta(S, T, self.r, iv, target_delta, "call")
                 call_long = call_short + spread_width
                 call_short_result = bsm_price(S, call_short, T, self.r, iv, OptionType.CALL)
                 call_long_result = bsm_price(S, call_long, T, self.r, iv, OptionType.CALL)
                 call_credit = call_short_result.price - call_long_result.price
 
-                total_credit = put_credit + call_credit
+                total_credit = self._apply_entry_slippage(put_credit + call_credit)
                 if total_credit < 0.30:
                     self.equity_curve.append(self.cash)
                     continue
@@ -964,9 +1074,10 @@ class Backtester:
                 put_strike = find_strike_for_delta(S, T, self.r, iv, target_delta, "put")
                 call_strike = find_strike_for_delta(S, T, self.r, iv, target_delta, "call")
 
-                put_result = bsm_price(S, put_strike, T, self.r, iv, OptionType.PUT)
+                put_iv = self._apply_skew(iv, put_strike, S)
+                put_result = bsm_price(S, put_strike, T, self.r, put_iv, OptionType.PUT)
                 call_result = bsm_price(S, call_strike, T, self.r, iv, OptionType.CALL)
-                total_credit = put_result.price + call_result.price
+                total_credit = self._apply_entry_slippage(put_result.price + call_result.price)
 
                 if total_credit < 0.30:
                     self.equity_curve.append(self.cash)
@@ -1035,6 +1146,27 @@ class Backtester:
         }
         if strategy not in dispatch:
             raise ValueError(f"Unknown strategy: {strategy}. Choose from {list(dispatch)}")
+
+        # Apply adaptive exits if enabled
+        if self.config.adaptive_exits:
+            try:
+                from advisor.backtesting.adaptive_exits import AdaptiveExitPolicy
+                from advisor.market.drawdown_analysis import compute_vol_regime_labels
+
+                prices = self.all_df["Close"].values.astype(float)
+                _, _, current_regime = compute_vol_regime_labels(prices)
+                policy = AdaptiveExitPolicy(self.config, current_regime)
+                self.config = policy.adapt()
+                print(
+                    f"Adaptive exits: regime={current_regime}, "
+                    f"PT={self.config.profit_target_pct:.0%}, "
+                    f"SL={self.config.stop_loss_multiplier:.1f}x, "
+                    f"DTE={self.config.close_at_dte}",
+                    file=sys.stderr,
+                )
+            except Exception as e:
+                logger.warning("Adaptive exits failed, using defaults: %s", e)
+
         print(f"Running {strategy} on {self.symbol}...", file=sys.stderr)
         dispatch[strategy]()
         return self.summary(strategy)

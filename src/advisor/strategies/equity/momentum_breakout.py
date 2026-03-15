@@ -50,6 +50,9 @@ class MomentumBreakout(StrategyBase):
         if self.order:
             return
 
+        if self.position and self._check_risk_exits():
+            return
+
         if not self.position:
             # BUY: price above SMA AND volume above average * factor
             if (
@@ -68,10 +71,6 @@ class MomentumBreakout(StrategyBase):
             # SELL: price drops below SMA
             if self.data.close[0] < self.sma[0]:
                 self.order = self.close()
-
-    def notify_order(self, order):
-        if order.status in [order.Completed, order.Canceled, order.Margin, order.Rejected]:
-            self.order = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

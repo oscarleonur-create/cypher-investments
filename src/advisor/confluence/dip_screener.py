@@ -1,5 +1,14 @@
 """3-layer fundamental screener for buy-the-dip strategy.
 
+This module provides the *fundamental gating* layer for dip candidates.
+It answers: "Is this company financially healthy enough to buy the dip?"
+
+Relationship to dip_analyzer.py:
+  - dip_screener (this module): per-stock fundamental gate (safety, value trap,
+    insider/analyst timing). Returns DipScreenerResult + FundamentalResult.
+  - dip_analyzer: composite *scoring* layer that aggregates 7 signal layers
+    (including this screener) into a single 0-100 conviction score.
+
 Layers:
   1. Safety Gate — reject bankrupt / distressed companies
   2. Value Trap Detector — confirm the dip is a real deal

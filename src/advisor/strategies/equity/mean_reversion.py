@@ -60,6 +60,9 @@ class MeanReversion(StrategyBase):
         if self.order:
             return
 
+        if self.position and self._check_risk_exits():
+            return
+
         if not self.position:
             # Entry: deeply oversold + far below EMA + volume spike
             price_below_ema = self.ema[0] - self.data.close[0]
@@ -82,10 +85,6 @@ class MeanReversion(StrategyBase):
             # Exit: price reverts back to EMA
             if self.data.close[0] >= self.ema[0]:
                 self.order = self.close()
-
-    def notify_order(self, order):
-        if order.status in [order.Completed, order.Canceled, order.Margin, order.Rejected]:
-            self.order = None
 
 
 def scan(symbol: str):

@@ -245,4 +245,5 @@ class TestMomentumBreakoutIntegration:
             params={"sma_period": 10, "volume_factor": 2.0},
         )
         assert isinstance(result, BacktestResult)
-        assert result.params == {"sma_period": 10, "volume_factor": 2.0}
+        assert result.params["sma_period"] == 10
+        assert result.params["volume_factor"] == 2.0

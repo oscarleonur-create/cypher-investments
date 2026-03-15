@@ -21,10 +21,12 @@ from advisor.confluence.models import (
     PeadScreenerResult,
     SentimentResult,
     TechnicalResult,
+    VolumeConfirmationResult,
 )
 from advisor.confluence.pead_screener import check_pead_fundamental
 from advisor.confluence.sentiment import check_sentiment
 from advisor.confluence.technical import check_technical
+from advisor.confluence.volume_confirmation import check_volume_confirmation
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +39,10 @@ def _default_verdict(
 ) -> tuple[ConfluenceVerdict, str, int]:
     """Standard 3-way verdict for momentum/dip/sma strategies."""
     has_breakout = technical.is_bullish
-    confirmations = sum([sentiment.is_bullish, fundamental.is_clear])
+    # Require grounding confidence >= 0.5 for sentiment to count as bullish.
+    # A 30% confidence "bullish" sentiment is noise, not signal.
+    sentiment_bullish = sentiment.is_bullish and sentiment.confidence >= 0.5
+    confirmations = sum([sentiment_bullish, fundamental.is_clear])
 
     if has_breakout and confirmations == 2:
         verdict = ConfluenceVerdict.ENTER
@@ -50,7 +55,7 @@ def _default_verdict(
     elif has_breakout and confirmations == 1:
         verdict = ConfluenceVerdict.CAUTION
         failing = []
-        if not sentiment.is_bullish:
+        if not sentiment_bullish:
             failing.append("sentiment below 70% threshold")
         if not fundamental.is_clear:
             failing.append("earnings risk within 7 days")
@@ -92,6 +97,12 @@ def _default_verdict(
             f"but both sentiment and fundamental checks failed."
         )
         hold_days = 0
+
+    if sentiment.is_bullish and sentiment.confidence < 0.5:
+        reasoning += (
+            f" Note: sentiment marked bullish but grounding confidence is low "
+            f"({sentiment.confidence:.0%}) — treated as unconfirmed."
+        )
 
     if fundamental.insider_buying_detected and verdict != ConfluenceVerdict.PASS:
         reasoning += " Insider buying detected — strengthens conviction."
@@ -400,8 +411,34 @@ def run_confluence(
         fundamental = check_fundamental(symbol)
         logger.info(f"Fundamental: is_clear={fundamental.is_clear}")
 
+    # ── Volume confirmation ─────────────────────────────────────────────
+    vol_confirm: VolumeConfirmationResult | None = None
+    try:
+        vol_confirm = check_volume_confirmation(symbol)
+        if vol_confirm.score > 0:
+            logger.info(
+                f"Volume confirmation: score={vol_confirm.score:.0f}, "
+                f"capitulation={vol_confirm.capitulation_detected}, "
+                f"dryup={vol_confirm.volume_dryup}, obv_div={vol_confirm.obv_divergence}"
+            )
+    except Exception as e:
+        logger.warning(f"Volume confirmation failed: {e}")
+
     # ── Verdict ──────────────────────────────────────────────────────────
     verdict, reasoning, hold_days = _default_verdict(symbol, technical, sentiment, fundamental)
+
+    # Append volume confirmation detail to reasoning
+    if vol_confirm is not None and vol_confirm.score >= 40:
+        signals = []
+        if vol_confirm.capitulation_detected:
+            signals.append("capitulation spike")
+        if vol_confirm.volume_dryup:
+            signals.append("volume dry-up")
+        if vol_confirm.obv_divergence:
+            signals.append("OBV divergence")
+        reasoning += (
+            f" Volume confirmation score {vol_confirm.score:.0f}/100 ({', '.join(signals)})."
+        )
 
     # ── ML signal (default path) ──────────────────────────────────────
     ml = _compute_ml_signal(symbol) if include_ml else None
@@ -416,6 +453,7 @@ def run_confluence(
         sentiment=sentiment,
         fundamental=fundamental,
         ml_signal=ml,
+        volume_confirmation=vol_confirm,
         reasoning=reasoning,
         suggested_hold_days=hold_days,
     )

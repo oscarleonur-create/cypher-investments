@@ -58,13 +58,15 @@ class PeadDrift(StrategyBase):
         # Track spike events: (bar_index, spike_day_high)
         self.spike_event = None
         self.entry_bar = None
-        self.entry_price = None
 
     def next(self):
         if self.order:
             return
 
         bar_idx = len(self.data)
+
+        if self.position and self._check_risk_exits():
+            return
 
         if not self.position:
             # Detect volume spike (proxy for earnings event)
@@ -96,23 +98,12 @@ class PeadDrift(StrategyBase):
                             if size > 0:
                                 self.order = self.buy(size=size)
                         self.entry_bar = bar_idx
-                        self.entry_price = self.data.close[0]
                         self.spike_event = None
         else:
-            # Exit: hold_days reached OR stop-loss hit
-            price = self.data.close[0]
+            # Exit: hold_days reached (stop-loss handled by base _check_risk_exits)
             hold_exit = self.entry_bar is not None and bar_idx - self.entry_bar >= self.p.hold_days
-            stop_exit = (
-                self.entry_price is not None
-                and self.entry_price > 0
-                and (price - self.entry_price) / self.entry_price <= self.p.stop_loss_pct
-            )
-            if hold_exit or stop_exit:
+            if hold_exit:
                 self.order = self.close()
-
-    def notify_order(self, order):
-        if order.status in [order.Completed, order.Canceled, order.Margin, order.Rejected]:
-            self.order = None
 
 
 def scan(symbol: str):

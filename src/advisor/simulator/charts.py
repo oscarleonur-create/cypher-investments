@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import plotly.graph_objects as go
 
 from advisor.simulator.models import SimResult
+
+if TYPE_CHECKING:
+    from advisor.simulator.exit_sensitivity import ExitSensitivityResult
 
 
 def pnl_distribution_chart(results: list[SimResult]) -> go.Figure:
@@ -44,6 +49,7 @@ def exit_breakdown_chart(results: list[SimResult]) -> go.Figure:
         ("Profit Target", [r.exit_profit_target for r in results], "#00CC96"),
         ("Stop Loss", [r.exit_stop_loss for r in results], "#EF553B"),
         ("DTE Close", [r.exit_dte for r in results], "#636EFA"),
+        ("Trailing Stop", [r.exit_trailing_stop for r in results], "#FFA15A"),
         ("Expiration", [r.exit_expiration for r in results], "#AB63FA"),
     ]
 
@@ -397,5 +403,178 @@ def prediction_scatter_chart(records: list[dict]) -> go.Figure:
         template="plotly_dark",
         height=450,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
+# ── Exit sensitivity charts ─────────────────────────────────────────────────
+
+
+def exit_sensitivity_heatmap(
+    result: "ExitSensitivityResult",
+    metric: str = "ev",
+    fixed_param: str = "close_at_dte",
+    fixed_value: int | float | None = None,
+) -> go.Figure:
+    """2D heatmap of exit sensitivity results.
+
+    Fixes one parameter dimension and shows the other two as axes.
+    Default: fix DTE, show profit_target (x) vs stop_loss (y), color by metric.
+    """
+
+    points = result.points
+    if not points:
+        fig = go.Figure()
+        fig.update_layout(title="No sensitivity data", template="plotly_dark")
+        return fig
+
+    # Determine fixed value (use most common if not specified)
+    if fixed_value is None:
+        vals = [getattr(p, fixed_param) for p in points]
+        fixed_value = max(set(vals), key=vals.count)
+
+    filtered = [p for p in points if getattr(p, fixed_param) == fixed_value]
+    if not filtered:
+        fig = go.Figure()
+        fig.update_layout(title=f"No data for {fixed_param}={fixed_value}", template="plotly_dark")
+        return fig
+
+    # Determine axes based on fixed param
+    if fixed_param == "close_at_dte":
+        x_param, y_param = "profit_target_pct", "stop_loss_multiplier"
+        x_label, y_label = "Profit Target (%)", "Stop Loss Multiplier"
+    elif fixed_param == "profit_target_pct":
+        x_param, y_param = "stop_loss_multiplier", "close_at_dte"
+        x_label, y_label = "Stop Loss Multiplier", "Close at DTE"
+    else:
+        x_param, y_param = "profit_target_pct", "close_at_dte"
+        x_label, y_label = "Profit Target (%)", "Close at DTE"
+
+    x_vals = sorted(set(getattr(p, x_param) for p in filtered))
+    y_vals = sorted(set(getattr(p, y_param) for p in filtered))
+
+    # Build Z matrix
+    z = np.full((len(y_vals), len(x_vals)), np.nan)
+    for p in filtered:
+        xi = x_vals.index(getattr(p, x_param))
+        yi = y_vals.index(getattr(p, y_param))
+        z[yi, xi] = getattr(p, metric, 0)
+
+    # Format x labels
+    x_text = (
+        [f"{v:.0%}" for v in x_vals] if x_param == "profit_target_pct" else [str(v) for v in x_vals]
+    )
+    y_text = (
+        [f"{v:.0%}" for v in y_vals] if y_param == "profit_target_pct" else [str(v) for v in y_vals]
+    )
+
+    metric_labels = {
+        "ev": "EV ($)",
+        "pop": "POP",
+        "cvar_95": "CVaR95 ($)",
+        "sharpe_approx": "Sharpe",
+        "avg_hold_days": "Avg Hold (days)",
+    }
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=z,
+            x=x_text,
+            y=y_text,
+            colorscale="RdYlGn",
+            colorbar=dict(title=metric_labels.get(metric, metric)),
+            text=np.round(z, 2),
+            texttemplate="%{text}",
+            hovertemplate=(
+                f"{x_label}: %{{x}}<br>"
+                f"{y_label}: %{{y}}<br>"
+                f"{metric}: %{{z:.2f}}<extra></extra>"
+            ),
+        )
+    )
+
+    fig.update_layout(
+        title=(
+            f"Exit Sensitivity: {metric_labels.get(metric, metric)} "
+            f"({fixed_param}={fixed_value})"
+        ),
+        xaxis_title=x_label,
+        yaxis_title=y_label,
+        template="plotly_dark",
+        height=500,
+    )
+    return fig
+
+
+def exit_sensitivity_parallel_coords(result: "ExitSensitivityResult") -> go.Figure:
+    """Parallel coordinates plot for 3D exit parameter exploration."""
+
+    points = result.points
+    if not points:
+        fig = go.Figure()
+        fig.update_layout(title="No sensitivity data", template="plotly_dark")
+        return fig
+
+    fig = go.Figure(
+        data=go.Parcoords(
+            line=dict(
+                color=[p.ev for p in points],
+                colorscale="RdYlGn",
+                showscale=True,
+                colorbar=dict(title="EV ($)"),
+            ),
+            dimensions=[
+                dict(
+                    range=[
+                        min(p.profit_target_pct for p in points),
+                        max(p.profit_target_pct for p in points),
+                    ],
+                    label="Profit Target",
+                    values=[p.profit_target_pct for p in points],
+                    ticktext=[f"{v:.0%}" for v in sorted(set(p.profit_target_pct for p in points))],
+                    tickvals=sorted(set(p.profit_target_pct for p in points)),
+                ),
+                dict(
+                    range=[
+                        min(p.stop_loss_multiplier for p in points),
+                        max(p.stop_loss_multiplier for p in points),
+                    ],
+                    label="Stop Loss",
+                    values=[p.stop_loss_multiplier for p in points],
+                ),
+                dict(
+                    range=[
+                        min(p.close_at_dte for p in points),
+                        max(p.close_at_dte for p in points),
+                    ],
+                    label="DTE Exit",
+                    values=[p.close_at_dte for p in points],
+                ),
+                dict(
+                    range=[min(p.pop for p in points), max(p.pop for p in points)],
+                    label="POP",
+                    values=[p.pop for p in points],
+                ),
+                dict(
+                    range=[min(p.cvar_95 for p in points), max(p.cvar_95 for p in points)],
+                    label="CVaR95",
+                    values=[p.cvar_95 for p in points],
+                ),
+                dict(
+                    range=[
+                        min(p.avg_hold_days for p in points),
+                        max(p.avg_hold_days for p in points),
+                    ],
+                    label="Avg Hold",
+                    values=[p.avg_hold_days for p in points],
+                ),
+            ],
+        )
+    )
+
+    fig.update_layout(
+        title="Exit Parameter Exploration (Parallel Coordinates)",
+        template="plotly_dark",
+        height=500,
     )
     return fig

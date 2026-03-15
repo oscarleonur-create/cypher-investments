@@ -1,9 +1,15 @@
 """Dip Analyzer — unified dip-buying conviction score across all signal layers.
 
-Runs 7 layers (dip_screener, smart_money, mispricing, volume_confirmation,
-confluence, ml_signal, technical_dip), normalizes each to 0-100, applies
-dip-specific weights and optional regime adjustment, then returns a single
-DipAnalysisResult.
+This module provides the *composite scoring* layer that aggregates multiple
+signal sources into a single 0-100 dip-buying conviction score.
+
+Relationship to dip_screener.py:
+  - dip_screener: per-stock fundamental gate (safety, value trap, timing).
+    Produces a DipScreenerResult with pass/fail and categorical score.
+  - dip_analyzer (this module): runs 7 layers (dip_screener, smart_money,
+    mispricing, volume_confirmation, confluence, ml_signal, technical_dip),
+    normalizes each to 0-100, applies dip-specific weights and optional
+    regime adjustment, then returns a single DipAnalysisResult.
 """
 
 from __future__ import annotations

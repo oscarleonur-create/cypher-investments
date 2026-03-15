@@ -220,4 +220,5 @@ class TestSMACrossoverIntegration:
             params={"short_period": 10, "long_period": 30},
         )
         assert isinstance(result, BacktestResult)
-        assert result.params == {"short_period": 10, "long_period": 30}
+        assert result.params["short_period"] == 10
+        assert result.params["long_period"] == 30

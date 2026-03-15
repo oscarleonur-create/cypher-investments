@@ -238,7 +238,12 @@ class TestPeadLogic:
         assert total == 0
 
     def test_stop_loss_triggers_early_exit(self):
-        """Stop-loss should close position before hold_days if price drops."""
+        """Stop-loss should close position before hold_days if price drops.
+
+        The base mechanism tracks entry from the fill price (order.executed.price),
+        which is the next bar's open. So the crash must go deeper than -8% from
+        the fill price, not from the decision-time close.
+        """
         n_warmup = 210
         base_price = 100.0
         base_vol = 1_000_000
@@ -254,18 +259,22 @@ class TestPeadLogic:
         prices.append(106.0)
         volumes.append(base_vol)
 
-        # Fade entry at ~105
+        # Fade entry at ~105 — buy order placed
         prices.append(105.0)
         volumes.append(base_vol)
 
-        # Price crashes: 105 → 90 (>8% drop from 105)
-        # Entry price is 105, stop at -8% = 96.6
-        prices.append(96.0)  # below stop-loss threshold
+        # Fill bar: order fills at open=105
+        # Then price crashes: fill at 105, stop at -8% = 96.6
+        prices.append(105.0)
+        volumes.append(base_vol)
+
+        # Price below stop threshold (105 * 0.92 = 96.6)
+        prices.append(85.0)  # well below stop-loss threshold
         volumes.append(base_vol)
 
         # Continue at low price (well within hold_days=45)
         for _ in range(10):
-            prices.append(90.0)
+            prices.append(80.0)
             volumes.append(base_vol)
 
         strat = _run_cerebro(
