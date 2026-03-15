@@ -9,11 +9,7 @@ Four signal sources scored -100 to +100:
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
-import os
-import tempfile
 import threading
 import time
 from datetime import datetime, timedelta
@@ -29,6 +25,7 @@ from research_agent.llm import ClaudeLLM
 from research_agent.search import PerplexityClient
 from research_agent.store import Store
 
+from advisor.data.cache import DiskCache
 from advisor.verification.grounding import verify_extraction
 
 if TYPE_CHECKING:
@@ -36,9 +33,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-CACHE_DIR = Path("/tmp/advisor_smart_money_cache")
 CACHE_TTL = 4 * 3600  # 4 hours
 INSIDER_LOOKBACK_DAYS = 180
+
+_disk_cache = DiskCache(cache_dir=Path("/tmp/advisor_smart_money_cache"), ttl_hours=4)
 
 
 # ── Models ───────────────────────────────────────────────────────────────────
@@ -173,43 +171,18 @@ Only include actual stock purchase/sale transactions. If no congressional \
 trades are found, return an empty trades list."""
 
 
-# ── Cache helpers ────────────────────────────────────────────────────────────
-
-
-def _cache_key(prefix: str, key: str) -> Path:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    h = hashlib.sha256(key.encode()).hexdigest()[:24]
-    return CACHE_DIR / f"{prefix}_{h}.json"
+# ── Cache helpers (thin wrappers around DiskCache) ──────────────────────────
 
 
 def _cache_get(prefix: str, key: str) -> dict | None:
-    p = _cache_key(prefix, key)
-    if p.exists() and (time.time() - p.stat().st_mtime) < CACHE_TTL:
-        try:
-            return json.loads(p.read_text())
-        except Exception:
-            return None
-    return None
+    return _disk_cache.get_json(prefix, key, ttl_seconds=CACHE_TTL)
 
 
 def _cache_set(prefix: str, key: str, data: dict) -> None:
-    """Atomic cache write — write to temp file then rename."""
     try:
-        p = _cache_key(prefix, key)
-        fd, tmp = tempfile.mkstemp(dir=CACHE_DIR, suffix=".tmp")
-        closed = False
-        try:
-            os.write(fd, json.dumps(data).encode())
-            os.close(fd)
-            closed = True
-            os.replace(tmp, p)
-        except Exception:
-            if not closed:
-                os.close(fd)
-            Path(tmp).unlink(missing_ok=True)
-            raise
+        _disk_cache.set_json(data, prefix, key)
     except Exception as e:
-        logger.debug(f"Cache write failed: {e}")
+        logger.debug("Cache write failed: %s", e)
 
 
 # ── Shared yfinance helper ──────────────────────────────────────────────────
@@ -602,7 +575,8 @@ def _check_options_activity(
                 total_oi += int(chain.calls["openInterest"].fillna(0).sum())
                 total_oi += int(chain.puts["openInterest"].fillna(0).sum())
                 all_calls_frames.append(chain.calls)
-            except Exception:
+            except Exception as e:
+                logger.debug("Option chain fetch failed for %s %s: %s", symbol, exp, e)
                 continue
 
         total_volume = total_call_vol + total_put_vol
@@ -679,7 +653,8 @@ def screen_smart_money(symbol: str) -> SmartMoneyResult:
     # Share a single yf.Ticker + history across technical & options checks
     try:
         ticker, hist = _fetch_ticker_data(symbol)
-    except Exception:
+    except Exception as e:
+        logger.debug("Ticker data fetch failed for %s: %s", symbol, e)
         ticker, hist = None, None  # type: ignore[assignment]
 
     insider = _fetch_insider_activity(symbol)

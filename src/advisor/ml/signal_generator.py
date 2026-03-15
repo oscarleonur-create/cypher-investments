@@ -68,7 +68,8 @@ class MLSignalGenerator:
         try:
             tk = yf.Ticker(symbol)
             price = tk.fast_info.get("lastPrice", 0.0) or 0.0
-        except Exception:
+        except Exception as e:
+            logger.debug("Price lookup failed for %s: %s", symbol, e)
             price = 0.0
 
         # Build feature row matching training feature order

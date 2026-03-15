@@ -8,12 +8,7 @@ Three signal layers scored 0-100:
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
-import math
-import os
-import tempfile
 import threading
 import time
 from datetime import datetime, timedelta
@@ -24,15 +19,18 @@ import numpy as np
 import yfinance as yf
 from pydantic import BaseModel, Field
 
+from advisor.core.helpers import safe_float
+from advisor.data.cache import DiskCache
+
 logger = logging.getLogger(__name__)
 
-CACHE_DIR = Path("/tmp/advisor_mispricing_cache")
-
-# TTLs per layer
+# TTLs per layer (seconds)
 _TTL_FUNDAMENTAL = 24 * 3600  # 24h
 _TTL_OPTIONS = 4 * 3600  # 4h
 _TTL_ESTIMATES = 12 * 3600  # 12h
 _TTL_SECTOR = 24 * 3600  # 24h
+
+_disk_cache = DiskCache(cache_dir=Path("/tmp/advisor_mispricing_cache"), ttl_hours=24)
 
 
 # ── Models ───────────────────────────────────────────────────────────────────
@@ -91,44 +89,18 @@ class MispricingResult(BaseModel):
     scanned_at: datetime = Field(default_factory=datetime.now)
 
 
-# ── Cache helpers ────────────────────────────────────────────────────────────
-
-
-def _cache_key(prefix: str, key: str) -> Path:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    h = hashlib.sha256(key.encode()).hexdigest()[:24]
-    return CACHE_DIR / f"{prefix}_{h}.json"
+# ── Cache helpers (thin wrappers around DiskCache) ──────────────────────────
 
 
 def _cache_get(prefix: str, key: str, ttl: int | None = None) -> dict | None:
-    p = _cache_key(prefix, key)
-    effective_ttl = ttl or _TTL_FUNDAMENTAL
-    if p.exists() and (time.time() - p.stat().st_mtime) < effective_ttl:
-        try:
-            return json.loads(p.read_text())
-        except Exception:
-            return None
-    return None
+    return _disk_cache.get_json(prefix, key, ttl_seconds=ttl)
 
 
 def _cache_set(prefix: str, key: str, data: dict) -> None:
-    """Atomic cache write — write to temp file then rename."""
     try:
-        p = _cache_key(prefix, key)
-        fd, tmp = tempfile.mkstemp(dir=CACHE_DIR, suffix=".tmp")
-        closed = False
-        try:
-            os.write(fd, json.dumps(data, default=str).encode())
-            os.close(fd)
-            closed = True
-            os.replace(tmp, p)
-        except Exception:
-            if not closed:
-                os.close(fd)
-            Path(tmp).unlink(missing_ok=True)
-            raise
+        _disk_cache.set_json(data, prefix, key)
     except Exception as e:
-        logger.debug(f"Cache write failed: {e}")
+        logger.debug("Cache write failed: %s", e)
 
 
 # ── Shared yfinance helper ──────────────────────────────────────────────────
@@ -157,20 +129,6 @@ def _yf_throttle() -> None:
     delay = wait_until - time.time()
     if delay > 0:
         time.sleep(delay)
-
-
-# ── Helper: safe float from info dict ────────────────────────────────────────
-
-
-def _safe_float(val) -> float | None:
-    """Convert a value to float, returning None on failure."""
-    if val is None:
-        return None
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else None
-    except (ValueError, TypeError):
-        return None
 
 
 # ── 1. Fundamental Mispricing ────────────────────────────────────────────────
@@ -393,16 +351,17 @@ def _get_sector_medians(sector: str) -> dict:
             try:
                 _yf_throttle()
                 info = yf.Ticker(sym).info or {}
-                pe = _safe_float(info.get("trailingPE"))
-                pb = _safe_float(info.get("priceToBook"))
-                ev = _safe_float(info.get("enterpriseToEbitda"))
+                pe = safe_float(info.get("trailingPE"))
+                pb = safe_float(info.get("priceToBook"))
+                ev = safe_float(info.get("enterpriseToEbitda"))
                 if pe is not None and 0 < pe < 200:
                     pe_vals.append(pe)
                 if pb is not None and 0 < pb < 50:
                     pb_vals.append(pb)
                 if ev is not None and 0 < ev < 100:
                     ev_vals.append(ev)
-            except Exception:
+            except Exception as e:
+                logger.debug("Sector median fetch failed for %s: %s", sym, e)
                 continue
 
         result = {
@@ -424,11 +383,11 @@ def _score_relative_valuation(info: dict, sector: str) -> tuple[float, dict]:
     medians = _get_sector_medians(sector)
     score = 0.0
     details = {
-        "pe_ratio": _safe_float(info.get("trailingPE")),
+        "pe_ratio": safe_float(info.get("trailingPE")),
         "sector_pe": medians.get("pe"),
-        "pb_ratio": _safe_float(info.get("priceToBook")),
+        "pb_ratio": safe_float(info.get("priceToBook")),
         "sector_pb": medians.get("pb"),
-        "ev_ebitda": _safe_float(info.get("enterpriseToEbitda")),
+        "ev_ebitda": safe_float(info.get("enterpriseToEbitda")),
         "sector_ev_ebitda": medians.get("ev_ebitda"),
     }
 
@@ -627,7 +586,8 @@ def _fetch_options_market_score(symbol: str, ticker: yf.Ticker | None = None) ->
                     exp_iv.extend(exp_puts["impliedVolatility"].dropna().tolist())
                 if exp_iv:
                     term_ivs.append(float(np.mean(exp_iv)))
-            except Exception:
+            except Exception as e:
+                logger.debug("IV term structure fetch failed for expiry %s: %s", exp, e)
                 continue
 
         if len(term_ivs) >= 3:
@@ -694,11 +654,11 @@ def _fetch_estimate_revisions(
             ticker = yf.Ticker(symbol)
 
         info = ticker.info or {}
-        current_price = _safe_float(info.get("currentPrice")) or _safe_float(
+        current_price = safe_float(info.get("currentPrice")) or safe_float(
             info.get("regularMarketPrice")
         )
-        target_price = _safe_float(info.get("targetMeanPrice"))
-        rec_mean = _safe_float(info.get("recommendationMean"))
+        target_price = safe_float(info.get("targetMeanPrice"))
+        rec_mean = safe_float(info.get("recommendationMean"))
 
         score = 0.0
 
@@ -772,8 +732,8 @@ def _fetch_estimate_revisions(
                 score += 3
 
         # Earnings growth estimate
-        earnings_growth = _safe_float(info.get("earningsGrowth"))
-        earnings_quarterly_growth = _safe_float(info.get("earningsQuarterlyGrowth"))
+        earnings_growth = safe_float(info.get("earningsGrowth"))
+        earnings_quarterly_growth = safe_float(info.get("earningsQuarterlyGrowth"))
         eg_val = earnings_growth or earnings_quarterly_growth
         if eg_val is not None:
             if eg_val > 0.20:
@@ -809,7 +769,8 @@ def screen_mispricing(symbol: str) -> MispricingResult:
         _yf_throttle()
         ticker = yf.Ticker(symbol)
         sector = (ticker.info or {}).get("sector", "")
-    except Exception:
+    except Exception as e:
+        logger.debug("Ticker info fetch failed for %s: %s", symbol, e)
         ticker = None
 
     fundamental = _fetch_fundamental_score(symbol, ticker=ticker)

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Optional
 
 import typer
 
 from advisor.cli.formatters import console, output_error, output_json
+
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(name="ml", help="ML signal tracking, training, and prediction")
 
@@ -1031,7 +1034,8 @@ def ml_status() -> None:
 
             auc = trainer.metrics.get("cv_auc_mean", 0)
             table.add_row("CV AUC", f"{auc:.4f}")
-        except Exception:
+        except Exception as e:
+            logger.debug("Model loading failed: %s", e)
             table.add_row("Model", "[yellow]error loading[/yellow]")
     else:
         table.add_row("Model", "[dim]not trained[/dim]")
@@ -1055,7 +1059,8 @@ def ml_status() -> None:
                 "HMM regime",
                 f"[{color}]{result['regime_name']}[/{color}] " f"(VIX={result['vix']:.1f})",
             )
-        except Exception:
+        except Exception as e:
+            logger.debug("HMM regime detection failed: %s", e)
             table.add_row("HMM regime", "[yellow]error[/yellow]")
     else:
         table.add_row("HMM regime", "[dim]not fitted[/dim]")

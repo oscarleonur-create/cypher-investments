@@ -1537,7 +1537,8 @@ def options_pipeline(
                     "regime": dip.regime,
                     "verdict": dip.verdict.value,
                 }
-            except Exception:
+            except Exception as e:
+                logger.debug("Conviction scoring failed for %s: %s", sym, e)
                 conviction_map[sym] = {
                     "score": 50.0,
                     "regime": scan_result.regime,

@@ -261,7 +261,8 @@ def scan_options(
 
                 try:
                     chain = ticker.option_chain(exp_str)
-                except Exception:
+                except Exception as e:
+                    logger.debug("Option chain fetch failed for %s %s: %s", symbol, exp_str, e)
                     continue
 
                 puts = chain.puts

@@ -125,8 +125,8 @@ def optimal_d(
                 best_d = d
                 logger.info("Optimal d=%.2f (ADF stat=%.3f, p=%.4f)", d, adf_stat, pvalue)
                 break
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("ADF test failed at d=%.2f: %s", d, e)
         d += step
 
     return round(best_d, 2)

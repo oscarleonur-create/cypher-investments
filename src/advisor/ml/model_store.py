@@ -78,8 +78,8 @@ def snapshot(metrics: dict[str, Any] | None = None, tag: str = "") -> str:
                 "version": payload.get("version"),
             }
             manifest["cv_metrics"] = payload.get("metrics", {})
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Failed to extract model metadata for snapshot: %s", e)
 
     (version_dir / _MANIFEST).write_text(json.dumps(manifest, indent=2))
     logger.info("Model snapshot created: %s (%d files)", version_id, len(copied))

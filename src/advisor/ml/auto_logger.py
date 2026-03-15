@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List
 
 import yfinance as yf
 
 from advisor.ml.outcome_tracker import log_signal
+
+logger = logging.getLogger(__name__)
 
 
 def auto_log_from_scanner_output(
@@ -36,10 +39,10 @@ def auto_log_from_scanner_output(
                     last = data[tk]["Close"].dropna()
                     if len(last) > 0:
                         prices[tk] = float(last.iloc[-1])
-                except Exception:
-                    pass
-    except Exception:
-        pass
+                except Exception as e:
+                    logger.debug("Price extraction failed for %s: %s", tk, e)
+    except Exception as e:
+        logger.debug("Batch price download failed: %s", e)
 
     count = 0
     for r in results_list:
