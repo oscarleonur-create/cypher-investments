@@ -8,11 +8,7 @@ Three signal layers scored 0-100:
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
-import os
-import tempfile
 import threading
 import time
 from datetime import datetime, timedelta
@@ -24,16 +20,17 @@ import yfinance as yf
 from pydantic import BaseModel, Field
 
 from advisor.core.helpers import safe_float
+from advisor.data.cache import DiskCache
 
 logger = logging.getLogger(__name__)
 
-CACHE_DIR = Path("/tmp/advisor_mispricing_cache")
-
-# TTLs per layer
+# TTLs per layer (seconds)
 _TTL_FUNDAMENTAL = 24 * 3600  # 24h
 _TTL_OPTIONS = 4 * 3600  # 4h
 _TTL_ESTIMATES = 12 * 3600  # 12h
 _TTL_SECTOR = 24 * 3600  # 24h
+
+_disk_cache = DiskCache(cache_dir=Path("/tmp/advisor_mispricing_cache"), ttl_hours=24)
 
 
 # ── Models ───────────────────────────────────────────────────────────────────
@@ -92,42 +89,16 @@ class MispricingResult(BaseModel):
     scanned_at: datetime = Field(default_factory=datetime.now)
 
 
-# ── Cache helpers ────────────────────────────────────────────────────────────
-
-
-def _cache_key(prefix: str, key: str) -> Path:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    h = hashlib.sha256(key.encode()).hexdigest()[:24]
-    return CACHE_DIR / f"{prefix}_{h}.json"
+# ── Cache helpers (thin wrappers around DiskCache) ──────────────────────────
 
 
 def _cache_get(prefix: str, key: str, ttl: int | None = None) -> dict | None:
-    p = _cache_key(prefix, key)
-    effective_ttl = ttl or _TTL_FUNDAMENTAL
-    if p.exists() and (time.time() - p.stat().st_mtime) < effective_ttl:
-        try:
-            return json.loads(p.read_text())
-        except Exception:
-            return None
-    return None
+    return _disk_cache.get_json(prefix, key, ttl_seconds=ttl)
 
 
 def _cache_set(prefix: str, key: str, data: dict) -> None:
-    """Atomic cache write — write to temp file then rename."""
     try:
-        p = _cache_key(prefix, key)
-        fd, tmp = tempfile.mkstemp(dir=CACHE_DIR, suffix=".tmp")
-        closed = False
-        try:
-            os.write(fd, json.dumps(data, default=str).encode())
-            os.close(fd)
-            closed = True
-            os.replace(tmp, p)
-        except Exception:
-            if not closed:
-                os.close(fd)
-            Path(tmp).unlink(missing_ok=True)
-            raise
+        _disk_cache.set_json(data, prefix, key)
     except Exception as e:
         logger.debug(f"Cache write failed: {e}")
 
