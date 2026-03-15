@@ -447,9 +447,9 @@ class PremiumScreener:
         r = 0.05  # risk-free rate assumption
 
         for _, row in puts.iterrows():
-            strike = safe_float(row["strike"])
-            bid = safe_float(row.get("bid", 0))
-            ask = safe_float(row.get("ask", 0))
+            strike = safe_float(row["strike"], default=0.0)
+            bid = safe_float(row.get("bid", 0), default=0.0)
+            ask = safe_float(row.get("ask", 0), default=0.0)
 
             if bid < 0.10 or strike >= price or strike <= 0:
                 continue
@@ -463,7 +463,7 @@ class PremiumScreener:
                 continue
 
             mid = (bid + ask) / 2
-            iv = safe_float(row.get("impliedVolatility", 0)) or current_iv
+            iv = safe_float(row.get("impliedVolatility", 0), default=0.0) or current_iv
             volume = safe_int(row.get("volume", 0))
             oi = safe_int(row.get("openInterest", 0))
 
@@ -557,15 +557,15 @@ class PremiumScreener:
         # Collect OTM put candidates
         candidates = []
         for _, row in puts.iterrows():
-            strike = safe_float(row["strike"])
+            strike = safe_float(row["strike"], default=0.0)
             if strike <= 0 or strike >= price:
                 continue
             otm_pct = (price - strike) / price
             if not (0.03 <= otm_pct <= 0.30):
                 continue
-            bid = safe_float(row.get("bid", 0))
-            ask = safe_float(row.get("ask", 0))
-            iv = safe_float(row.get("impliedVolatility", 0)) or current_iv
+            bid = safe_float(row.get("bid", 0), default=0.0)
+            ask = safe_float(row.get("ask", 0), default=0.0)
+            iv = safe_float(row.get("impliedVolatility", 0), default=0.0) or current_iv
             volume = safe_int(row.get("volume", 0))
             oi = safe_int(row.get("openInterest", 0))
             candidates.append((strike, bid, ask, iv, volume, oi))

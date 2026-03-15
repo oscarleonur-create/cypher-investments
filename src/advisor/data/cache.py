@@ -89,7 +89,8 @@ class DiskCache:
             closed = True
             os.replace(tmp, path)
             logger.debug(f"Cached: {parts}")
-        except Exception:
+        except Exception as e:
+            logger.debug("Cache write failed: %s", e)
             if not closed:
                 os.close(fd)
             Path(tmp).unlink(missing_ok=True)

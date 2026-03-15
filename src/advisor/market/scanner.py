@@ -57,8 +57,8 @@ def _pead_has_recent_earnings(symbol: str) -> bool:
 
         days_since = (date.today() - report_date).days
         return 0 <= days_since <= _PEAD_EARNINGS_WINDOW
-    except Exception:
-        logger.debug("PEAD earnings pre-screen failed for %s", symbol)
+    except Exception as e:
+        logger.debug("PEAD earnings pre-screen failed for %s: %s", symbol, e)
         return False
 
 

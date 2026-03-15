@@ -159,8 +159,8 @@ class SimulatorPipeline:
                 from advisor.market.drawdown_analysis import analyze_max_move
 
                 dd_data[sym] = analyze_max_move(sym, dtes=[21, 30, 45, 60])
-            except Exception:
-                logger.debug("Drawdown analysis failed for %s", sym, exc_info=True)
+            except Exception as e:
+                logger.debug("Drawdown analysis failed for %s: %s", sym, e)
 
         # Step 2: SCAN — fetch chains + generate candidates
         # Pass store=None to scan_and_generate to avoid double-saving candidates.

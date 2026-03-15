@@ -100,7 +100,7 @@ def _cache_set(prefix: str, key: str, data: dict) -> None:
     try:
         _disk_cache.set_json(data, prefix, key)
     except Exception as e:
-        logger.debug(f"Cache write failed: {e}")
+        logger.debug("Cache write failed: %s", e)
 
 
 # ── Shared yfinance helper ──────────────────────────────────────────────────

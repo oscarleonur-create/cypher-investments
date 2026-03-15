@@ -92,8 +92,8 @@ def _batch_ticker_info(
                         sector=str(info.get("sector") or ""),
                         industry=str(info.get("industry") or ""),
                     )
-                except Exception:
-                    logger.debug("Failed to get info for %s", sym)
+                except Exception as e:
+                    logger.debug("Failed to get info for %s: %s", sym, e)
         except Exception as e:
             logger.warning("Batch ticker info failed for batch %d: %s", batch_num, e)
 
@@ -303,8 +303,8 @@ def apply_filters(
 
             if _check_strategy_technical(close, vol, strategy_name):
                 passed_technical.append(sym)
-        except Exception:
-            logger.debug("Technical check failed for %s", sym)
+        except Exception as e:
+            logger.debug("Technical check failed for %s: %s", sym, e)
 
     stats.after_technical = len(passed_technical)
     logger.info(
