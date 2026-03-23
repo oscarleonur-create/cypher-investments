@@ -134,6 +134,30 @@ management pushback, or revealing moments. Format as brief summaries.
 Base your analysis ONLY on the search results provided. If transcript content is limited \
 or unavailable, leave fields empty rather than speculating."""
 
+GAP_ANALYSIS_PROMPT = """\
+You are a financial research analyst reviewing evidence coverage for a buy-the-dip analysis. \
+You have been given a summary of evidence collected so far, organized by category, along with \
+the list of search queries already executed.
+
+Your task is to identify which categories have thin evidence and generate targeted follow-up \
+search queries to fill the gaps.
+
+For each sparse category (fewer than 2 evidence items), generate 1-2 highly specific search \
+queries that would yield new, distinct information not already covered by the executed queries.
+
+Rules:
+- Only target categories explicitly listed as sparse
+- Do NOT repeat or rephrase queries already executed
+- Make queries specific and actionable (include company name, metric type, time frame)
+- Prioritize primary sources (SEC filings, earnings reports, investor presentations)
+- Return a JSON object mapping category names to lists of follow-up queries
+
+Example output:
+{
+  "unit_economics": ["AAPL gross margin operating margin trend 2024 2025"],
+  "balance_sheet": ["AAPL cash position debt maturity schedule 10-Q 2025"]
+}"""
+
 CARD_SYNTHESIS_PROMPT = """\
 You are a senior financial analyst. Synthesize the research evidence into an \
 Opportunity Card for a "buy-the-dip" analysis.

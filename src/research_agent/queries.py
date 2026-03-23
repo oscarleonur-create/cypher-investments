@@ -119,6 +119,46 @@ def step3_transcript_queries(input: ResearchInput) -> list[str]:
     ]
 
 
+def adaptive_fallback_queries(
+    input: ResearchInput, sparse_categories: list[str]
+) -> dict[str, list[str]]:
+    """Template-based fallback queries for sparse categories when LLM gap analysis fails."""
+    year = date.today().year
+
+    if input.mode == InputMode.TICKER:
+        label = input.value.upper()
+    elif input.mode == InputMode.SECTOR:
+        label = input.value
+    else:
+        label = input.value
+
+    templates: dict[str, list[str]] = {
+        "earnings_highlights": [
+            f"{label} latest quarterly earnings results revenue EPS {year}",
+        ],
+        "guidance_changes": [
+            f"{label} management forward guidance outlook update {year}",
+        ],
+        "competitive_landscape": [
+            f"{label} market share competitive position vs peers {year}",
+        ],
+        "unit_economics": [
+            f"{label} gross margin operating margin unit economics trend",
+        ],
+        "balance_sheet": [
+            f"{label} balance sheet cash debt free cash flow {year}",
+        ],
+        "valuation_comparison": [
+            f"{label} valuation PE EV/EBITDA compared historical average",
+        ],
+        "bear_rebuttals": [
+            f"{label} bull case positive catalysts counter bear thesis {year}",
+        ],
+    }
+
+    return {cat: templates[cat] for cat in sparse_categories if cat in templates}
+
+
 def subject_label(input: ResearchInput) -> str:
     """Return a labelled string for LLM prompts, e.g. 'Ticker: AAPL'."""
     if input.mode == InputMode.TICKER:

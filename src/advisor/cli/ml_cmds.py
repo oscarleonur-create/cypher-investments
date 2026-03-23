@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Optional
 
 import typer
 
 from advisor.cli.formatters import console, output_error, output_json
+
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(name="ml", help="ML signal tracking, training, and prediction")
 
@@ -88,6 +91,13 @@ def ml_train(
         int,
         typer.Option("--decay", help="Sample weight half-life in days (0=uniform)"),
     ] = 365,
+    barrier_ratio: Annotated[
+        float,
+        typer.Option(
+            "--barrier-ratio",
+            help="Asymmetric barrier ratio (>1 = tighter stop, e.g. 2.0 for 2:1 R:R)",
+        ),
+    ] = 1.0,
     cutoff: Annotated[
         Optional[str],
         typer.Option("--cutoff", help="Train cutoff date (YYYY-MM-DD) for OOS split"),
@@ -109,12 +119,13 @@ def ml_train(
         horizon=horizon,
         label_mode=label_mode,
         decay=decay,
+        barrier_ratio=barrier_ratio,
     )
 
     console.print(
         f"[dim]Config: horizon={horizon}d, threshold={threshold}%, "
         f"lookback={lookback}, labels={label_mode}, decay={decay}d, "
-        f"cutoff={cutoff or 'auto'}[/dim]"
+        f"barrier_ratio={barrier_ratio}, cutoff={cutoff or 'auto'}[/dim]"
     )
 
     if compare:
@@ -242,6 +253,10 @@ def ml_train_meta(
         int,
         typer.Option("--decay", help="Sample weight half-life in days"),
     ] = 365,
+    barrier_ratio: Annotated[
+        float,
+        typer.Option("--barrier-ratio", help="Asymmetric barrier ratio (>1 = tighter stop)"),
+    ] = 1.0,
     cutoff: Annotated[
         Optional[str],
         typer.Option("--cutoff", help="Train cutoff date (YYYY-MM-DD)"),
@@ -268,6 +283,7 @@ def ml_train_meta(
         horizon=horizon,
         label_mode=label_mode,
         decay=decay,
+        barrier_ratio=barrier_ratio,
     )
 
     console.print(
@@ -495,6 +511,23 @@ def ml_features(
             "alpha_trend_strength",
             "alpha_max_drawdown_20d",
             "alpha_vwap_deviation",
+        ],
+        "Swing Patterns": [
+            "swing_adx_14",
+            "swing_di_spread",
+            "swing_higher_highs_ratio",
+            "swing_range_contraction",
+            "swing_bb_squeeze",
+            "swing_consolidation_days",
+            "swing_pullback_to_sma20",
+            "swing_pullback_to_sma50",
+            "swing_support_proximity",
+            "swing_weekly_trend",
+            "swing_daily_weekly_align",
+            "swing_trend_maturity",
+            "swing_volume_at_breakout",
+            "swing_volume_dryup",
+            "swing_accumulation_score",
         ],
         "Fractional Diff": [
             "fracdiff_d03",
@@ -1060,6 +1093,14 @@ def ml_status() -> None:
     else:
         table.add_row("HMM regime", "[dim]not fitted[/dim]")
 
+    # Quantile model status
+    from advisor.ml.quantile import QuantileModel
+
+    if QuantileModel.model_exists():
+        table.add_row("Quantile model", "[green]trained[/green]")
+    else:
+        table.add_row("Quantile model", "[dim]not trained[/dim]")
+
     # Meta-labeling status
     from advisor.ml.meta_label import MetaLabeler
 
@@ -1077,5 +1118,439 @@ def ml_status() -> None:
         table.add_row("Versions", f"{len(versions)} saved (latest: {latest})")
     else:
         table.add_row("Versions", "[dim]none[/dim]")
+
+    console.print(table)
+
+
+@app.command("train-quantile")
+def ml_train_quantile(
+    symbols: Annotated[
+        Optional[str],
+        typer.Option("--symbols", "-s", help="Comma-separated symbols"),
+    ] = None,
+    lookback: Annotated[str, typer.Option("--lookback", "-l", help="Data lookback period")] = "5y",
+    horizon: Annotated[
+        int, typer.Option("--horizon", help="Forward return horizon in trading days")
+    ] = 10,
+    decay: Annotated[
+        int,
+        typer.Option("--decay", help="Sample weight half-life in days"),
+    ] = 365,
+    cutoff: Annotated[
+        Optional[str],
+        typer.Option("--cutoff", help="Train cutoff date (YYYY-MM-DD)"),
+    ] = None,
+    output: Annotated[Optional[str], typer.Option("--output", help="Output format (json)")] = None,
+) -> None:
+    """Train quantile regression models for return distribution prediction."""
+    from rich.table import Table
+
+    from advisor.ml.pipeline import MLPipeline
+
+    symbol_list = [s.strip() for s in symbols.split(",")] if symbols else None
+    pipeline = MLPipeline(
+        symbols=symbol_list,
+        lookback=lookback,
+        horizon=horizon,
+        decay=decay,
+    )
+
+    console.print(
+        f"[bold]Training quantile regression models...[/bold]\n"
+        f"[dim]horizon={horizon}d, lookback={lookback}, decay={decay}d, "
+        f"cutoff={cutoff or 'auto'}[/dim]"
+    )
+
+    try:
+        result = pipeline.train_quantile(train_cutoff=cutoff)
+    except Exception as e:
+        output_error(f"Quantile training failed: {e}")
+        return
+
+    if output == "json":
+        output_json(result)
+        return
+
+    meta = result["metadata"]
+    cv = result["cv_metrics"]
+
+    table = Table(title="Quantile Model Training Results")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", justify="right")
+
+    table.add_row("Samples", str(meta["n_samples"]))
+    table.add_row("Features", str(meta["n_features"]))
+    table.add_row("Symbols", str(meta.get("n_symbols", "?")))
+    table.add_row("Horizon", f"{meta['horizon']}d")
+    table.add_row("Quantiles", ", ".join(f"{q:.0%}" for q in meta["quantiles"]))
+    table.add_row("Train cutoff", meta.get("train_cutoff", "?"))
+
+    console.print(table)
+
+    # Coverage metrics
+    coverage = cv.get("coverage", {})
+    if coverage:
+        cov_table = Table(title="Interval Coverage (OOS pooled CV)")
+        cov_table.add_column("Interval", style="cyan")
+        cov_table.add_column("Target", justify="right")
+        cov_table.add_column("Actual", justify="right")
+        cov_table.add_column("Calibration", justify="right")
+
+        for interval, actual in [
+            ("25th-75th", coverage.get("50_pct", 0)),
+            ("10th-90th", coverage.get("80_pct", 0)),
+            ("5th-95th", coverage.get("90_pct", 0)),
+        ]:
+            target = {"25th-75th": 50.0, "10th-90th": 80.0, "5th-95th": 90.0}[interval]
+            diff = actual - target
+            color = "green" if abs(diff) < 5 else "yellow" if abs(diff) < 10 else "red"
+            cov_table.add_row(
+                interval,
+                f"{target:.0f}%",
+                f"{actual:.1f}%",
+                f"[{color}]{diff:+.1f}pp[/{color}]",
+            )
+        console.print(cov_table)
+
+    # Pinball loss
+    pinball = cv.get("pinball_loss", {})
+    if pinball:
+        pin_table = Table(title="Pinball Loss by Quantile (lower = better)")
+        pin_table.add_column("Quantile", style="cyan")
+        pin_table.add_column("Loss", justify="right")
+        for q_name, loss in pinball.items():
+            pin_table.add_row(q_name, f"{loss:.4f}")
+        console.print(pin_table)
+
+    # Feature importance
+    importance = result.get("feature_importance", {})
+    if importance:
+        imp_table = Table(title="Top Feature Importances (aggregated)")
+        imp_table.add_column("Feature", style="cyan")
+        imp_table.add_column("Importance", justify="right")
+        for name, imp in list(importance.items())[:10]:
+            imp_table.add_row(name, f"{imp:.4f}")
+        console.print(imp_table)
+
+    console.print(f"\nModel saved to {result['model_path']}")
+
+
+@app.command("distribution")
+def ml_distribution(
+    ticker: Annotated[str, typer.Argument(help="Ticker symbol")],
+    output: Annotated[Optional[str], typer.Option("--output", help="Output format (json)")] = None,
+) -> None:
+    """Predict return distribution for a symbol using quantile regression."""
+    import pandas as pd
+    from rich.panel import Panel
+    from rich.table import Table
+
+    from advisor.ml.features import FeatureEngine
+    from advisor.ml.quantile import QuantileModel
+    from advisor.ml.signal_generator import MLSignalGenerator
+
+    if not QuantileModel.model_exists():
+        output_error("No quantile model found. Run 'advisor ml train-quantile' first.")
+        return
+
+    ticker = ticker.upper()
+    engine = FeatureEngine()
+    features = engine.compute_features(ticker)
+    if not features:
+        output_error(f"Could not compute features for {ticker}")
+        return
+
+    qm = QuantileModel.load()
+    feature_names = qm.feature_names or FeatureEngine.feature_names()
+
+    # Build feature row with sensible defaults (same as signal_generator)
+    row = {}
+    for col in feature_names:
+        if col.endswith("_cs_rank"):
+            default = 0.5
+        elif col == "hmm_regime":
+            default = 1.0
+        elif col.startswith("hmm_") and col.endswith("_prob"):
+            default = 1.0 / 3.0
+        else:
+            default = 0.0
+        row[col] = features.get(col, default)
+
+    features_df = pd.DataFrame([row])
+
+    # Fetch OHLCV for trend filter
+    ohlcv_df = _fetch_ohlcv(ticker)
+    dist = qm.predict_distribution(features_df, ohlcv_df=ohlcv_df)
+
+    if output == "json":
+        output_json(dist)
+        return
+
+    horizon = qm.metadata.get("horizon", 10)
+    median_ret = dist["median_return"]
+    med_color = "green" if median_ret > 0 else "red" if median_ret < 0 else "white"
+
+    # Trend info line
+    trend_line = ""
+    if dist.get("trend_score") is not None:
+        ts = dist["trend_score"]
+        ts_color = "green" if ts >= 2 else "yellow" if ts == 1 else "red"
+        fk = dist["falling_knife_warning"]
+        fk_str = "  [bold red]FALLING KNIFE[/bold red]" if fk else ""
+        ras = dist["risk_adjusted_score"]
+        ras_color = "green" if ras > 0 else "red" if ras < 0 else "white"
+        trend_line = (
+            f"Trend score: [{ts_color}]{ts}/3[/{ts_color}]{fk_str}  |  "
+            f"Risk-adj score: [{ras_color}]{ras:+.2f}%[/{ras_color}]\n"
+        )
+
+    # Header panel
+    skew = dist["distribution_skew"]
+    skew_icon = {
+        "right": "[green]>>>[/green]",
+        "left": "[red]<<<[/red]",
+        "symmetric": "[white]<->[/white]",
+    }
+    console.print(
+        Panel(
+            f"{trend_line}"
+            f"Median {horizon}d return: [{med_color}]{median_ret:+.2f}%[/{med_color}]\n"
+            f"80% range: [{med_color}]{dist['expected_range'][0]:+.2f}%[/{med_color}] "
+            f"to [{med_color}]{dist['expected_range'][1]:+.2f}%[/{med_color}]\n"
+            f"Skew: {skew_icon.get(skew, skew)} ({skew})  |  "
+            f"Upside ratio: {dist['upside_ratio']:.2f}  |  "
+            f"Tail ratio: {dist['tail_ratio']:.2f}",
+            title=f"Return Distribution: {ticker} ({horizon}d)",
+        )
+    )
+
+    # Quantile table
+    table = Table(title="Predicted Quantiles")
+    table.add_column("Quantile", style="cyan", justify="right")
+    table.add_column("Return (%)", justify="right")
+    table.add_column("Interpretation", style="dim")
+
+    labels = {
+        0.05: "Worst case (1 in 20)",
+        0.10: "VaR 90%",
+        0.25: "Bearish scenario",
+        0.50: "Median outcome",
+        0.75: "Bullish scenario",
+        0.90: "VaR 10% upside",
+        0.95: "Best case (1 in 20)",
+    }
+
+    for q, val in dist["quantiles"].items():
+        color = "green" if val > 0 else "red" if val < 0 else "white"
+        label = labels.get(q, "")
+        table.add_row(
+            f"{q:.0%}",
+            f"[{color}]{val:+.2f}%[/{color}]",
+            label,
+        )
+
+    console.print(table)
+
+    # Risk metrics
+    risk_table = Table(title="Risk Metrics")
+    risk_table.add_column("Metric", style="cyan")
+    risk_table.add_column("Value", justify="right")
+
+    var5 = dist["var_5"]
+    var10 = dist["var_10"]
+    cvar5 = dist["cvar_5"]
+    risk_table.add_row("VaR 95%", f"[red]{var5:+.2f}%[/red]")
+    risk_table.add_row("VaR 90%", f"[red]{var10:+.2f}%[/red]")
+    risk_table.add_row("CVaR 95% (approx)", f"[red]{cvar5:+.2f}%[/red]")
+    risk_table.add_row("Upside/Downside ratio", f"{dist['upside_ratio']:.2f}")
+
+    # Trend detail rows
+    if dist.get("trend_score") is not None:
+        risk_table.add_row("", "")
+        ts = dist["trend_score"]
+        ts_color = "green" if ts >= 2 else "yellow" if ts == 1 else "red"
+        risk_table.add_row("Trend score", f"[{ts_color}]{ts}/3[/{ts_color}]")
+        risk_table.add_row(
+            "  SMA20 > SMA50",
+            "[green]Yes[/green]" if dist.get("sma20_above_sma50") else "[red]No[/red]",
+        )
+        risk_table.add_row(
+            "  Price > SMA50",
+            "[green]Yes[/green]" if dist.get("price_above_sma50") else "[red]No[/red]",
+        )
+        risk_table.add_row(
+            "  SMA50 slope up",
+            "[green]Yes[/green]" if dist.get("sma50_slope_positive") else "[red]No[/red]",
+        )
+        if dist["falling_knife_warning"]:
+            risk_table.add_row("Falling knife", "[bold red]WARNING[/bold red]")
+        risk_table.add_row("Risk-adj score", f"{dist['risk_adjusted_score']:+.2f}%")
+
+    console.print(risk_table)
+
+    # Also show classifier signal if available
+    gen = MLSignalGenerator()
+    if gen.is_available():
+        signal = gen.generate_signal(ticker)
+        if signal:
+            signal_colors = {"BUY": "green", "SELL": "red", "NEUTRAL": "yellow", "HOLD": "yellow"}
+            color = signal_colors.get(signal.action.value, "white")
+            console.print(
+                f"\n[dim]Classifier signal:[/dim] "
+                f"[bold {color}]{signal.action.value}[/bold {color}] — {signal.reason}"
+            )
+
+
+def _fetch_ohlcv(ticker: str, period: str = "6mo") -> "pd.DataFrame | None":  # noqa: F821
+    """Fetch OHLCV data for trend scoring. Returns None on failure."""
+    try:
+        import yfinance as yf
+
+        df = yf.download(ticker, period=period, progress=False)
+        if df is not None and len(df) >= 50:
+            # Flatten multi-level columns from yfinance
+            if hasattr(df.columns, "levels") and df.columns.nlevels > 1:
+                df.columns = df.columns.get_level_values(0)
+            return df
+    except Exception as e:
+        logger.debug("OHLCV fetch failed for %s: %s", ticker, e)
+    return None
+
+
+@app.command("scan")
+def ml_scan(
+    symbols: Annotated[
+        Optional[str],
+        typer.Option("--symbols", "-s", help="Comma-separated tickers to scan"),
+    ] = None,
+    top: Annotated[int, typer.Option("--top", "-n", help="Number of top results to show")] = 10,
+    include_falling_knives: Annotated[
+        bool,
+        typer.Option("--include-falling-knives", help="Include trend_score < 2 stocks"),
+    ] = False,
+    output: Annotated[Optional[str], typer.Option("--output", help="Output format (json)")] = None,
+) -> None:
+    """Scan tickers with quantile model, ranked by risk-adjusted score.
+
+    By default filters out falling knives (trend_score < 2).
+    Use --include-falling-knives to see all.
+    """
+    import pandas as pd
+    from rich.table import Table
+
+    from advisor.ml.features import FeatureEngine
+    from advisor.ml.quantile import QuantileModel
+
+    if not QuantileModel.model_exists():
+        output_error("No quantile model found. Run 'advisor ml train-quantile' first.")
+        return
+
+    if symbols:
+        ticker_list = [s.strip().upper() for s in symbols.split(",")]
+    else:
+        output_error("Provide symbols with --symbols (e.g., --symbols AAPL,NVDA,GOOGL)")
+        return
+
+    qm = QuantileModel.load()
+    feature_names = qm.feature_names or FeatureEngine.feature_names()
+    engine = FeatureEngine()
+    horizon = qm.metadata.get("horizon", 10)
+
+    results: list[dict] = []
+    for ticker in ticker_list:
+        try:
+            features = engine.compute_features(ticker)
+            if not features:
+                console.print(f"[dim]Skipping {ticker}: no features[/dim]")
+                continue
+
+            row = {}
+            for col in feature_names:
+                if col.endswith("_cs_rank"):
+                    default = 0.5
+                elif col == "hmm_regime":
+                    default = 1.0
+                elif col.startswith("hmm_") and col.endswith("_prob"):
+                    default = 1.0 / 3.0
+                else:
+                    default = 0.0
+                row[col] = features.get(col, default)
+
+            features_df = pd.DataFrame([row])
+            ohlcv_df = _fetch_ohlcv(ticker)
+            dist = qm.predict_distribution(features_df, ohlcv_df=ohlcv_df)
+            dist["ticker"] = ticker
+            results.append(dist)
+        except Exception as e:
+            console.print(f"[dim]Skipping {ticker}: {e}[/dim]")
+
+    if not results:
+        output_error("No results produced.")
+        return
+
+    # Filter falling knives unless opted in
+    if not include_falling_knives:
+        filtered = [r for r in results if not r.get("falling_knife_warning", False)]
+        n_removed = len(results) - len(filtered)
+        if n_removed > 0:
+            console.print(
+                f"[dim]Filtered {n_removed} falling knife(s). "
+                f"Use --include-falling-knives to see all.[/dim]"
+            )
+        results = filtered
+
+    # Rank by risk-adjusted score
+    results.sort(key=lambda r: r.get("risk_adjusted_score", r["median_return"]), reverse=True)
+    results = results[:top]
+
+    if output == "json":
+        output_json(results)
+        return
+
+    table = Table(title=f"ML Scan — Top {len(results)} by Risk-Adjusted Score ({horizon}d)")
+    table.add_column("#", style="dim", justify="right")
+    table.add_column("Ticker", style="cyan bold")
+    table.add_column("Median", justify="right")
+    table.add_column("Risk-Adj", justify="right")
+    table.add_column("VaR 10%", justify="right")
+    table.add_column("80% Range", justify="right")
+    table.add_column("Trend", justify="center")
+    table.add_column("Skew", justify="center")
+
+    for i, r in enumerate(results, 1):
+        med = r["median_return"]
+        med_color = "green" if med > 0 else "red"
+        ras = r.get("risk_adjusted_score", med)
+        ras_color = "green" if ras > 0 else "red"
+        var10 = r["var_10"]
+        rng = r["expected_range"]
+        ts = r.get("trend_score")
+        fk = r.get("falling_knife_warning", False)
+
+        if ts is not None:
+            ts_color = "green" if ts >= 2 else "yellow" if ts == 1 else "red"
+            trend_str = f"[{ts_color}]{ts}/3[/{ts_color}]"
+            if fk:
+                trend_str += " [red]FK[/red]"
+        else:
+            trend_str = "[dim]?[/dim]"
+
+        skew = r.get("distribution_skew", "?")
+        skew_map = {
+            "right": "[green]R[/green]",
+            "left": "[red]L[/red]",
+            "symmetric": "[white]S[/white]",
+        }
+
+        table.add_row(
+            str(i),
+            r["ticker"],
+            f"[{med_color}]{med:+.2f}%[/{med_color}]",
+            f"[{ras_color}]{ras:+.2f}%[/{ras_color}]",
+            f"[red]{var10:+.2f}%[/red]",
+            f"{rng[0]:+.1f} / {rng[1]:+.1f}",
+            trend_str,
+            skew_map.get(skew, skew),
+        )
 
     console.print(table)

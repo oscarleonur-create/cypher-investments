@@ -49,6 +49,9 @@ class ResearchConfig(BaseSettings):
     # --- HTTP ---
     http_timeout_seconds: int = 10
 
+    # --- Adaptive queries ---
+    adaptive_queries_enabled: bool = True
+
     # --- Runtime ---
     offline_mode: bool = False
 
