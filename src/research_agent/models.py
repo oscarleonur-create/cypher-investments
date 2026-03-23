@@ -104,6 +104,37 @@ class FactPack(BaseModel):
         return sum(len(getattr(self, f)) for f in FactPack.model_fields)
 
 
+# ── Coverage metrics ──────────────────────────────────────────────────────────
+
+
+class CoverageMetrics(BaseModel):
+    """Per-category evidence counts for adaptive query targeting."""
+
+    earnings_highlights: int = 0
+    guidance_changes: int = 0
+    competitive_landscape: int = 0
+    unit_economics: int = 0
+    balance_sheet: int = 0
+    valuation_comparison: int = 0
+    bear_rebuttals: int = 0
+
+    @property
+    def sparse_categories(self) -> list[str]:
+        """Categories with fewer than 2 evidence items."""
+        return [name for name in CoverageMetrics.model_fields if getattr(self, name) < 2]
+
+    @property
+    def coverage_score(self) -> float:
+        """Fraction of categories with >= 2 items (well-covered)."""
+        total = len(CoverageMetrics.model_fields)
+        covered = sum(1 for name in CoverageMetrics.model_fields if getattr(self, name) >= 2)
+        return covered / total if total > 0 else 0.0
+
+    @property
+    def as_dict(self) -> dict[str, int]:
+        return {name: getattr(self, name) for name in CoverageMetrics.model_fields}
+
+
 # ── Final output ─────────────────────────────────────────────────────────────
 
 
@@ -122,6 +153,7 @@ class OpportunityCard(BaseModel):
     next_actions: list[str] = Field(default_factory=list)
     sources: list[Source] = Field(default_factory=list)
     grounding_score: float = 1.0  # source verification confidence
+    coverage_confidence: dict[str, float] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=datetime.now)
 
 
@@ -151,3 +183,19 @@ class AgentState(BaseModel):
     card: OpportunityCard | None = None
     queries_executed: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    step3_static_done: bool = False
+
+
+# ── Batch result ─────────────────────────────────────────────────────────────
+
+
+class BatchResult(BaseModel):
+    """Aggregated result from a multi-symbol batch research run."""
+
+    batch_id: str
+    cards: list[OpportunityCard] = Field(default_factory=list)
+    failures: dict[str, str] = Field(default_factory=dict)  # symbol -> error message
+    total_requested: int = 0
+    total_completed: int = 0
+    total_failed: int = 0
+    elapsed_seconds: float = 0.0

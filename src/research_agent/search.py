@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import httpx
 
 from research_agent.config import ResearchConfig
 from research_agent.store import Store
+
+if TYPE_CHECKING:
+    from research_agent.batch import RateLimiter
 
 
 @dataclass
@@ -33,13 +37,22 @@ class SearchOptions:
 class PerplexityClient:
     """Perplexity Sonar API client with caching, rate limiting, and curated-first policy."""
 
-    def __init__(self, config: ResearchConfig, store: Store) -> None:
+    def __init__(
+        self,
+        config: ResearchConfig,
+        store: Store,
+        rate_limiter: RateLimiter | None = None,
+    ) -> None:
         self._config = config
         self._store = store
+        self._external_limiter = rate_limiter
         self._last_request_time: float = 0.0
 
     def _rate_limit(self) -> None:
-        """Enforce 2 requests/second via simple sleep."""
+        """Enforce 2 requests/second, delegating to shared limiter if provided."""
+        if self._external_limiter is not None:
+            self._external_limiter.wait()
+            return
         elapsed = time.time() - self._last_request_time
         if elapsed < 0.5:
             time.sleep(0.5 - elapsed)

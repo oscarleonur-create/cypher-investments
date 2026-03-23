@@ -75,8 +75,12 @@ def alpha_momentum_12_1(close: pd.Series) -> pd.Series:
 
 
 def alpha_short_reversal(close: pd.Series) -> pd.Series:
-    """5-day mean reversion: negative of 5-day return."""
-    return -close.pct_change(5)
+    """5-day mean reversion: negative of 5-day return (clipped to +/-5%).
+
+    Clipping prevents stocks that crashed 10%+ from getting an outsized
+    contrarian score, which otherwise causes the model to favor falling knives.
+    """
+    return (-close.pct_change(5)).clip(-0.05, 0.05)
 
 
 def alpha_volume_surprise(volume: pd.Series) -> pd.Series:

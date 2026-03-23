@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from enum import StrEnum
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -11,7 +12,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.table import Table
 
-from research_agent.card import render_markdown
+from research_agent.card import render_batch_summary, render_markdown
 from research_agent.config import ResearchConfig
 from research_agent.models import InputMode, ResearchInput
 from research_agent.store import Store
@@ -156,3 +157,86 @@ def history(
         )
 
     console.print(table)
+
+
+@app.command()
+def batch(
+    tickers: Annotated[
+        str | None,
+        typer.Option("--tickers", "-t", help="Comma-separated tickers (e.g. AAPL,MSFT,GOOG)"),
+    ] = None,
+    file: Annotated[
+        Path | None,
+        typer.Option("--file", "-f", help="File with one ticker per line (# comments allowed)"),
+    ] = None,
+    concurrency: Annotated[
+        int, typer.Option("--concurrency", "-c", help="Max concurrent research pipelines")
+    ] = 3,
+    output: Annotated[
+        OutputFormat, typer.Option("--output", "-o", help="Output format")
+    ] = OutputFormat.BOTH,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Verbose logging")] = False,
+) -> None:
+    """Run research pipeline for multiple tickers in parallel."""
+    if not tickers and not file:
+        console.print("[red]Error: Provide --tickers or --file.[/red]")
+        raise typer.Exit(1)
+
+    if verbose:
+        logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    else:
+        logging.basicConfig(level=logging.WARNING)
+
+    # Parse ticker list
+    symbols: list[str] = []
+    if tickers:
+        symbols.extend(t.strip() for t in tickers.split(",") if t.strip())
+    if file:
+        try:
+            for line in file.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    symbols.append(line.split()[0])  # First token on line
+        except FileNotFoundError:
+            console.print(f"[red]File not found: {file}[/red]")
+            raise typer.Exit(1)
+
+    if not symbols:
+        console.print("[red]No tickers provided.[/red]")
+        raise typer.Exit(1)
+
+    config = ResearchConfig()
+
+    from research_agent.batch import run_batch
+
+    with console.status(
+        f"[bold green]Researching {len(symbols)} tickers (concurrency={concurrency})...",
+        spinner="dots",
+    ):
+        batch_result = run_batch(symbols, config, concurrency=concurrency)
+
+    # Write individual card outputs
+    from research_agent.result import write_outputs
+
+    for card in batch_result.cards:
+        write_outputs(card, config)
+
+    # Save batch record
+    store = Store(config.db_path)
+    try:
+        store.save_batch(batch_result)
+    finally:
+        store.close()
+
+    # Display batch summary
+    if output in (OutputFormat.MARKDOWN, OutputFormat.BOTH):
+        from rich.markdown import Markdown
+
+        md_text = render_batch_summary(batch_result)
+        console.print(Markdown(md_text))
+
+    console.print(
+        f"\n[bold green]Batch complete.[/bold green] "
+        f"{batch_result.total_completed}/{batch_result.total_requested} succeeded "
+        f"in {batch_result.elapsed_seconds:.1f}s | Batch ID: {batch_result.batch_id}"
+    )

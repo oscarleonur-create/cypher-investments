@@ -13,6 +13,7 @@ from research_agent.llm import (
     CARD_SYNTHESIS_PROMPT,
     DIP_CLASSIFICATION_PROMPT,
     FACT_EXTRACTION_PROMPT,
+    GAP_ANALYSIS_PROMPT,
     TRANSCRIPT_SUMMARIZATION_PROMPT,
     TRIGGER_DETECTION_PROMPT,
     ClaudeLLM,
@@ -20,6 +21,7 @@ from research_agent.llm import (
 from research_agent.models import (
     AgentState,
     ClassificationResult,
+    CoverageMetrics,
     DipType,
     EvidenceItem,
     FactPack,
@@ -31,6 +33,7 @@ from research_agent.models import (
 )
 from research_agent.queries import (
     TRANSCRIPT_DOMAINS,
+    adaptive_fallback_queries,
     step1_queries,
     step3_queries,
     step3_sec_queries,
@@ -246,6 +249,128 @@ def step2_classify_dip(
         )
 
 
+def _extract_facts(
+    state: AgentState,
+    results: list[SearchResult],
+    llm: ClaudeLLM,
+    registry: SourceRegistry,
+) -> None:
+    """Extract structured facts from search results and merge into state.fact_pack."""
+    if not results:
+        return
+
+    context = _format_search_results(results, registry)
+
+    try:
+        resp: _FactExtractionResponse = llm.complete(
+            system_prompt=FACT_EXTRACTION_PROMPT,
+            user_prompt=f"{subject_label(state.input)}\n\nSearch Results:\n{context}",
+            response_model=_FactExtractionResponse,
+        )
+        for field_name in FactPack.model_fields:
+            raw_items: list[_EvidenceItemRaw] = getattr(resp, field_name, [])
+            evidence_items = []
+            for raw in raw_items:
+                source_ids = []
+                for url in raw.source_urls:
+                    sid = registry.get_id(url)
+                    if sid:
+                        source_ids.append(sid)
+                evidence_items.append(EvidenceItem(text=raw.text, source_ids=source_ids))
+            existing = getattr(state.fact_pack, field_name)
+            existing.extend(evidence_items)
+    except Exception as e:
+        logger.error("Fact extraction failed: %s", e)
+        state.errors.append(f"fact_extraction: {e}")
+
+
+def _compute_coverage(fact_pack: FactPack) -> CoverageMetrics:
+    """Compute per-category evidence counts from a FactPack."""
+    return CoverageMetrics(
+        **{name: len(getattr(fact_pack, name)) for name in FactPack.model_fields}
+    )
+
+
+class _GapAnalysisResponse(BaseModel):
+    """LLM response mapping sparse categories to follow-up queries."""
+
+    # category_name -> list of follow-up queries
+    queries: dict[str, list[str]] = Field(default_factory=dict)
+
+
+def step3_adaptive_followup(
+    state: AgentState,
+    search: PerplexityClient,
+    llm: ClaudeLLM,
+    registry: SourceRegistry,
+    config: ResearchConfig,
+) -> None:
+    """Generate and execute targeted follow-up queries for sparse evidence categories."""
+    coverage = _compute_coverage(state.fact_pack)
+    sparse = coverage.sparse_categories
+    if not sparse:
+        logger.info("Step 3b: All categories well-covered, skipping adaptive follow-up")
+        return
+
+    logger.info(
+        "Step 3b: Adaptive follow-up — sparse categories: %s",
+        ", ".join(sparse),
+    )
+
+    # Build context for LLM gap analysis
+    coverage_summary = "\n".join(
+        f"- {name}: {getattr(coverage, name)} items" for name in CoverageMetrics.model_fields
+    )
+    executed_summary = "\n".join(f"- {q}" for q in state.queries_executed)
+
+    gap_queries: dict[str, list[str]] = {}
+    try:
+        resp: _GapAnalysisResponse = llm.complete(
+            system_prompt=GAP_ANALYSIS_PROMPT,
+            user_prompt=(
+                f"{subject_label(state.input)}\n\n"
+                f"## Evidence Coverage\n{coverage_summary}\n\n"
+                f"Sparse categories (< 2 items): {', '.join(sparse)}\n\n"
+                f"## Queries Already Executed\n{executed_summary}"
+            ),
+            response_model=_GapAnalysisResponse,
+        )
+        gap_queries = resp.queries
+    except Exception as e:
+        logger.warning("LLM gap analysis failed, using template fallback: %s", e)
+        gap_queries = adaptive_fallback_queries(state.input, sparse)
+
+    # If LLM returned empty, use fallback
+    if not gap_queries:
+        gap_queries = adaptive_fallback_queries(state.input, sparse)
+
+    # Execute follow-up queries within budget
+    all_results: list[SearchResult] = []
+    queries_this_step = 0
+    for _cat, queries in gap_queries.items():
+        for q in queries:
+            if queries_this_step >= config.max_queries_per_iteration:
+                break
+            if q in state.queries_executed:
+                continue
+            results = search.search(q, max_results=config.max_urls_per_query)
+            all_results.extend(results)
+            state.queries_executed.append(q)
+            queries_this_step += 1
+        if queries_this_step >= config.max_queries_per_iteration:
+            break
+
+    if not all_results:
+        return
+
+    # Register sources
+    for r in all_results:
+        registry.add(url=r.url, title=r.title, snippet=r.content)
+
+    # Extract facts using shared helper
+    _extract_facts(state, all_results, llm, registry)
+
+
 def step3_research_facts(
     state: AgentState,
     search: PerplexityClient,
@@ -330,30 +455,8 @@ def step3_research_facts(
             logger.error("Transcript summarization failed: %s", e)
             state.errors.append(f"transcript_summarization: {e}")
 
-    context = _format_search_results(all_results, registry)
-
-    try:
-        resp: _FactExtractionResponse = llm.complete(
-            system_prompt=FACT_EXTRACTION_PROMPT,
-            user_prompt=f"{subject_label(state.input)}\n\nSearch Results:\n{context}",
-            response_model=_FactExtractionResponse,
-        )
-        # Convert raw items to EvidenceItems with proper source IDs
-        for field_name in FactPack.model_fields:
-            raw_items: list[_EvidenceItemRaw] = getattr(resp, field_name, [])
-            evidence_items = []
-            for raw in raw_items:
-                source_ids = []
-                for url in raw.source_urls:
-                    sid = registry.get_id(url)
-                    if sid:
-                        source_ids.append(sid)
-                evidence_items.append(EvidenceItem(text=raw.text, source_ids=source_ids))
-            existing = getattr(state.fact_pack, field_name)
-            existing.extend(evidence_items)
-    except Exception as e:
-        logger.error("Fact extraction failed: %s", e)
-        state.errors.append(f"fact_extraction: {e}")
+    # Extract facts using shared helper
+    _extract_facts(state, all_results, llm, registry)
 
 
 def _verify_claims(claims: list[str], registry: SourceRegistry) -> tuple[list[str], int, int]:
@@ -461,13 +564,29 @@ def run_loop(
             continue
 
         if state.fact_pack.total_items < config.min_evidence_items:
-            logger.info(
-                "Step 3: Researching facts (%d/%d evidence items)...",
-                state.fact_pack.total_items,
-                config.min_evidence_items,
-            )
-            step3_research_facts(state, search, llm, registry, config)
-            continue
+            if not state.step3_static_done:
+                logger.info(
+                    "Step 3: Researching facts (%d/%d evidence items)...",
+                    state.fact_pack.total_items,
+                    config.min_evidence_items,
+                )
+                step3_research_facts(state, search, llm, registry, config)
+                state.step3_static_done = True
+                continue
+            elif config.adaptive_queries_enabled:
+                logger.info(
+                    "Step 3b: Adaptive follow-up (%d/%d evidence items)...",
+                    state.fact_pack.total_items,
+                    config.min_evidence_items,
+                )
+                step3_adaptive_followup(state, search, llm, registry, config)
+                continue
+            else:
+                logger.info(
+                    "Evidence below threshold (%d/%d), no more queries — proceeding to card",
+                    state.fact_pack.total_items,
+                    config.min_evidence_items,
+                )
 
         logger.info("Step 4: Generating opportunity card...")
         step4_generate_card(state, llm, registry)

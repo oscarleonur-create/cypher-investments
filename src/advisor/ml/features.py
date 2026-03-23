@@ -496,6 +496,16 @@ class FeatureEngine:
         except Exception as e:
             logger.debug(f"Alpha library features failed for {symbol}: {e}")
 
+        # ── Swing pattern features (15) ────────────────────────────────
+        try:
+            from advisor.ml.swing_features import compute_all_swing_features
+
+            swing = compute_all_swing_features(df)
+            for col in swing.columns:
+                features[col] = swing[col]
+        except Exception as e:
+            logger.debug(f"Swing features failed for {symbol}: {e}")
+
         # ── Fractional differentiation (4) ────────────────────────────
         try:
             from advisor.ml.fracdiff import fracdiff_series
@@ -583,6 +593,22 @@ class FeatureEngine:
             "alpha_trend_strength",
             "alpha_max_drawdown_20d",
             "alpha_vwap_deviation",
+            # Swing Patterns (15)
+            "swing_adx_14",
+            "swing_di_spread",
+            "swing_higher_highs_ratio",
+            "swing_range_contraction",
+            "swing_bb_squeeze",
+            "swing_consolidation_days",
+            "swing_pullback_to_sma20",
+            "swing_pullback_to_sma50",
+            "swing_support_proximity",
+            "swing_weekly_trend",
+            "swing_daily_weekly_align",
+            "swing_trend_maturity",
+            "swing_volume_at_breakout",
+            "swing_volume_dryup",
+            "swing_accumulation_score",
             # Fractional differentiation (3)
             "fracdiff_d03",
             "fracdiff_d04",

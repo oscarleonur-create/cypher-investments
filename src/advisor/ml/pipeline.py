@@ -79,6 +79,7 @@ class MLPipeline:
         horizon: int = _DEFAULT_HORIZON,
         label_mode: str = "barrier",
         decay: int = 365,
+        barrier_ratio: float = 1.0,
     ) -> None:
         self.symbols = [s.upper() for s in (symbols or _DEFAULT_SYMBOLS)]
         self.lookback = lookback
@@ -86,6 +87,9 @@ class MLPipeline:
         self.horizon = horizon
         self.label_mode = label_mode
         self.decay = decay
+        if barrier_ratio <= 0:
+            raise ValueError(f"barrier_ratio must be positive, got {barrier_ratio}")
+        self.barrier_ratio = barrier_ratio
         self._engine = FeatureEngine()
 
     def build_training_data(
@@ -349,7 +353,7 @@ class MLPipeline:
                 1.5 * vol * np.sqrt(self.horizon / 252) * 100,
             )
             upper = entry_price * (1 + barrier_pct / 100)
-            lower = entry_price * (1 - barrier_pct / 100)
+            lower = entry_price * (1 - barrier_pct / (100 * self.barrier_ratio))
 
             # Scan forward bars
             label = None
@@ -411,6 +415,7 @@ class MLPipeline:
         result["metadata"]["threshold"] = self.threshold
         result["metadata"]["label_mode"] = self.label_mode
         result["metadata"]["decay"] = self.decay
+        result["metadata"]["barrier_ratio"] = self.barrier_ratio
         result["metadata"]["train_cutoff"] = train_cutoff or str(dates.max().date())
         result["metadata"]["n_symbols"] = len(self.symbols)
         result["metadata"]["symbols"] = self.symbols
@@ -583,6 +588,99 @@ class MLPipeline:
             horizon=self.horizon,
             decay=self.decay,
         )
+
+    def train_quantile(
+        self,
+        n_cv_splits: int = 5,
+        train_cutoff: str | None = None,
+    ) -> dict[str, Any]:
+        """Train quantile regression models for return distribution prediction.
+
+        Uses the same features as the classifier but predicts continuous
+        forward returns at multiple quantile levels (5th through 95th).
+
+        Returns training results with coverage and pinball loss metrics.
+        """
+        import yfinance as yf
+
+        from advisor.ml.quantile import QuantileModel
+
+        all_features = []
+        all_returns = []
+        all_dates = []
+
+        for symbol in self.symbols:
+            logger.info(f"Building quantile features for {symbol}...")
+            try:
+                features = self._engine.compute_features_df(symbol, period=self.lookback)
+                if features.empty or len(features) < 60:
+                    logger.warning(f"Skipping {symbol}: insufficient data")
+                    continue
+
+                df = yf.download(symbol, period=self.lookback, progress=False)
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+
+                close = df["Close"]
+                forward_ret = (close.shift(-self.horizon) / close - 1) * 100
+
+                common_idx = features.index.intersection(forward_ret.dropna().index)
+
+                if train_cutoff:
+                    cutoff_ts = pd.Timestamp(train_cutoff)
+                    common_idx = common_idx[common_idx <= cutoff_ts]
+
+                if len(common_idx) < 30:
+                    logger.warning(f"Skipping {symbol}: insufficient aligned data")
+                    continue
+
+                all_features.append(features.loc[common_idx])
+                all_returns.append(forward_ret.loc[common_idx])
+                all_dates.append(pd.Series(common_idx, index=common_idx))
+
+            except Exception as e:
+                logger.error(f"Error building quantile data for {symbol}: {e}")
+                continue
+
+        if not all_features:
+            raise ValueError("No training data could be built from any symbol")
+
+        features_df = pd.concat(all_features)
+        returns_series = pd.concat(all_returns)
+        dates_series = pd.concat(all_dates)
+
+        # Sort by date
+        sort_idx = dates_series.argsort()
+        features_df = features_df.iloc[sort_idx].reset_index(drop=True)
+        returns_series = returns_series.iloc[sort_idx].reset_index(drop=True)
+        dates_series = dates_series.iloc[sort_idx].reset_index(drop=True)
+
+        logger.info(
+            f"Quantile training data: {len(features_df)} samples, "
+            f"{features_df.shape[1]} features, "
+            f"median return: {returns_series.median():.2f}%"
+        )
+
+        qm = QuantileModel()
+        result = qm.train(
+            features_df,
+            returns_series,
+            dates_series,
+            n_splits=n_cv_splits,
+            horizon=self.horizon,
+            decay=self.decay,
+        )
+
+        result["metadata"]["train_cutoff"] = train_cutoff or str(dates_series.max().date())
+        result["metadata"]["n_symbols"] = len(self.symbols)
+        result["metadata"]["symbols"] = self.symbols
+        result["metadata"]["threshold"] = self.threshold
+
+        model_path = qm.save()
+        result["model_path"] = str(model_path)
+        result["feature_importance"] = qm.get_feature_importance()
+
+        return result
 
     def backtest_signals(
         self,

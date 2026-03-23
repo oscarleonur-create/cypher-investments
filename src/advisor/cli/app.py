@@ -18,6 +18,7 @@ from advisor.cli.scenario_cmds import app as scenario_app
 from advisor.cli.signal_cmds import app as signal_app
 from advisor.cli.simulator_cmds import app as simulator_app
 from advisor.cli.strategy_cmds import app as strategy_app
+from advisor.cli.workflow_cmds import afternoon_app, morning_app
 
 app = typer.Typer(
     name="advisor",
@@ -37,6 +38,8 @@ app.add_typer(simulator_app, name="simulator")
 app.add_typer(ml_app, name="ml")
 app.add_typer(pipeline_app, name="pipeline")
 app.add_typer(scenario_app, name="scenario")
+app.add_typer(morning_app, name="morning")
+app.add_typer(afternoon_app, name="afternoon")
 
 
 @app.callback()

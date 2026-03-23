@@ -8,7 +8,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from research_agent.models import OpportunityCard
+from research_agent.models import BatchResult, OpportunityCard
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS runs (
@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS runs (
     verdict TEXT,
     dip_type TEXT,
     card_json TEXT NOT NULL,
+    batch_id TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -39,7 +40,22 @@ CREATE TABLE IF NOT EXISTS search_cache (
     created_at TEXT DEFAULT (datetime('now')),
     expires_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS batches (
+    batch_id TEXT PRIMARY KEY,
+    symbols TEXT NOT NULL,
+    total_requested INTEGER NOT NULL,
+    total_completed INTEGER NOT NULL,
+    total_failed INTEGER NOT NULL,
+    failures_json TEXT DEFAULT '{}',
+    elapsed_seconds REAL DEFAULT 0.0,
+    created_at TEXT DEFAULT (datetime('now'))
+);
 """
+
+_MIGRATIONS = [
+    "ALTER TABLE runs ADD COLUMN batch_id TEXT",
+]
 
 
 class Store:
@@ -50,21 +66,33 @@ class Store:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(db_path))
         self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
         self._init_schema()
+        self._run_migrations()
 
     def _init_schema(self) -> None:
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+
+    def _run_migrations(self) -> None:
+        """Apply migrations that may fail if columns already exist."""
+        for migration in _MIGRATIONS:
+            try:
+                self._conn.execute(migration)
+                self._conn.commit()
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
     def close(self) -> None:
         self._conn.close()
 
     # ── Runs ─────────────────────────────────────────────────────────────
 
-    def save_run(self, card: OpportunityCard) -> None:
+    def save_run(self, card: OpportunityCard, batch_id: str | None = None) -> None:
         self._conn.execute(
-            "INSERT OR REPLACE INTO runs (id, mode, input_value, verdict, dip_type, card_json) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO runs "
+            "(id, mode, input_value, verdict, dip_type, card_json, batch_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 card.id,
                 card.input.mode.value,
@@ -72,6 +100,7 @@ class Store:
                 card.verdict.value if card.verdict else None,
                 card.dip_type.value if card.dip_type else None,
                 card.model_dump_json(),
+                batch_id,
             ),
         )
         # Save sources
@@ -147,3 +176,43 @@ class Store:
             self._conn.commit()
             return None
         return json.loads(row["response"])
+
+    # ── Batches ──────────────────────────────────────────────────────────
+
+    def save_batch(self, batch: BatchResult) -> None:
+        """Persist a batch result and link its cards."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO batches "
+            "(batch_id, symbols, total_requested, total_completed, total_failed, "
+            "failures_json, elapsed_seconds) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                batch.batch_id,
+                ",".join(
+                    [c.input.value.upper() for c in batch.cards] + list(batch.failures.keys())
+                ),
+                batch.total_requested,
+                batch.total_completed,
+                batch.total_failed,
+                json.dumps(batch.failures),
+                batch.elapsed_seconds,
+            ),
+        )
+        # Save individual cards linked to the batch
+        for card in batch.cards:
+            self.save_run(card, batch_id=batch.batch_id)
+        self._conn.commit()
+
+    def list_batches(self, limit: int = 20) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT batch_id, symbols, total_requested, total_completed, "
+            "total_failed, elapsed_seconds, created_at "
+            "FROM batches ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def load_batch_cards(self, batch_id: str) -> list[OpportunityCard]:
+        rows = self._conn.execute(
+            "SELECT card_json FROM runs WHERE batch_id = ?", (batch_id,)
+        ).fetchall()
+        return [OpportunityCard.model_validate_json(r["card_json"]) for r in rows]
