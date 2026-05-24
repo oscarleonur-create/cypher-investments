@@ -14,6 +14,7 @@ from advisor.cli.market_cmds import app as market_app
 from advisor.cli.ml_cmds import app as ml_app
 from advisor.cli.options_cmds import app as options_app
 from advisor.cli.pipeline_cmds import app as pipeline_app
+from advisor.cli.research_cmds import app as research_app
 from advisor.cli.scenario_cmds import app as scenario_app
 from advisor.cli.signal_cmds import app as signal_app
 from advisor.cli.simulator_cmds import app as simulator_app
@@ -37,6 +38,7 @@ app.add_typer(options_app, name="options")
 app.add_typer(simulator_app, name="simulator")
 app.add_typer(ml_app, name="ml")
 app.add_typer(pipeline_app, name="pipeline")
+app.add_typer(research_app, name="research")
 app.add_typer(scenario_app, name="scenario")
 app.add_typer(morning_app, name="morning")
 app.add_typer(afternoon_app, name="afternoon")

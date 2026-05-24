@@ -35,6 +35,7 @@ dependencies = [
     "lightgbm>=4.0",
     "plotly (>=6.5.2,<7.0.0)",
     "streamlit (>=1.54.0,<2.0.0)",
+    "edgartools>=3.0",
 ]
 
 [project.scripts]
