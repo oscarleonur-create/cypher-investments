@@ -25,8 +25,8 @@ from research_agent.store import Store
 def _make_config(**overrides) -> ResearchConfig:
     defaults = dict(
         _env_file=None,
-        perplexity_api_key="test",
-        anthropic_api_key="test",
+        tavily_api_key="test",
+        openrouter_api_key="test",
     )
     defaults.update(overrides)
     return ResearchConfig(**defaults)

@@ -29,10 +29,10 @@ def synthesize_case(
     """Call Claude to synthesize all stage outputs into a trade case."""
     try:
         from research_agent.config import ResearchConfig
-        from research_agent.llm import ClaudeLLM
+        from research_agent.llm import OpenRouterLLM
 
         config = ResearchConfig()
-        llm = ClaudeLLM(config)
+        llm = OpenRouterLLM(config)
     except Exception as e:
         logger.error(f"Failed to initialize LLM: {e}")
         return _fallback_synthesis(scenario, ranking, options, risk, research)

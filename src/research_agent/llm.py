@@ -1,4 +1,4 @@
-"""Anthropic Claude client with structured output and prompt templates."""
+"""OpenRouter LLM client with structured output and prompt templates."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 import logging
 from typing import TypeVar
 
-import anthropic
+from openai import OpenAI
 from pydantic import BaseModel
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -17,13 +17,14 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
 
-class ClaudeLLM:
-    """Anthropic Claude client with structured output support."""
+class OpenRouterLLM:
+    """OpenRouter LLM client with structured output support."""
 
     def __init__(self, config: ResearchConfig) -> None:
         self._config = config
-        self._client = anthropic.Anthropic(
-            api_key=config.anthropic_api_key,
+        self._client = OpenAI(
+            api_key=config.openrouter_api_key,
+            base_url=config.llm_base_url,
             timeout=config.llm_timeout_seconds,
         )
 
@@ -34,7 +35,7 @@ class ClaudeLLM:
         user_prompt: str,
         response_model: type[T] | None = None,
     ) -> str | T:
-        """Call Claude and optionally parse response into a Pydantic model.
+        """Call LLM via OpenRouter and optionally parse response into a Pydantic model.
 
         If response_model is provided, the prompt includes the JSON schema and
         the response is parsed into that model.
@@ -47,15 +48,17 @@ class ClaudeLLM:
                 "Return ONLY the JSON object, no other text."
             )
 
-        message = self._client.messages.create(
+        response = self._client.chat.completions.create(
             model=self._config.llm_model,
             max_tokens=self._config.llm_max_tokens,
             temperature=self._config.llm_temperature,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
         )
 
-        text = message.content[0].text
+        text = response.choices[0].message.content
 
         if response_model is not None:
             # Strip markdown code fences if present

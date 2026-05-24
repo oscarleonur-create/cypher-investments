@@ -13,14 +13,15 @@ class ResearchConfig(BaseSettings):
 
     model_config = {"env_prefix": "RESEARCH_AGENT_", "extra": "ignore", "env_file": ".env"}
 
-    # --- Perplexity Sonar search ---
-    perplexity_api_key: str = ""
-    search_endpoint: str = "https://api.perplexity.ai/chat/completions"
-    perplexity_model: str = "sonar"
+    # --- Tavily search ---
+    tavily_api_key: str = ""
+    search_endpoint: str = "https://api.tavily.com/search"
+    tavily_search_depth: str = "advanced"
 
-    # --- Anthropic LLM ---
-    anthropic_api_key: str = ""
-    llm_model: str = "claude-sonnet-4-5-20250929"
+    # --- OpenRouter LLM ---
+    openrouter_api_key: str = ""
+    llm_base_url: str = "https://openrouter.ai/api/v1"
+    llm_model: str = "anthropic/claude-sonnet-4"
     llm_timeout_seconds: int = 60
     llm_max_tokens: int = 4096
     llm_temperature: float = 0.1

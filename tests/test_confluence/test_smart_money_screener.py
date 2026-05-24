@@ -42,8 +42,8 @@ class TestFetchInsiderActivity:
     @patch(f"{_P}._cache_set")
     @patch(f"{_P}._cache_get", return_value=None)
     @patch(f"{_P}.Store")
-    @patch(f"{_P}.ClaudeLLM")
-    @patch(f"{_P}.PerplexityClient")
+    @patch(f"{_P}.OpenRouterLLM")
+    @patch(f"{_P}.TavilyClient")
     @patch(f"{_P}.ResearchConfig")
     def test_insider_cluster_buys_scored(
         self, mock_cfg, mock_px, mock_llm_cls, mock_store, _cg, _cs
@@ -106,8 +106,8 @@ class TestFetchInsiderActivity:
     @patch(f"{_P}._cache_set")
     @patch(f"{_P}._cache_get", return_value=None)
     @patch(f"{_P}.Store")
-    @patch(f"{_P}.ClaudeLLM")
-    @patch(f"{_P}.PerplexityClient")
+    @patch(f"{_P}.OpenRouterLLM")
+    @patch(f"{_P}.TavilyClient")
     @patch(f"{_P}.ResearchConfig")
     def test_insider_csuite_large_buy_bonus(
         self, mock_cfg, mock_px, mock_llm_cls, mock_store, _cg, _cs
@@ -149,8 +149,8 @@ class TestFetchInsiderActivity:
     @patch(f"{_P}._cache_set")
     @patch(f"{_P}._cache_get", return_value=None)
     @patch(f"{_P}.Store")
-    @patch(f"{_P}.ClaudeLLM")
-    @patch(f"{_P}.PerplexityClient")
+    @patch(f"{_P}.OpenRouterLLM")
+    @patch(f"{_P}.TavilyClient")
     @patch(f"{_P}.ResearchConfig")
     def test_insider_sells_negative(self, mock_cfg, mock_px, mock_llm_cls, mock_store, _cg, _cs):
         """5 Sale trades -> negative score."""
@@ -194,8 +194,8 @@ class TestFetchInsiderActivity:
     @patch(f"{_P}._cache_set")
     @patch(f"{_P}._cache_get", return_value=None)
     @patch(f"{_P}.Store")
-    @patch(f"{_P}.ClaudeLLM")
-    @patch(f"{_P}.PerplexityClient")
+    @patch(f"{_P}.OpenRouterLLM")
+    @patch(f"{_P}.TavilyClient")
     @patch(f"{_P}.ResearchConfig")
     def test_insider_no_results_empty(self, mock_cfg, mock_px, mock_llm_cls, mock_store, _cg, _cs):
         """Empty search results -> InsiderScore(score=0)."""
@@ -212,8 +212,8 @@ class TestFetchInsiderActivity:
     @patch(f"{_P}._cache_set")
     @patch(f"{_P}._cache_get", return_value=None)
     @patch(f"{_P}.Store")
-    @patch(f"{_P}.ClaudeLLM")
-    @patch(f"{_P}.PerplexityClient")
+    @patch(f"{_P}.OpenRouterLLM")
+    @patch(f"{_P}.TavilyClient")
     @patch(f"{_P}.ResearchConfig")
     def test_insider_exception_returns_empty(
         self, mock_cfg, mock_px, mock_llm_cls, mock_store, _cg, mock_cache_set
@@ -239,8 +239,8 @@ class TestFetchCongressTrades:
     @patch(f"{_P}._cache_set")
     @patch(f"{_P}._cache_get", return_value=None)
     @patch(f"{_P}.Store")
-    @patch(f"{_P}.ClaudeLLM")
-    @patch(f"{_P}.PerplexityClient")
+    @patch(f"{_P}.OpenRouterLLM")
+    @patch(f"{_P}.TavilyClient")
     @patch(f"{_P}.ResearchConfig")
     def test_congress_multiple_buys_scored(
         self, mock_cfg, mock_px, mock_llm_cls, mock_store, _cg, _cs
@@ -291,8 +291,8 @@ class TestFetchCongressTrades:
     @patch(f"{_P}._cache_set")
     @patch(f"{_P}._cache_get", return_value=None)
     @patch(f"{_P}.Store")
-    @patch(f"{_P}.ClaudeLLM")
-    @patch(f"{_P}.PerplexityClient")
+    @patch(f"{_P}.OpenRouterLLM")
+    @patch(f"{_P}.TavilyClient")
     @patch(f"{_P}.ResearchConfig")
     def test_congress_no_results_empty(self, mock_cfg, mock_px, mock_llm_cls, mock_store, _cg, _cs):
         """Empty search results -> CongressScore(score=0)."""

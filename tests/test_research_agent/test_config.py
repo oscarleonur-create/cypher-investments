@@ -9,23 +9,23 @@ def test_defaults():
     """Config loads sensible defaults without env vars."""
     config = ResearchConfig(
         _env_file=None,
-        perplexity_api_key="test",
-        anthropic_api_key="test",
+        tavily_api_key="test",
+        openrouter_api_key="test",
     )
     assert config.max_iterations == 4
     assert config.max_queries_per_iteration == 4
     assert config.llm_temperature == 0.1
     assert config.curated_first is True
     assert config.offline_mode is False
-    assert config.llm_model == "claude-sonnet-4-5-20250929"
+    assert config.llm_model == "anthropic/claude-sonnet-4"
 
 
 def test_curated_domain_list():
     """curated_domain_list splits the comma-separated string."""
     config = ResearchConfig(
         _env_file=None,
-        perplexity_api_key="test",
-        anthropic_api_key="test",
+        tavily_api_key="test",
+        openrouter_api_key="test",
         curated_domains="sec.gov, reuters.com, bloomberg.com",
     )
     assert config.curated_domain_list == ["sec.gov", "reuters.com", "bloomberg.com"]
@@ -34,9 +34,9 @@ def test_curated_domain_list():
 def test_env_prefix(monkeypatch):
     """Settings are loaded from RESEARCH_AGENT_ prefixed env vars."""
     monkeypatch.setenv("RESEARCH_AGENT_MAX_ITERATIONS", "8")
-    monkeypatch.setenv("RESEARCH_AGENT_PERPLEXITY_API_KEY", "pplx-key")
-    monkeypatch.setenv("RESEARCH_AGENT_ANTHROPIC_API_KEY", "ant-key")
+    monkeypatch.setenv("RESEARCH_AGENT_TAVILY_API_KEY", "tavily-key")
+    monkeypatch.setenv("RESEARCH_AGENT_OPENROUTER_API_KEY", "or-key")
     config = ResearchConfig(_env_file=None)
     assert config.max_iterations == 8
-    assert config.perplexity_api_key == "pplx-key"
-    assert config.anthropic_api_key == "ant-key"
+    assert config.tavily_api_key == "tavily-key"
+    assert config.openrouter_api_key == "or-key"
