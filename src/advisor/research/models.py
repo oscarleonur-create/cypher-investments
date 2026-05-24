@@ -396,7 +396,110 @@ class CatalystRiskResult(BaseModel):
         return [r for r in self.risks if r.severity == RiskSeverity.HIGH]
 
 
-# ── Research report (full Phase 1 + 2 model) ────────────────────────────────
+# ── Industry analysis (Phase 3) ─────────────────────────────────────────────
+
+
+class MoatType(StrEnum):
+    NETWORK_EFFECT = "network_effect"
+    COST_ADVANTAGE = "cost_advantage"
+    SWITCHING_COSTS = "switching_costs"
+    INTANGIBLE_ASSETS = "intangible_assets"
+    EFFICIENT_SCALE = "efficient_scale"
+    NONE = "none"
+
+
+class PortersForceStrength(StrEnum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+
+
+class PortersForces(BaseModel):
+    competitive_rivalry: PortersForceStrength = PortersForceStrength.MEDIUM
+    supplier_power: PortersForceStrength = PortersForceStrength.MEDIUM
+    buyer_power: PortersForceStrength = PortersForceStrength.MEDIUM
+    threat_of_new_entrants: PortersForceStrength = PortersForceStrength.MEDIUM
+    threat_of_substitutes: PortersForceStrength = PortersForceStrength.MEDIUM
+    rationale: str = ""
+
+
+class IndustryAnalysis(BaseModel):
+    symbol: str
+    sector: str = ""
+    industry: str = ""
+    porters_forces: PortersForces | None = None
+    moat_type: MoatType = MoatType.NONE
+    moat_description: str = ""
+    market_share_narrative: str = ""
+    key_competitors: list[str] = Field(default_factory=list)
+    fetched_at: datetime = Field(default_factory=datetime.now)
+
+
+# ── Earnings call transcripts (Phase 3) ─────────────────────────────────────
+
+
+class TranscriptTone(StrEnum):
+    BULLISH = "bullish"
+    NEUTRAL = "neutral"
+    BEARISH = "bearish"
+
+
+class TranscriptSummary(BaseModel):
+    quarter: str  # e.g. "Q1 2025"
+    earnings_date: str = ""
+    tone: TranscriptTone = TranscriptTone.NEUTRAL
+    key_topics: list[str] = Field(default_factory=list)
+    management_guidance: str = ""
+    analyst_concerns: str = ""
+    highlight_quote: str = ""
+
+
+class TranscriptAnalysis(BaseModel):
+    symbol: str
+    summaries: list[TranscriptSummary] = Field(default_factory=list)
+    tone_trend: str = ""
+    fetched_at: datetime = Field(default_factory=datetime.now)
+
+
+# ── Market data snapshot (Phase 3) ───────────────────────────────────────────
+
+
+class MarketDataSnapshot(BaseModel):
+    symbol: str
+    short_interest_pct: float | None = None  # % of float
+    days_to_cover: float | None = None
+    float_shares: float | None = None
+    shares_outstanding: float | None = None
+    avg_volume_10d: float | None = None
+    avg_volume_90d: float | None = None
+    fetched_at: datetime = Field(default_factory=datetime.now)
+
+
+# ── Thesis (Phase 3) ─────────────────────────────────────────────────────────
+
+
+class ThesisScenario(BaseModel):
+    scenario: str  # "bull" | "base" | "bear"
+    probability: float  # 0-1
+    target_price: float | None = None
+    upside_pct: float | None = None
+    description: str = ""
+    key_assumptions: list[str] = Field(default_factory=list)
+    what_proves_wrong: list[str] = Field(default_factory=list)
+
+
+class ThesisResult(BaseModel):
+    symbol: str
+    current_price: float | None = None
+    bull: ThesisScenario | None = None
+    base: ThesisScenario | None = None
+    bear: ThesisScenario | None = None
+    summary: str = ""
+    conviction: str = "MEDIUM"  # "HIGH" | "MEDIUM" | "LOW"
+    fetched_at: datetime = Field(default_factory=datetime.now)
+
+
+# ── Research report (full Phase 1 + 2 + 3 model) ────────────────────────────
 
 
 class ResearchReport(BaseModel):
@@ -427,6 +530,18 @@ class ResearchReport(BaseModel):
     catalyst_risk: CatalystRiskResult | None = None
 
     # § Thesis (Phase 3) — bull/base/bear targets + probabilities
+
+    # § Industry (Phase 3)
+    industry: IndustryAnalysis | None = None
+
+    # § Transcripts (Phase 3)
+    transcripts: TranscriptAnalysis | None = None
+
+    # § Market Data (Phase 3)
+    market_data: MarketDataSnapshot | None = None
+
+    # § Thesis (Phase 3)
+    thesis: ThesisResult | None = None
 
     filings: list[FilingRef] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)

@@ -380,6 +380,117 @@ def research_compare(
     _render_compare_table(snaps)
 
 
+@app.command("ticker")
+def research_ticker(
+    symbol: Annotated[str, typer.Argument(help="Ticker symbol")],
+    peers: Annotated[
+        Optional[str],
+        typer.Option("--peers", help="Comma-separated peer tickers"),
+    ] = None,
+    n_years: Annotated[int, typer.Option("--years", help="Years of statements")] = 5,
+    output: Annotated[Optional[str], typer.Option("--output")] = None,
+    force: Annotated[
+        bool,
+        typer.Option("--force/--no-force", help="Ignore cached report and rebuild"),
+    ] = False,
+) -> None:
+    """Full 7-layer research report for a ticker (cached to SQLite)."""
+    from advisor.research.render import render_report
+    from advisor.research.report import build_report
+
+    explicit_peers = [p.strip().upper() for p in peers.split(",")] if peers else None
+
+    console.print(f"[cyan]Building full research report for {symbol.upper()}…[/cyan]")
+    console.print("[dim]This may take 1-3 minutes for the first run.[/dim]")
+    report = build_report(
+        symbol, n_years=n_years, explicit_peers=explicit_peers, force_refresh=force
+    )
+
+    if output == "json":
+        output_json(report)
+        return
+
+    md = render_report(report)
+    console.print(md)
+
+
+@app.command("refresh")
+def research_refresh(
+    symbol: Annotated[str, typer.Argument(help="Ticker symbol")],
+    peers: Annotated[Optional[str], typer.Option("--peers")] = None,
+    n_years: Annotated[int, typer.Option("--years")] = 5,
+    output: Annotated[Optional[str], typer.Option("--output")] = None,
+) -> None:
+    """Force-rebuild the research report, bypassing the cache."""
+    from advisor.research.render import render_report
+    from advisor.research.report import build_report
+
+    explicit_peers = [p.strip().upper() for p in peers.split(",")] if peers else None
+    console.print(f"[cyan]Force-refreshing report for {symbol.upper()}…[/cyan]")
+    report = build_report(
+        symbol, n_years=n_years, explicit_peers=explicit_peers, force_refresh=True
+    )
+
+    if output == "json":
+        output_json(report)
+        return
+
+    console.print(render_report(report))
+
+
+@app.command("view")
+def research_view(
+    symbol: Annotated[str, typer.Argument(help="Ticker symbol")],
+    output: Annotated[Optional[str], typer.Option("--output")] = None,
+) -> None:
+    """Render the latest cached research report for a ticker."""
+    from advisor.research.config import get_settings
+    from advisor.research.render import render_report
+    from advisor.research.store import ResearchStore
+
+    report = ResearchStore(get_settings().db_path).load_latest_report(symbol.upper())
+    if report is None:
+        output_error(
+            f"No cached report for {symbol.upper()}. Run: advisor research ticker {symbol}"
+        )
+        return
+
+    if output == "json":
+        output_json(report)
+        return
+
+    console.print(render_report(report))
+
+
+@app.command("list")
+def research_list(
+    limit: Annotated[int, typer.Option("--limit", help="Max rows to show")] = 20,
+    output: Annotated[Optional[str], typer.Option("--output")] = None,
+) -> None:
+    """List all cached research reports."""
+    from advisor.research.config import get_settings
+    from advisor.research.store import ResearchStore
+
+    rows = ResearchStore(get_settings().db_path).list_reports(limit=limit)
+    if not rows:
+        console.print("[dim]No research reports cached yet.[/dim]")
+        return
+
+    if output == "json":
+        output_json(rows)
+        return
+
+    from rich.table import Table
+
+    table = Table(title="Cached Research Reports")
+    table.add_column("Symbol", style="cyan", width=8)
+    table.add_column("As Of", width=12)
+    table.add_column("Saved At", width=22)
+    for row in rows:
+        table.add_row(row.get("symbol", ""), row.get("as_of", ""), row.get("saved_at", ""))
+    console.print(table)
+
+
 @app.command("catalysts")
 def research_catalysts(
     symbol: Annotated[str, typer.Argument(help="Ticker symbol")],

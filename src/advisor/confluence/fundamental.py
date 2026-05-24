@@ -12,7 +12,7 @@ from advisor.confluence.models import FundamentalResult
 logger = logging.getLogger(__name__)
 
 
-def check_fundamental(symbol: str) -> FundamentalResult:
+def check_fundamental(symbol: str, use_research: bool = False) -> FundamentalResult:
     """Check for earnings risk and insider buying confirmation.
 
     Uses yfinance to:
@@ -83,10 +83,51 @@ def check_fundamental(symbol: str) -> FundamentalResult:
         logger.warning(f"Could not fetch insider transactions for {symbol}: {e}")
 
     is_clear = not earnings_within_7
+    research_notes = _research_notes(symbol) if use_research else []
 
     return FundamentalResult(
         earnings_within_7_days=earnings_within_7,
         earnings_date=earnings_dt,
         insider_buying_detected=insider_buying,
         is_clear=is_clear,
+        research_notes=research_notes,
     )
+
+
+def _research_notes(symbol: str) -> list[str]:
+    """Load the latest cached ResearchReport and extract key notes."""
+    try:
+        from advisor.research.config import get_settings
+        from advisor.research.store import ResearchStore
+
+        report = ResearchStore(get_settings().db_path).load_latest_report(symbol.upper())
+        if report is None:
+            return []
+
+        notes: list[str] = []
+
+        if report.ratios and report.ratios.latest():
+            r = report.ratios.latest()
+            if r.roic is not None:
+                notes.append(f"ROIC {r.roic:.1%}")
+            if r.debt_to_ebitda is not None:
+                notes.append(f"D/EBITDA {r.debt_to_ebitda:.1f}x")
+            if r.fcf_margin is not None:
+                notes.append(f"FCF margin {r.fcf_margin:.1%}")
+
+        if report.red_flags and report.red_flags.flags:
+            high = report.red_flags.high_severity_count
+            total = len(report.red_flags.flags)
+            notes.append(f"Red flags: {total} ({high} HIGH)")
+
+        if report.dcf and report.dcf.base:
+            upside = report.dcf.base.upside_pct
+            notes.append(f"DCF base upside {upside:+.1%}")
+
+        if report.thesis and report.thesis.conviction:
+            notes.append(f"Thesis conviction: {report.thesis.conviction}")
+
+        return notes
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Research notes failed for %s: %s", symbol, exc)
+        return []
