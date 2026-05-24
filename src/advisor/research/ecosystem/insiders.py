@@ -27,7 +27,8 @@ def get_insiders(symbol: str, lookback_days: int = 365) -> InsiderSummary:
                 if tx_date and tx_date < cutoff:
                     continue
                 shares = _safe_float(row.get("Shares"))
-                price = _safe_float(row.get("Value")) / shares if shares else None
+                value = _safe_float(row.get("Value"))
+                price = value / shares if (shares and value is not None) else None
                 transactions.append(
                     InsiderTransaction(
                         insider_name=str(row.get("Insider", "")),
