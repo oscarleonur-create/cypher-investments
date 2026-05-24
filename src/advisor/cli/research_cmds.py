@@ -251,6 +251,409 @@ def _render_red_flags(red_flags) -> None:  # type: ignore[no-untyped-def]
     console.print(table)
 
 
+@app.command("valuation")
+def research_valuation(
+    symbol: Annotated[str, typer.Argument(help="Ticker symbol")],
+    peers: Annotated[
+        Optional[str],
+        typer.Option("--peers", help="Comma-separated peer tickers (e.g. MSFT,GOOGL,META)"),
+    ] = None,
+    n_years: Annotated[int, typer.Option("--years", help="Years for historical multiples")] = 5,
+    output: Annotated[Optional[str], typer.Option("--output")] = None,
+    save: Annotated[bool, typer.Option("--save/--no-save")] = False,
+) -> None:
+    """Peer comp table, 5-yr own multiple history, and DCF model."""
+    from advisor.research.edgar import EdgarClient
+    from advisor.research.peers import build_peer_set
+    from advisor.research.statements import extract_statements
+    from advisor.research.valuation.dcf import build_dcf
+    from advisor.research.valuation.multiples import build_multiples
+    from advisor.research.valuation.reverse_dcf import solve_implied_growth
+
+    explicit = [p.strip().upper() for p in peers.split(",")] if peers else None
+
+    console.print(f"[cyan]Building peer set for {symbol.upper()}…[/cyan]")
+    peer_list = build_peer_set(symbol, explicit_peers=explicit)
+    console.print(f"Peers: {', '.join(peer_list) or 'none found'}")
+
+    try:
+        edgar = EdgarClient()
+    except Exception:  # noqa: BLE001
+        edgar = None
+
+    try:
+        bundle = extract_statements(symbol, edgar_client=edgar, n_years=n_years)
+    except Exception:  # noqa: BLE001
+        bundle = None
+
+    console.print("[cyan]Fetching multiples…[/cyan]")
+    multiples = build_multiples(symbol, peer_list, statements=bundle)
+
+    console.print("[cyan]Building DCF…[/cyan]")
+    dcf = build_dcf(symbol, statements=bundle)
+    dcf.implied_growth_rate = solve_implied_growth(dcf)
+
+    if save:
+        from advisor.research.config import get_settings
+        from advisor.research.models import ResearchReport
+        from advisor.research.store import ResearchStore
+
+        report = ResearchReport(
+            symbol=symbol.upper(),
+            as_of=date.today(),
+            statements=bundle,
+            multiples=multiples,
+            dcf=dcf,
+        )
+        ResearchStore(get_settings().db_path).save_report(report)
+
+    if output == "json":
+        output_json(
+            {"multiples": multiples.model_dump(mode="json"), "dcf": dcf.model_dump(mode="json")}
+        )
+        return
+
+    _render_multiples(multiples)
+    _render_dcf(dcf)
+
+
+@app.command("ecosystem")
+def research_ecosystem(
+    symbol: Annotated[str, typer.Argument(help="Ticker symbol")],
+    output: Annotated[Optional[str], typer.Option("--output")] = None,
+    with_customers: Annotated[bool, typer.Option("--customers/--no-customers")] = True,
+) -> None:
+    """Institutional holders, insider activity, and key customers."""
+    from advisor.research.ecosystem.holders import get_holders
+    from advisor.research.ecosystem.insiders import get_insiders
+    from advisor.research.models import EcosystemResult
+
+    console.print(f"[cyan]Fetching ecosystem data for {symbol.upper()}…[/cyan]")
+
+    holders = get_holders(symbol)
+    insiders = get_insiders(symbol)
+
+    customers = []
+    if with_customers:
+        from advisor.research.ecosystem.customers import get_customers
+
+        console.print("[dim]Searching for customer disclosures (may take a moment)…[/dim]")
+        customers = get_customers(symbol)
+
+    ecosystem = EcosystemResult(
+        symbol=symbol.upper(),
+        holders=holders,
+        insiders=insiders,
+        top_customers=customers,
+    )
+
+    if output == "json":
+        output_json(ecosystem)
+        return
+
+    _render_holders(holders)
+    _render_insiders(insiders)
+    if customers:
+        _render_customers(customers)
+
+
+@app.command("compare")
+def research_compare(
+    symbols: Annotated[str, typer.Argument(help="Comma-separated tickers (e.g. AAPL,MSFT,GOOGL)")],
+    output: Annotated[Optional[str], typer.Option("--output")] = None,
+) -> None:
+    """Side-by-side multiples comparison for a manually specified peer set."""
+    from advisor.research.valuation.multiples import _snapshot
+
+    tickers = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if len(tickers) < 2:
+        output_error("Provide at least 2 tickers separated by commas (e.g. AAPL,MSFT)")
+        return
+
+    console.print(f"[cyan]Fetching snapshots for {', '.join(tickers)}…[/cyan]")
+    snaps = [_snapshot(t) for t in tickers]
+
+    if output == "json":
+        output_json([s.model_dump(mode="json") for s in snaps])
+        return
+
+    _render_compare_table(snaps)
+
+
+@app.command("catalysts")
+def research_catalysts(
+    symbol: Annotated[str, typer.Argument(help="Ticker symbol")],
+    output: Annotated[Optional[str], typer.Option("--output")] = None,
+) -> None:
+    """Upcoming catalysts and ranked risk register."""
+    from advisor.research.catalysts import build_catalysts
+    from advisor.research.risks import build_risks
+
+    console.print(f"[cyan]Building catalyst/risk register for {symbol.upper()}…[/cyan]")
+    result = build_catalysts(symbol)
+    result = build_risks(symbol, catalyst_result=result)
+
+    if output == "json":
+        output_json(result)
+        return
+
+    _render_catalysts(result)
+
+
+# ── Phase 2 renderers ────────────────────────────────────────────────────────
+
+
+def _render_multiples(m) -> None:  # type: ignore[no-untyped-def]
+    from rich.table import Table
+
+    table = Table(title="Peer Comp Table")
+    table.add_column("Ticker", style="cyan", width=8)
+    table.add_column("Name", max_width=20)
+    cols = [
+        ("market_cap", "Mkt Cap", "raw"),
+        ("revenue_growth_yoy", "Rev Grw", "pct"),
+        ("gross_margin", "Gr Mgn", "pct"),
+        ("operating_margin", "Op Mgn", "pct"),
+        ("ev_to_sales", "EV/S", "x"),
+        ("ev_to_ebitda", "EV/EBITDA", "x"),
+        ("pe_trailing", "P/E", "x"),
+        ("pe_forward", "Fwd P/E", "x"),
+        ("p_to_fcf", "P/FCF", "x"),
+        ("peg", "PEG", "x"),
+    ]
+    for _, header, _ in cols:
+        table.add_column(header, justify="right", min_width=7)
+
+    for snap in m.all_snapshots:
+        style = "bold" if snap.symbol == m.subject.symbol else ""
+        row = [snap.symbol, snap.name[:20]]
+        for field, _, unit in cols:
+            row.append(_fmt(getattr(snap, field), unit))
+        table.add_row(*row, style=style)
+
+    console.print(table)
+
+    if m.own_history:
+        hist = Table(title=f"{m.subject.symbol} — Own Multiple History")
+        hist.add_column("FY", style="cyan")
+        for h in ["EV/Sales", "EV/EBITDA", "P/E", "P/FCF"]:
+            hist.add_column(h, justify="right")
+        for p in m.own_history:
+            hist.add_row(
+                str(p.fiscal_year),
+                _fmt(p.ev_to_sales, "x"),
+                _fmt(p.ev_to_ebitda, "x"),
+                _fmt(p.pe, "x"),
+                _fmt(p.p_to_fcf, "x"),
+            )
+        console.print(hist)
+
+
+def _render_dcf(dcf) -> None:  # type: ignore[no-untyped-def]
+    from rich.table import Table
+
+    console.print(
+        f"\n[bold]DCF — {dcf.symbol}[/bold]  "
+        f"Current: [cyan]{_fmt(dcf.current_price)}[/cyan]  "
+        f"WACC: {dcf.wacc:.1%}  Rf: {dcf.risk_free_rate:.1%}  β: {dcf.beta:.2f}"
+    )
+
+    table = Table(title="Scenario Analysis")
+    table.add_column("Scenario", style="cyan")
+    table.add_column("Growth Yr1-3", justify="right")
+    table.add_column("FCF Margin", justify="right")
+    table.add_column("Implied Price", justify="right")
+    table.add_column("Upside", justify="right")
+
+    if dcf.implied_growth_rate is not None:
+        console.print(
+            f"[yellow]Implied growth rate (reverse-DCF): " f"{dcf.implied_growth_rate:.1%}[/yellow]"
+        )
+
+    for scenario in [dcf.base, dcf.bull, dcf.bear]:
+        if scenario is None:
+            continue
+        a = scenario.assumptions
+        color = (
+            "green"
+            if scenario.upside_pct > 0.10
+            else "red"
+            if scenario.upside_pct < -0.10
+            else "yellow"
+        )
+        upside_str = f"[{color}]{scenario.upside_pct:+.1%}[/{color}]"
+        table.add_row(
+            a.scenario.upper(),
+            f"{a.revenue_growth_yr1_3:.1%}",
+            f"{a.target_fcf_margin:.1%}",
+            _fmt(scenario.implied_price),
+            upside_str,
+        )
+
+    console.print(table)
+
+
+def _render_holders(holders) -> None:  # type: ignore[no-untyped-def]
+    from rich.table import Table
+
+    console.print(
+        f"\n[bold]Institutional Holders — {holders.symbol}[/bold]  "
+        f"Inst: {_fmt_pct(holders.pct_institutional)}  "
+        f"Insider: {_fmt_pct(holders.pct_insider)}"
+    )
+    if not holders.top_holders:
+        console.print("[dim]No holder data available.[/dim]")
+        return
+
+    table = Table()
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Holder", min_width=25)
+    table.add_column("Shares", justify="right")
+    table.add_column("% Out", justify="right")
+    table.add_column("Value", justify="right")
+    for i, h in enumerate(holders.top_holders[:15], 1):
+        table.add_row(
+            str(i),
+            h.name,
+            _fmt(h.shares),
+            _fmt_pct(h.pct_held),
+            _fmt(h.value_usd),
+        )
+    console.print(table)
+
+
+def _render_insiders(insiders) -> None:  # type: ignore[no-untyped-def]
+    from rich.table import Table
+
+    net = insiders.net_buying_usd
+    color = "green" if net > 0 else "red"
+    console.print(
+        f"\n[bold]Insider Activity — {insiders.symbol}[/bold] "
+        f"(trailing {insiders.lookback_days}d)  "
+        f"Net: [{color}]{_fmt(net)}[/{color}]  "
+        f"C-suite buying: {'[green]Yes[/green]' if insiders.c_suite_buying else '[dim]No[/dim]'}"
+    )
+    if not insiders.transactions:
+        console.print("[dim]No insider transactions found.[/dim]")
+        return
+
+    table = Table()
+    table.add_column("Date", width=12)
+    table.add_column("Insider", min_width=20)
+    table.add_column("Title", min_width=12)
+    table.add_column("Type", width=12)
+    table.add_column("Shares", justify="right")
+    table.add_column("Value", justify="right")
+    for tx in insiders.transactions[:12]:
+        color = "green" if "purchase" in tx.transaction_type.lower() else "red"
+        table.add_row(
+            str(tx.transaction_date or ""),
+            tx.insider_name[:20],
+            tx.title[:12],
+            f"[{color}]{tx.transaction_type}[/{color}]",
+            _fmt(tx.shares),
+            _fmt(tx.value_usd),
+        )
+    console.print(table)
+
+
+def _render_customers(customers) -> None:  # type: ignore[no-untyped-def]
+    from rich.table import Table
+
+    console.print("\n[bold]Key Customers[/bold]")
+    table = Table()
+    table.add_column("Customer", min_width=25)
+    table.add_column("Revenue %", justify="right")
+    table.add_column("Note")
+    for c in customers:
+        table.add_row(
+            c.name, _fmt_pct(c.concentration_pct / 100 if c.concentration_pct else None), c.note
+        )
+    console.print(table)
+
+
+def _render_compare_table(snaps) -> None:  # type: ignore[no-untyped-def]
+    from rich.table import Table
+
+    table = Table(title="Comparison")
+    table.add_column("Ticker", style="cyan", width=8)
+    table.add_column("Name", max_width=22)
+    for header in [
+        "Mkt Cap",
+        "Rev Grw",
+        "Gr Mgn",
+        "Op Mgn",
+        "EV/S",
+        "EV/EBITDA",
+        "P/E",
+        "P/FCF",
+        "PEG",
+        "Beta",
+    ]:
+        table.add_column(header, justify="right", min_width=7)
+    for s in snaps:
+        table.add_row(
+            s.symbol,
+            s.name[:22],
+            _fmt(s.market_cap, "raw"),
+            _fmt(s.revenue_growth_yoy, "pct"),
+            _fmt(s.gross_margin, "pct"),
+            _fmt(s.operating_margin, "pct"),
+            _fmt(s.ev_to_sales, "x"),
+            _fmt(s.ev_to_ebitda, "x"),
+            _fmt(s.pe_trailing, "x"),
+            _fmt(s.p_to_fcf, "x"),
+            _fmt(s.peg, "x"),
+            _fmt(s.beta, "x"),
+        )
+    console.print(table)
+
+
+def _render_catalysts(result) -> None:  # type: ignore[no-untyped-def]
+    from rich.table import Table
+
+    if result.catalysts:
+        cat_table = Table(title=f"Catalysts — {result.symbol}")
+        cat_table.add_column("Type", style="cyan", width=14)
+        cat_table.add_column("Near-term", width=10)
+        cat_table.add_column("Date")
+        cat_table.add_column("Description")
+        for c in result.catalysts:
+            cat_table.add_row(
+                c.catalyst_type.value,
+                "[green]Yes[/green]" if c.is_near_term else "[dim]No[/dim]",
+                c.expected_date,
+                c.description,
+            )
+        console.print(cat_table)
+
+    if result.risks:
+        risk_table = Table(title="Risk Register")
+        risk_table.add_column("Sev", width=8)
+        risk_table.add_column("Category", width=12)
+        risk_table.add_column("P", justify="right", width=6)
+        risk_table.add_column("I", justify="right", width=6)
+        risk_table.add_column("Description")
+        for r in result.risks:
+            color = {"HIGH": "red", "MEDIUM": "yellow", "LOW": "dim"}.get(r.severity.value, "white")
+            risk_table.add_row(
+                f"[{color}]{r.severity.value}[/{color}]",
+                r.category,
+                f"{r.probability:.0%}" if r.probability is not None else "—",
+                f"{r.impact:.0%}" if r.impact is not None else "—",
+                r.description[:80],
+            )
+        console.print(risk_table)
+    elif not result.catalysts:
+        console.print("[dim]No catalyst/risk data found.[/dim]")
+
+
+def _fmt_pct(v: float | None) -> str:
+    if v is None:
+        return "—"
+    return f"{v:.1%}"
+
+
 def _fmt(value, unit: str = "raw") -> str:
     if value is None:
         return "—"
