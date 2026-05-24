@@ -16,11 +16,18 @@ from advisor.research.models import ResearchReport
 
 
 def render_report(report: ResearchReport) -> str:
-    """Return the full Markdown string for a ResearchReport."""
+    """Return the full Markdown string for a ResearchReport.
+
+    Sections are ordered by blueprint layer depth:
+      L1 Business  → L2 Ecosystem  → L3 Industry
+      → L4 Financials → L5 Valuation → L6 Catalysts → L7 Thesis
+    Each L→ heading increases analytical depth and data dependency.
+    """
     parts: list[str] = []
 
     parts.append(f"# Research Report: {report.symbol}")
     parts.append(f"*As of {report.as_of}  |  Generated {report.created_at:%Y-%m-%d %H:%M}*\n")
+    parts.append(_render_level_index(report))
 
     parts.append(_render_business(report))
     parts.append(_render_ecosystem(report))
@@ -29,6 +36,7 @@ def render_report(report: ResearchReport) -> str:
     parts.append(_render_valuation(report))
     parts.append(_render_catalysts_risks(report))
     parts.append(_render_thesis(report))
+    parts.append(_render_network_hint(report))
 
     if report.notes:
         parts.append("## Notes\n")
@@ -39,6 +47,24 @@ def render_report(report: ResearchReport) -> str:
 
 
 # ── Section renderers ─────────────────────────────────────────────────────────
+
+
+def _render_level_index(report: ResearchReport) -> str:
+    """One-line index showing which layers have data."""
+    layers = [
+        ("L1 Business", report.business_model or report.market_data),
+        ("L2 Ecosystem", report.ecosystem),
+        ("L3 Industry", report.industry or report.transcripts),
+        ("L4 Financials", report.ratios or report.statements),
+        ("L5 Valuation", report.multiples or report.dcf),
+        ("L6 Catalysts", report.catalyst_risk),
+        ("L7 Thesis", report.thesis),
+    ]
+    items = []
+    for label, has_data in layers:
+        mark = "✓" if has_data else "·"
+        items.append(f"{mark} {label}")
+    return "**Depth index:** " + "  →  ".join(items) + "\n"
 
 
 def _render_business(report: ResearchReport) -> str:
@@ -387,6 +413,45 @@ def _render_thesis(report: ResearchReport) -> str:
                 lines.append(f"- {w}")
         lines.append("")
 
+    return "\n".join(lines)
+
+
+def _render_network_hint(report: ResearchReport) -> str:
+    """Footer showing Level-2 connections and drill-down instructions."""
+    net = report.network
+    if not net or not net.nodes:
+        return (
+            "---\n"
+            f"*Level 2 network not built yet. "
+            f"Run: `advisor research network {report.symbol}`*\n"
+        )
+
+    by_rel = net.by_relationship
+    lines = ["---", "## Company Network\n"]
+    lines.append(f"**Level 1 (subject):** {report.symbol}\n")
+    lines.append("**Level 2 connections:**\n")
+
+    rel_labels = {
+        "peer": "Peers",
+        "competitor": "Competitors",
+        "top_holder": "Public Holders",
+        "customer": "Customers",
+        "supplier": "Suppliers",
+    }
+    for key, label in rel_labels.items():
+        nodes = by_rel.get(key, [])
+        if not nodes:
+            continue
+        tickers = ", ".join(n.symbol for n in nodes)
+        lines.append(f"- **{label}:** {tickers}")
+
+    lines.append(
+        "\n**Level 3** → drill into any connection:\n"
+        "```\n"
+        "advisor research ticker BLK       # full 7-layer report\n"
+        "advisor research network BLK      # BLK's own Level-2 map\n"
+        "```"
+    )
     return "\n".join(lines)
 
 

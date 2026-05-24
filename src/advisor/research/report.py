@@ -187,6 +187,14 @@ def build_report(
 
     report.business_model = company_name
 
+    # ── Layer 5: Network map ──────────────────────────────────────────────────
+    report.network = _run(
+        f"network({sym})",
+        lambda: __import__("advisor.research.network", fromlist=["build_network"]).build_network(
+            sym, report
+        ),
+    )
+
     store.save_report(report)
     return report
 

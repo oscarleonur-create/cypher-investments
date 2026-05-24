@@ -491,6 +491,24 @@ def research_list(
     console.print(table)
 
 
+@app.command("network")
+def research_network(
+    symbol: Annotated[str, typer.Argument(help="Ticker symbol")],
+    output: Annotated[Optional[str], typer.Option("--output")] = None,
+) -> None:
+    """Map Level-2 connections: peers, public holders, competitors + comparison table."""
+    from advisor.research.network import build_network
+
+    console.print(f"[cyan]Building company network for {symbol.upper()}…[/cyan]")
+    net = build_network(symbol)
+
+    if output == "json":
+        output_json(net.model_dump(mode="json"))
+        return
+
+    _render_network(net)
+
+
 @app.command("catalysts")
 def research_catalysts(
     symbol: Annotated[str, typer.Argument(help="Ticker symbol")],
@@ -757,6 +775,119 @@ def _render_catalysts(result) -> None:  # type: ignore[no-untyped-def]
         console.print(risk_table)
     elif not result.catalysts:
         console.print("[dim]No catalyst/risk data found.[/dim]")
+
+
+def _render_network(net) -> None:  # type: ignore[no-untyped-def]
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.tree import Tree
+
+    sym = net.subject_symbol
+    subj = net.subject_snapshot
+
+    # ── Level 1: subject summary panel ───────────────────────────────────────
+    subj_lines = [f"[bold cyan]{sym}[/bold cyan]"]
+    if subj:
+        if subj.name:
+            subj_lines.append(subj.name)
+        parts = []
+        if subj.market_cap:
+            parts.append(f"Mkt Cap {_fmt(subj.market_cap, 'raw')}")
+        if subj.pe_trailing:
+            parts.append(f"P/E {subj.pe_trailing:.1f}x")
+        if subj.ev_to_ebitda:
+            parts.append(f"EV/EBITDA {subj.ev_to_ebitda:.1f}x")
+        if subj.operating_margin:
+            parts.append(f"Op Mgn {subj.operating_margin:.1%}")
+        if parts:
+            subj_lines.append("  ".join(parts))
+    console.print(Panel("\n".join(subj_lines), title="Level 1 — Subject", border_style="cyan"))
+
+    if not net.nodes:
+        console.print(
+            "[dim]No Level-2 connections found. Run `advisor research ticker` first.[/dim]"
+        )
+        return
+
+    # ── Level 2: connection tree ──────────────────────────────────────────────
+    rel_labels = {
+        "peer": ("Peers", "yellow"),
+        "competitor": ("Competitors", "red"),
+        "top_holder": ("Public Institutional Holders", "green"),
+        "customer": ("Customers", "blue"),
+        "supplier": ("Suppliers", "magenta"),
+    }
+
+    tree = Tree(f"[bold]{sym}[/bold] — Level 2 connections")
+    by_rel = net.by_relationship
+    for rel_key, (label, color) in rel_labels.items():
+        nodes = by_rel.get(rel_key, [])
+        if not nodes:
+            continue
+        branch = tree.add(f"[{color}]{label}[/{color}] ({len(nodes)})")
+        for node in nodes:
+            snap = node.snapshot
+            details = []
+            if snap:
+                if snap.market_cap:
+                    details.append(f"Mkt Cap {_fmt(snap.market_cap, 'raw')}")
+                if snap.pe_trailing:
+                    details.append(f"P/E {snap.pe_trailing:.1f}x")
+                if snap.revenue_growth_yoy:
+                    details.append(f"Rev Grw {snap.revenue_growth_yoy:+.1%}")
+            note = f" [{node.note}]" if node.note else ""
+            detail_str = f"  ({', '.join(details)})" if details else ""
+            branch.add(
+                f"[bold]{node.symbol}[/bold] {node.name[:28]}" f"[dim]{note}[/dim]{detail_str}"
+            )
+    console.print(tree)
+
+    # ── Comparison table (subject + all Level-2 nodes) ───────────────────────
+    all_snaps = []
+    if subj:
+        all_snaps.append(("SUBJECT", subj))
+    for node in net.nodes:
+        if node.snapshot:
+            all_snaps.append((node.relationship.value.upper(), node.snapshot))
+
+    if all_snaps:
+        table = Table(
+            title=f"Level 2 Comparison — {sym} + Connected Companies",
+            show_lines=False,
+        )
+        table.add_column("Rel", style="dim", width=10)
+        table.add_column("Ticker", style="cyan", width=8)
+        table.add_column("Name", max_width=22)
+        for hdr in ["Mkt Cap", "Rev Grw", "Gr Mgn", "Op Mgn", "EV/S", "EV/EBITDA", "P/E", "P/FCF"]:
+            table.add_column(hdr, justify="right", min_width=7)
+
+        for rel_label, snap in all_snaps:
+            style = "bold" if rel_label == "SUBJECT" else ""
+            table.add_row(
+                rel_label,
+                snap.symbol,
+                snap.name[:22],
+                _fmt(snap.market_cap, "raw"),
+                _fmt(snap.revenue_growth_yoy, "pct"),
+                _fmt(snap.gross_margin, "pct"),
+                _fmt(snap.operating_margin, "pct"),
+                _fmt(snap.ev_to_sales, "x"),
+                _fmt(snap.ev_to_ebitda, "x"),
+                _fmt(snap.pe_trailing, "x"),
+                _fmt(snap.p_to_fcf, "x"),
+                style=style,
+            )
+        console.print(table)
+
+    # ── Level 3: hint ────────────────────────────────────────────────────────
+    all_syms = [n.symbol for n in net.nodes]
+    console.print(
+        f"\n[dim]Level 3 → drill into any connection:[/dim]\n"
+        f"  advisor research ticker [bold]{all_syms[0]}[/bold]  "
+        f"   # full 7-layer report\n"
+        f"  advisor research network [bold]{all_syms[0]}[/bold]  "
+        f"  # its own Level-2 map"
+    )
 
 
 def _fmt_pct(v: float | None) -> str:

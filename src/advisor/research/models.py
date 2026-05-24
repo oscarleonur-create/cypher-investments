@@ -396,6 +396,41 @@ class CatalystRiskResult(BaseModel):
         return [r for r in self.risks if r.severity == RiskSeverity.HIGH]
 
 
+# ── Company network (Phase 3) ────────────────────────────────────────────────
+
+
+class RelationshipType(StrEnum):
+    PEER = "peer"
+    CUSTOMER = "customer"
+    SUPPLIER = "supplier"
+    TOP_HOLDER = "top_holder"
+    COMPETITOR = "competitor"
+
+
+class NetworkNode(BaseModel):
+    """One connected company in the subject's ecosystem network."""
+
+    symbol: str
+    name: str = ""
+    relationship: RelationshipType
+    note: str = ""  # e.g. "~15% revenue", "Top-3 holder"
+    snapshot: PeerSnapshot | None = None
+
+
+class CompanyNetwork(BaseModel):
+    subject_symbol: str
+    subject_snapshot: PeerSnapshot | None = None
+    nodes: list[NetworkNode] = Field(default_factory=list)
+    as_of: date = Field(default_factory=date.today)
+
+    @property
+    def by_relationship(self) -> dict[str, list[NetworkNode]]:
+        result: dict[str, list[NetworkNode]] = {}
+        for node in self.nodes:
+            result.setdefault(node.relationship.value, []).append(node)
+        return result
+
+
 # ── Industry analysis (Phase 3) ─────────────────────────────────────────────
 
 
@@ -530,6 +565,9 @@ class ResearchReport(BaseModel):
     catalyst_risk: CatalystRiskResult | None = None
 
     # § Thesis (Phase 3) — bull/base/bear targets + probabilities
+
+    # § Company Network (Phase 3)
+    network: CompanyNetwork | None = None
 
     # § Industry (Phase 3)
     industry: IndustryAnalysis | None = None
