@@ -36,6 +36,7 @@ dependencies = [
     "plotly (>=6.5.2,<7.0.0)",
     "streamlit (>=1.54.0,<2.0.0)",
     "edgartools>=3.0",
+    "pyvis (>=0.3.2)",
 ]
 
 [project.scripts]

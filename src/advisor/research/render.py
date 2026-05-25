@@ -19,9 +19,10 @@ def render_report(report: ResearchReport) -> str:
     """Return the full Markdown string for a ResearchReport.
 
     Sections are ordered by blueprint layer depth:
-      L1 Business  → L2 Ecosystem  → L3 Industry
-      → L4 Financials → L5 Valuation → L6 Catalysts → L7 Thesis
-    Each L→ heading increases analytical depth and data dependency.
+      §0 Variant Perception (edge vs. consensus)
+      §1 Business  → §2 Ecosystem  → §3 Industry
+      → §4 Financials → §5 Valuation → §6 Catalysts → §7 Thesis
+    Each section increases analytical depth and data dependency.
     """
     parts: list[str] = []
 
@@ -29,6 +30,7 @@ def render_report(report: ResearchReport) -> str:
     parts.append(f"*As of {report.as_of}  |  Generated {report.created_at:%Y-%m-%d %H:%M}*\n")
     parts.append(_render_level_index(report))
 
+    parts.append(_render_variant_perception(report))
     parts.append(_render_business(report))
     parts.append(_render_ecosystem(report))
     parts.append(_render_industry(report))
@@ -52,6 +54,7 @@ def render_report(report: ResearchReport) -> str:
 def _render_level_index(report: ResearchReport) -> str:
     """One-line index showing which layers have data."""
     layers = [
+        ("L0 Edge", report.variant_perception),
         ("L1 Business", report.business_model or report.market_data),
         ("L2 Ecosystem", report.ecosystem),
         ("L3 Industry", report.industry or report.transcripts),
@@ -65,6 +68,86 @@ def _render_level_index(report: ResearchReport) -> str:
         mark = "✓" if has_data else "·"
         items.append(f"{mark} {label}")
     return "**Depth index:** " + "  →  ".join(items) + "\n"
+
+
+def _render_variant_perception(report: ResearchReport) -> str:
+    """§0 Variant Perception — our view vs. market consensus."""
+    lines = ["## §0 Variant Perception\n"]
+
+    vp = report.variant_perception
+    cn = report.consensus
+
+    if vp is None and cn is None:
+        lines.append("*No consensus or variant perception data.*\n")
+        return "\n".join(lines)
+
+    # Key insight headline
+    if vp and vp.our_key_insight:
+        lines.append(f"> **Edge:** {vp.our_key_insight}\n")
+
+    # Side-by-side comparison table
+    if cn or vp:
+        lines.append("### Market vs. Our View\n")
+        lines.append("| Metric | Market / Consensus | Our Model |")
+        lines.append("|--------|-------------------|-----------|")
+
+        if cn:
+            rec = cn.recommendation_key.capitalize() if cn.recommendation_key else "—"
+            n = f" ({cn.n_analysts} analysts)" if cn.n_analysts else ""
+            lines.append(f"| Recommendation | {rec}{n} | — |")
+
+        if (cn and cn.target_price_mean) or (vp and vp.our_base_price):
+            cons_t = f"${cn.target_price_mean:.2f}" if cn and cn.target_price_mean else "—"
+            our_t = f"${vp.our_base_price:.2f}" if vp and vp.our_base_price else "—"
+            lines.append(f"| Target Price | {cons_t} | {our_t} |")
+
+        if cn and cn.consensus_upside_pct is not None:
+            cons_up = f"{cn.consensus_upside_pct:+.1%}"
+            our_up = (
+                f"{((vp.our_base_price / (cn.current_price or 1)) - 1):+.1%}"
+                if vp and vp.our_base_price and cn and cn.current_price
+                else "—"
+            )
+            lines.append(f"| Upside (from current) | {cons_up} | {our_up} |")
+
+        if vp and vp.market_implied_growth is not None:
+            our_g = f"{vp.our_base_growth:.1%}" if vp.our_base_growth is not None else "—"
+            lines.append(f"| Implied Revenue Growth | {vp.market_implied_growth:.1%} | {our_g} |")
+
+        if cn:
+            lines.append(f"| Estimate Revision Trend | {cn.revision_trend.capitalize()} | — |")
+            if cn.upgrades_30d or cn.downgrades_30d:
+                lines.append(
+                    f"| Rating Changes (30d) | "
+                    f"↑{cn.upgrades_30d} upgrades / ↓{cn.downgrades_30d} downgrades | — |"
+                )
+
+        if cn and cn.target_price_low and cn.target_price_high:
+            lines.append(
+                f"| Consensus Target Range | "
+                f"${cn.target_price_low:.2f} – ${cn.target_price_high:.2f} | — |"
+            )
+
+        lines.append("")
+
+    # Our edge narrative
+    if vp and vp.our_edge:
+        lines.append("### Why We Differ\n")
+        lines.append(f"{vp.our_edge}\n")
+
+    # What the market misses
+    if vp and vp.consensus_misses:
+        lines.append("### What Consensus Is Missing\n")
+        for miss in vp.consensus_misses:
+            lines.append(f"- {miss}")
+        lines.append("")
+
+    # Mispricing type + conviction
+    if vp:
+        mt = vp.mispricing_type.value.replace("_", " ").title()
+        lines.append(f"**Mispricing type:** {mt}  |  " f"**Edge conviction:** {vp.conviction}\n")
+
+    return "\n".join(lines)
 
 
 def _render_business(report: ResearchReport) -> str:

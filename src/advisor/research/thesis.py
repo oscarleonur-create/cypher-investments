@@ -14,6 +14,7 @@ from advisor.research.models import (
     DcfResult,
     ThesisResult,
     ThesisScenario,
+    VariantPerceptionResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ def build_thesis(
     company_name: str = "",
     dcf: DcfResult | None = None,
     catalyst_risk: CatalystRiskResult | None = None,
+    variant_perception: VariantPerceptionResult | None = None,
 ) -> ThesisResult:
     """Return a ThesisResult with bull/base/bear scenarios."""
     name = company_name or symbol
@@ -41,7 +43,7 @@ def build_thesis(
         return (target / current_price) - 1
 
     # Try LLM enrichment; fall back to price stubs
-    llm_result = _llm_enrich(symbol, name, dcf, catalyst_risk)
+    llm_result = _llm_enrich(symbol, name, dcf, catalyst_risk, variant_perception)
 
     bull = ThesisScenario(
         scenario="bull",
@@ -93,6 +95,7 @@ def _llm_enrich(
     name: str,
     dcf: DcfResult | None,
     catalyst_risk: CatalystRiskResult | None,
+    variant_perception: VariantPerceptionResult | None = None,
 ) -> dict:
     try:
         from pydantic import BaseModel
@@ -138,6 +141,19 @@ def _llm_enrich(
                 context_parts.append("Key risks: " + "; ".join(top_risks))
             if top_cats:
                 context_parts.append("Key catalysts: " + "; ".join(top_cats))
+
+        if variant_perception:
+            vp = variant_perception
+            if vp.our_key_insight:
+                context_parts.append(f"Our edge: {vp.our_key_insight}")
+            if vp.consensus_misses:
+                context_parts.append("Consensus blind spots: " + "; ".join(vp.consensus_misses[:3]))
+            if vp.price_vs_consensus_pct is not None:
+                direction = "above" if vp.price_vs_consensus_pct > 0 else "below"
+                context_parts.append(
+                    f"Our base price is {abs(vp.price_vs_consensus_pct):.1%} "
+                    f"{direction} sell-side consensus target"
+                )
 
         context = "\n".join(context_parts) or f"Company: {name} ({symbol})"
 

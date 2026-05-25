@@ -9,6 +9,7 @@ import typer
 from advisor.cli.backtest_cmds import app as backtest_app
 from advisor.cli.case_cmds import app as case_app
 from advisor.cli.confluence_cmds import app as confluence_app
+from advisor.cli.dashboard_cmds import app as dashboard_app
 from advisor.cli.data_cmds import app as data_app
 from advisor.cli.market_cmds import app as market_app
 from advisor.cli.ml_cmds import app as ml_app
@@ -40,6 +41,7 @@ app.add_typer(ml_app, name="ml")
 app.add_typer(pipeline_app, name="pipeline")
 app.add_typer(research_app, name="research")
 app.add_typer(scenario_app, name="scenario")
+app.add_typer(dashboard_app, name="dashboard")
 app.add_typer(morning_app, name="morning")
 app.add_typer(afternoon_app, name="afternoon")
 

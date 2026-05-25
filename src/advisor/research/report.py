@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
+from typing import Callable
 
 import yfinance as yf
 
@@ -22,9 +23,13 @@ from advisor.research.models import (
     CatalystRiskResult,
     EcosystemResult,
     ResearchReport,
+    VariantPerceptionResult,
 )
 
 logger = logging.getLogger(__name__)
+
+ProgressCallback = Callable[[str, str], None]
+"""Signature: progress(event, label). `event` is "started" | "done" | "failed"."""
 
 
 def build_report(
@@ -32,8 +37,13 @@ def build_report(
     n_years: int = 5,
     explicit_peers: list[str] | None = None,
     force_refresh: bool = False,
+    progress: ProgressCallback | None = None,
 ) -> ResearchReport:
-    """Orchestrate all research layers and return a fully-assembled ResearchReport."""
+    """Orchestrate all research layers and return a fully-assembled ResearchReport.
+
+    If `progress` is provided, it is called as `progress(event, label)` around
+    every layer; `event` is "started" | "done" | "failed".
+    """
     sym = symbol.upper()
     from advisor.research.config import get_settings
     from advisor.research.store import ResearchStore
@@ -45,6 +55,8 @@ def build_report(
         cached = store.load_latest_report(sym)
         if cached is not None:
             logger.info("Returning cached report for %s", sym)
+            if progress is not None:
+                progress("done", f"cache-hit({sym})")
             return cached
 
     # Pull company metadata for downstream naming
@@ -53,7 +65,7 @@ def build_report(
     report = ResearchReport(symbol=sym, as_of=date.today())
 
     # ── Layer 1: Statements / Ratios / Red Flags ──────────────────────────────
-    bundle = _run(f"statements({sym})", lambda: _build_statements(sym, n_years))
+    bundle = _run(f"statements({sym})", lambda: _build_statements(sym, n_years), progress)
     report.statements = bundle
 
     if bundle:
@@ -62,12 +74,14 @@ def build_report(
             lambda: __import__(
                 "advisor.research.ratios", fromlist=["compute_ratios"]
             ).compute_ratios(bundle),
+            progress,
         )
         report.red_flags = _run(
             f"red_flags({sym})",
             lambda: __import__(
                 "advisor.research.red_flags", fromlist=["detect_red_flags"]
             ).detect_red_flags(bundle, report.ratios),
+            progress,
         )
 
     # ── Layer 2: Peers / Multiples / DCF ─────────────────────────────────────
@@ -77,6 +91,7 @@ def build_report(
             lambda: __import__(
                 "advisor.research.peers", fromlist=["build_peer_set"]
             ).build_peer_set(sym, explicit_peers=explicit_peers),
+            progress,
         )
         or []
     )
@@ -86,6 +101,7 @@ def build_report(
         lambda: __import__(
             "advisor.research.valuation.multiples", fromlist=["build_multiples"]
         ).build_multiples(sym, peers, statements=bundle),
+        progress,
     )
 
     dcf = _run(
@@ -93,6 +109,7 @@ def build_report(
         lambda: __import__("advisor.research.valuation.dcf", fromlist=["build_dcf"]).build_dcf(
             sym, statements=bundle
         ),
+        progress,
     )
     if dcf is not None:
         dcf.implied_growth_rate = _run(
@@ -100,6 +117,7 @@ def build_report(
             lambda: __import__(
                 "advisor.research.valuation.reverse_dcf", fromlist=["solve_implied_growth"]
             ).solve_implied_growth(dcf),
+            progress,
         )
     report.dcf = dcf
 
@@ -109,12 +127,14 @@ def build_report(
         lambda: __import__(
             "advisor.research.ecosystem.holders", fromlist=["get_holders"]
         ).get_holders(sym),
+        progress,
     )
     insiders = _run(
         f"insiders({sym})",
         lambda: __import__(
             "advisor.research.ecosystem.insiders", fromlist=["get_insiders"]
         ).get_insiders(sym),
+        progress,
     )
     customers = (
         _run(
@@ -122,6 +142,7 @@ def build_report(
             lambda: __import__(
                 "advisor.research.ecosystem.customers", fromlist=["get_customers"]
             ).get_customers(sym, company_name),
+            progress,
         )
         or []
     )
@@ -131,6 +152,7 @@ def build_report(
             lambda: __import__(
                 "advisor.research.ecosystem.suppliers", fromlist=["get_suppliers"]
             ).get_suppliers(sym, company_name),
+            progress,
         )
         or []
     )
@@ -148,12 +170,14 @@ def build_report(
         lambda: __import__(
             "advisor.research.catalysts", fromlist=["build_catalysts"]
         ).build_catalysts(sym, company_name),
+        progress,
     )
     report.catalyst_risk = _run(
         f"risks({sym})",
         lambda: __import__("advisor.research.risks", fromlist=["build_risks"]).build_risks(
             sym, company_name, report.red_flags, catalyst_result
         ),
+        progress,
     )
 
     # ── Layer 4: Industry / Transcripts / Market Data / Thesis ───────────────
@@ -162,6 +186,7 @@ def build_report(
         lambda: __import__("advisor.research.industry", fromlist=["build_industry"]).build_industry(
             sym, company_name, sector, industry
         ),
+        progress,
     )
 
     report.transcripts = _run(
@@ -169,6 +194,7 @@ def build_report(
         lambda: __import__(
             "advisor.research.transcripts", fromlist=["build_transcripts"]
         ).build_transcripts(sym, company_name),
+        progress,
     )
 
     report.market_data = _run(
@@ -176,13 +202,46 @@ def build_report(
         lambda: __import__(
             "advisor.research.market_data", fromlist=["get_market_data"]
         ).get_market_data(sym),
+        progress,
     )
+
+    # ── Layer 3.5: Consensus + Variant Perception ─────────────────────────────
+    report.consensus = _run(
+        f"consensus({sym})",
+        lambda: __import__(
+            "advisor.research.consensus", fromlist=["build_consensus"]
+        ).build_consensus(sym),
+        progress,
+    )
+
+    vp: VariantPerceptionResult | None = _run(
+        f"variant_perception({sym})",
+        lambda: __import__(
+            "advisor.research.variant_perception",
+            fromlist=["build_variant_perception"],
+        ).build_variant_perception(
+            sym,
+            company_name,
+            dcf=report.dcf,
+            consensus=report.consensus,
+            catalyst_risk=report.catalyst_risk,
+            red_flags=report.red_flags,
+            industry=report.industry,
+        ),
+        progress,
+    )
+    report.variant_perception = vp
 
     report.thesis = _run(
         f"thesis({sym})",
         lambda: __import__("advisor.research.thesis", fromlist=["build_thesis"]).build_thesis(
-            sym, company_name, dcf=report.dcf, catalyst_risk=report.catalyst_risk
+            sym,
+            company_name,
+            dcf=report.dcf,
+            catalyst_risk=report.catalyst_risk,
+            variant_perception=vp,
         ),
+        progress,
     )
 
     report.business_model = company_name
@@ -193,6 +252,7 @@ def build_report(
         lambda: __import__("advisor.research.network", fromlist=["build_network"]).build_network(
             sym, report
         ),
+        progress,
     )
 
     store.save_report(report)
@@ -202,13 +262,23 @@ def build_report(
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _run(label: str, fn):  # type: ignore[no-untyped-def]
-    """Run a research layer; log and return None on any failure."""
+def _run(label: str, fn, progress: ProgressCallback | None = None):  # type: ignore[no-untyped-def]
+    """Run a research layer; log and return None on any failure.
+
+    Emits `progress(event, label)` around the call when `progress` is provided.
+    """
+    if progress is not None:
+        progress("started", label)
     try:
-        return fn()
+        result = fn()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Layer %s failed: %s", label, exc)
+        if progress is not None:
+            progress("failed", label)
         return None
+    if progress is not None:
+        progress("done", label)
+    return result
 
 
 def _build_statements(symbol: str, n_years: int):  # type: ignore[no-untyped-def]

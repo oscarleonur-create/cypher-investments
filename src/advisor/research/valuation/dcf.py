@@ -6,17 +6,22 @@ WACC is derived from CAPM (beta × ERP + Rf) + after-tax cost of debt (weighted)
 Inputs come from yfinance (price, beta, shares, net debt) and the
 StatementBundle (latest FCF margin, capex intensity).
 Risk-free rate is approximated from the 10-yr Treasury via yfinance (^TNX).
+
+Public API used by the research workstation's what-if sliders:
+- `compute_dcf_scenario(assumptions, base_revenue, seed_fcf, net_debt, shares, current_price)`
+- `dcf_inputs_from_report(report)` returns the five values the function above needs.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, NamedTuple
 
 from advisor.research.models import (
     DcfAssumptions,
     DcfResult,
     DcfScenario,
+    ResearchReport,
     StatementBundle,
 )
 
@@ -109,16 +114,75 @@ def build_dcf(
         risk_free_rate=rf,
         equity_risk_premium=erp,
         beta=beta,
-        base=_run_scenario(base_assump, base_revenue, seed_fcf, net_debt, shares, current_price),
-        bull=_run_scenario(bull_assump, base_revenue, seed_fcf, net_debt, shares, current_price),
-        bear=_run_scenario(bear_assump, base_revenue, seed_fcf, net_debt, shares, current_price),
+        base=compute_dcf_scenario(
+            base_assump, base_revenue, seed_fcf, net_debt, shares, current_price
+        ),
+        bull=compute_dcf_scenario(
+            bull_assump, base_revenue, seed_fcf, net_debt, shares, current_price
+        ),
+        bear=compute_dcf_scenario(
+            bear_assump, base_revenue, seed_fcf, net_debt, shares, current_price
+        ),
+        base_revenue=base_revenue,
+        seed_fcf=seed_fcf,
     )
 
 
-# ── Scenario engine ──────────────────────────────────────────────────────────
+# ── Scenario engine (public — used by the dashboard's what-if sliders) ──────
 
 
-def _run_scenario(
+class DcfInputs(NamedTuple):
+    """The five values `compute_dcf_scenario` needs.
+
+    Returned by `dcf_inputs_from_report` so callers don't have to know which
+    fields of a cached ResearchReport carry these (some live on `dcf`, some on
+    `statements`).
+    """
+
+    base_revenue: float
+    seed_fcf: float
+    net_debt: float
+    shares: float
+    current_price: float
+
+
+def dcf_inputs_from_report(report: ResearchReport) -> DcfInputs | None:
+    """Pull the inputs a cached report needs to recompute a DCF scenario.
+
+    Prefers the inputs persisted on `DcfResult` (`base_revenue`, `seed_fcf`)
+    so the what-if sliders replay the base scenario exactly. Falls back to
+    deriving them from `statements` for old reports built before those
+    fields existed.
+    """
+    if report.dcf is None:
+        return None
+
+    base_revenue = report.dcf.base_revenue
+    seed_fcf = report.dcf.seed_fcf
+
+    if base_revenue is None or seed_fcf is None:
+        # Older cached report — derive from statements
+        if report.statements is None:
+            return None
+        inc = report.statements.latest_income()
+        cf = report.statements.latest_cashflow()
+        if inc is None or inc.revenue is None:
+            return None
+        base_revenue = float(inc.revenue)
+        seed_fcf = 0.0
+        if cf is not None:
+            seed_fcf = cf.free_cash_flow or ((cf.operating_cash_flow or 0.0) - abs(cf.capex or 0.0))
+
+    return DcfInputs(
+        base_revenue=float(base_revenue),
+        seed_fcf=float(seed_fcf),
+        net_debt=float(report.dcf.net_debt),
+        shares=float(report.dcf.shares_outstanding),
+        current_price=float(report.dcf.current_price),
+    )
+
+
+def compute_dcf_scenario(
     assump: DcfAssumptions,
     base_revenue: float,
     seed_fcf: float,
@@ -126,6 +190,11 @@ def _run_scenario(
     shares: float,
     current_price: float,
 ) -> DcfScenario:
+    """Project 10 years of FCF under `assump`, discount, and return a DcfScenario.
+
+    Pure function — no I/O. The dashboard's sliders call this directly to
+    update the implied price live as the user moves a knob.
+    """
     wacc = assump.wacc
     g_term = assump.terminal_growth_rate
 

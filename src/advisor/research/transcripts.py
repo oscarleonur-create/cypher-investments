@@ -8,6 +8,7 @@ tone trend is synthesised in a final LLM call.
 from __future__ import annotations
 
 import logging
+from datetime import date
 
 from advisor.research.models import TranscriptAnalysis, TranscriptSummary, TranscriptTone
 
@@ -43,9 +44,14 @@ def _fetch_and_analyse(symbol: str, name: str) -> tuple[list[TranscriptSummary],
         store = Store(config.db_path)
         searcher = TavilyClient(config, store)
 
+        # Anchor the search on the current + previous calendar year so we don't
+        # bias toward stale results. Hardcoding year strings (e.g. "2024 2025")
+        # caused queries to keep surfacing 2025 transcripts well into 2026.
+        today = date.today()
+        year_window = f"{today.year - 1} {today.year}"
         query = (
-            f"{name} {symbol} earnings call transcript Q1 Q2 Q3 Q4 2024 2025 "
-            f"management guidance analyst questions"
+            f"{name} {symbol} latest earnings call transcript {year_window} "
+            f"most recent quarter management guidance analyst questions"
         )
         results = searcher.search(query, max_results=8)
         if not results:
@@ -70,9 +76,14 @@ def _fetch_and_analyse(symbol: str, name: str) -> tuple[list[TranscriptSummary],
         out = llm.complete(
             system_prompt=(
                 "You are a buy-side analyst reviewing earnings call transcripts. "
-                "Extract per-quarter summaries (up to 4 most recent quarters) and "
-                "a cross-quarter tone trend. tone must be: bullish, neutral, or bearish. "
-                "key_topics: 3-5 bullet strings. Base everything on the provided text."
+                f"Today is {today.isoformat()}. Extract per-quarter summaries "
+                "for the FOUR MOST RECENTLY REPORTED quarters present in the "
+                "provided sources (the highest fiscal-year quarter wins, even "
+                "if labelled FY2026 or later). Skip stale quarters if newer "
+                "ones are present. Each quarter must include an `earnings_date` "
+                "in ISO format (YYYY-MM-DD) when the source mentions a date. "
+                "tone must be: bullish, neutral, or bearish. key_topics: 3-5 "
+                "bullet strings. Base everything on the provided text."
             ),
             user_prompt=f"Company: {name} ({symbol})\n\n{context}",
             response_model=TranscriptOut,

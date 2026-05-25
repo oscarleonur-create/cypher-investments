@@ -281,6 +281,10 @@ class DcfResult(BaseModel):
     bull: DcfScenario | None = None
     bear: DcfScenario | None = None
     implied_growth_rate: float | None = None  # reverse-DCF result
+    # Inputs to the scenario engine — persisted so the dashboard's what-if
+    # sliders can replay the base scenario exactly without re-fetching.
+    base_revenue: float | None = None
+    seed_fcf: float | None = None
     fetched_at: datetime = Field(default_factory=datetime.now)
 
 
@@ -534,6 +538,75 @@ class ThesisResult(BaseModel):
     fetched_at: datetime = Field(default_factory=datetime.now)
 
 
+# ── Analyst Consensus (Phase 4 — Variant Perception) ────────────────────────
+
+
+class AnalystConsensus(BaseModel):
+    """Sell-side consensus pulled from yfinance analyst data."""
+
+    symbol: str
+    n_analysts: int = 0
+    recommendation_mean: float | None = None  # 1=Strong Buy … 5=Strong Sell
+    recommendation_key: str = ""  # "buy" | "hold" | "sell" | …
+    target_price_low: float | None = None
+    target_price_mean: float | None = None
+    target_price_median: float | None = None
+    target_price_high: float | None = None
+    current_price: float | None = None
+    consensus_upside_pct: float | None = None  # (mean_target − price) / price
+
+    # Forward estimates
+    eps_estimate_current_year: float | None = None
+    eps_estimate_next_year: float | None = None
+    revenue_estimate_current_year: float | None = None
+    revenue_estimate_next_year: float | None = None
+
+    # Estimate revision momentum (up/down counts in last 30 days)
+    eps_revisions_up_30d: int = 0
+    eps_revisions_down_30d: int = 0
+    revision_trend: str = "flat"  # "improving" | "deteriorating" | "flat"
+
+    # Rating changes in last 30 days
+    upgrades_30d: int = 0
+    downgrades_30d: int = 0
+
+    fetched_at: datetime = Field(default_factory=datetime.now)
+
+
+class MispricingType(StrEnum):
+    SENTIMENT_DRIVEN = "sentiment_driven"
+    ESTIMATE_REVISION = "estimate_revision"
+    MULTIPLE_EXPANSION = "multiple_expansion"
+    CATALYST_BLIND = "catalyst_blind"
+    NONE = "none"
+
+
+class VariantPerceptionResult(BaseModel):
+    """Our view vs. market consensus — the core of hedge-fund alpha articulation."""
+
+    symbol: str
+
+    # Market's embedded assumptions
+    market_implied_growth: float | None = None  # from reverse-DCF
+    consensus_target_price: float | None = None  # sell-side mean target
+    consensus_recommendation: str = ""
+
+    # Our model's base case
+    our_base_price: float | None = None
+    our_base_growth: float | None = None
+
+    # The delta — where we differ
+    price_vs_consensus_pct: float | None = None  # our_base / consensus_mean − 1
+    our_edge: str = ""  # LLM: why we see it differently
+    consensus_misses: list[str] = Field(default_factory=list)
+    our_key_insight: str = ""  # 1-sentence edge articulation
+
+    mispricing_type: MispricingType = MispricingType.NONE
+    conviction: str = "MEDIUM"  # HIGH | MEDIUM | LOW
+
+    fetched_at: datetime = Field(default_factory=datetime.now)
+
+
 # ── Research report (full Phase 1 + 2 + 3 model) ────────────────────────────
 
 
@@ -580,6 +653,10 @@ class ResearchReport(BaseModel):
 
     # § Thesis (Phase 3)
     thesis: ThesisResult | None = None
+
+    # § Variant Perception (Phase 4)
+    consensus: AnalystConsensus | None = None
+    variant_perception: VariantPerceptionResult | None = None
 
     filings: list[FilingRef] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
