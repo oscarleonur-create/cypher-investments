@@ -30,7 +30,7 @@ def solve_implied_growth(dcf: DcfResult) -> float | None:
 
     def _price_at_growth(g: float) -> float:
         from advisor.research.models import DcfAssumptions
-        from advisor.research.valuation.dcf import _run_scenario
+        from advisor.research.valuation.dcf import compute_dcf_scenario
 
         a = DcfAssumptions(
             scenario="implied",
@@ -42,7 +42,7 @@ def solve_implied_growth(dcf: DcfResult) -> float | None:
             terminal_exit_multiple=assump.terminal_exit_multiple,
             wacc=assump.wacc,
         )
-        scenario = _run_scenario(
+        scenario = compute_dcf_scenario(
             a,
             base_revenue=dcf.base.projected_fcf[0] / max(assump.target_fcf_margin, 0.001),
             seed_fcf=dcf.base.projected_fcf[0],

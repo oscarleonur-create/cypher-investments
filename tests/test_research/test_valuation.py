@@ -24,10 +24,10 @@ def _make_assumptions(**kwargs) -> DcfAssumptions:
 
 
 def test_dcf_projects_ten_fcf_years():
-    from advisor.research.valuation.dcf import _run_scenario
+    from advisor.research.valuation.dcf import compute_dcf_scenario
 
     a = _make_assumptions()
-    scenario = _run_scenario(
+    scenario = compute_dcf_scenario(
         a,
         base_revenue=1000.0,
         seed_fcf=150.0,
@@ -42,10 +42,10 @@ def test_dcf_projects_ten_fcf_years():
 
 
 def test_dcf_terminal_value_is_positive():
-    from advisor.research.valuation.dcf import _run_scenario
+    from advisor.research.valuation.dcf import compute_dcf_scenario
 
     a = _make_assumptions()
-    scenario = _run_scenario(
+    scenario = compute_dcf_scenario(
         a, base_revenue=1000.0, seed_fcf=150.0, net_debt=0.0, shares=100.0, current_price=50.0
     )
     assert scenario.terminal_value_gordon is not None and scenario.terminal_value_gordon > 0
@@ -54,19 +54,19 @@ def test_dcf_terminal_value_is_positive():
 
 
 def test_dcf_bull_price_above_base_above_bear():
-    from advisor.research.valuation.dcf import _run_scenario
+    from advisor.research.valuation.dcf import compute_dcf_scenario
 
     kwargs = dict(
         base_revenue=1000.0, seed_fcf=150.0, net_debt=0.0, shares=100.0, current_price=50.0
     )
-    base = _run_scenario(_make_assumptions(scenario="base"), **kwargs)
-    bull = _run_scenario(
+    base = compute_dcf_scenario(_make_assumptions(scenario="base"), **kwargs)
+    bull = compute_dcf_scenario(
         _make_assumptions(
             scenario="bull", revenue_growth_yr1_3=0.15, target_fcf_margin=0.18, wacc=0.08
         ),
         **kwargs,
     )
-    bear = _run_scenario(
+    bear = compute_dcf_scenario(
         _make_assumptions(
             scenario="bear", revenue_growth_yr1_3=0.04, target_fcf_margin=0.10, wacc=0.10
         ),
@@ -77,13 +77,13 @@ def test_dcf_bull_price_above_base_above_bear():
 
 
 def test_dcf_net_debt_reduces_equity_value():
-    from advisor.research.valuation.dcf import _run_scenario
+    from advisor.research.valuation.dcf import compute_dcf_scenario
 
     a = _make_assumptions()
-    no_debt = _run_scenario(
+    no_debt = compute_dcf_scenario(
         a, base_revenue=1000.0, seed_fcf=150.0, net_debt=0.0, shares=100.0, current_price=50.0
     )
-    with_debt = _run_scenario(
+    with_debt = compute_dcf_scenario(
         a, base_revenue=1000.0, seed_fcf=150.0, net_debt=200.0, shares=100.0, current_price=50.0
     )
 
@@ -92,10 +92,10 @@ def test_dcf_net_debt_reduces_equity_value():
 
 
 def test_dcf_exit_multiple_terminal_value():
-    from advisor.research.valuation.dcf import _run_scenario
+    from advisor.research.valuation.dcf import compute_dcf_scenario
 
     a = _make_assumptions(terminal_exit_multiple=20.0)
-    scenario = _run_scenario(
+    scenario = compute_dcf_scenario(
         a, base_revenue=1000.0, seed_fcf=150.0, net_debt=0.0, shares=100.0, current_price=50.0
     )
     assert scenario.terminal_value_exit is not None and scenario.terminal_value_exit > 0
