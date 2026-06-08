@@ -109,7 +109,10 @@ def _render_saved_scenarios(symbol: str) -> None:
 def _render_filings(report: ResearchReport) -> None:
     st.subheader("Filings")
     if not report.filings:
-        st.caption("No filings on record.")
+        st.caption(
+            "No filings on record. Use **↻ Filings** in the sidebar (or Force "
+            "refresh) to pull the SEC EDGAR filing index for this ticker."
+        )
         return
     rows = [
         {
@@ -122,6 +125,45 @@ def _render_filings(report: ResearchReport) -> None:
         for f in report.filings
     ]
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    # ── Full-text reader ─────────────────────────────────────────────────
+    st.markdown("**Read a filing in full**")
+    labels = {f"{f.form.value} · {f.filing_date} · {f.accession_number}": f for f in report.filings}
+    picked = st.selectbox(
+        "Choose a filing to open",
+        options=list(labels.keys()),
+        key=f"filing_pick_{report.symbol}",
+        label_visibility="collapsed",
+    )
+    sel = labels[picked]
+    col1, col2 = st.columns([1, 4])
+    load = col1.button("📄 Load full text", key=f"filing_load_{report.symbol}")
+    if sel.url:
+        col2.markdown(f"[Open on SEC.gov ↗]({sel.url})")
+
+    state_key = f"filing_text_{sel.accession_number}"
+    if load:
+        from advisor.dashboard import data
+
+        st.session_state[state_key] = data.load_filing_text(sel.accession_number, as_markdown=True)
+
+    text = st.session_state.get(state_key)
+    if text:
+        st.download_button(
+            "Download filing (Markdown)",
+            data=text.encode(),
+            file_name=f"{report.symbol}_{sel.form.value.replace(' ', '')}_{sel.filing_date}.md",
+            mime="text/markdown",
+            key=f"filing_dl_{sel.accession_number}",
+        )
+        st.caption(f"{len(text):,} characters")
+        with st.container(height=600, border=True):
+            st.markdown(text)
+    elif text == "":
+        st.warning(
+            "Couldn't retrieve the filing text from EDGAR. "
+            "Use the SEC.gov link above to read it on the source site."
+        )
 
 
 # ── Transcripts ─────────────────────────────────────────────────────────────

@@ -134,6 +134,7 @@ with st.sidebar:
             ("Memo", "memo"),
             ("Industry", "industry"),
             ("Options Flow", "options_flow"),
+            ("Filings", "filings"),
         ]
         for i, (label, key) in enumerate(layer_buttons):
             col = layer_cols[i % 2]

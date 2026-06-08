@@ -110,6 +110,38 @@ class EdgarClient:
         self.cache.set_json({"filings": [r.model_dump(mode="json") for r in refs]}, *cache_key)
         return refs
 
+    def get_filing_text(self, accession_number: str, as_markdown: bool = True) -> str:
+        """Fetch the full text of a single filing by accession number.
+
+        Returns the entire filing rendered as markdown (default) or plain
+        text — enough to read a 10-K / 10-Q end-to-end. Filings are immutable
+        once filed, so the disk cache uses the normal filing TTL safely.
+        Returns "" if the filing can't be located.
+        """
+        fmt = "md" if as_markdown else "txt"
+        safe_acc = accession_number.replace("/", "_")
+        cache_key = ("edgar", "filing_text", safe_acc, fmt)
+        cached = self.cache.get_json(*cache_key)
+        if cached is not None:
+            return cached.get("text", "")
+
+        _ensure_identity(self.settings.edgar_user_agent)
+        self.rate_limiter.acquire()
+
+        from edgar import get_by_accession_number
+
+        filing = get_by_accession_number(accession_number)
+        if filing is None:
+            return ""
+        try:
+            text = filing.markdown() if as_markdown else filing.text()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to render filing %s: %s", accession_number, exc)
+            text = ""
+        text = text or ""
+        self.cache.set_json({"text": text}, *cache_key)
+        return text
+
     # ── Statements (raw frames) ───────────────────────────────────────────
 
     def get_financials(self, symbol: str, n_years: int = 5) -> dict[str, Any]:

@@ -296,6 +296,9 @@ def build_report(
         progress,
     )
 
+    # ── Layer 7.5: Filing index (so the report can link/read full filings) ───
+    report.filings = _run(f"filings({sym})", lambda: _list_filings(sym, n_years), progress) or []
+
     # ── Layer 8: Investment Memo (synthesis — runs last so all layers are ready)
     report.investment_memo = _run(
         f"investment_memo({sym})",
@@ -341,6 +344,23 @@ def _build_statements(symbol: str, n_years: int):  # type: ignore[no-untyped-def
     except Exception:  # noqa: BLE001
         pass
     return extract_statements(symbol, edgar_client=edgar_client, n_years=n_years)
+
+
+def _list_filings(symbol: str, n_years: int):  # type: ignore[no-untyped-def]
+    """List recent SEC filings (10-K / 10-Q / 8-K / proxy) for citing + reading."""
+    from advisor.research.edgar import EdgarClient
+    from advisor.research.models import FormType
+
+    client = EdgarClient()
+    forms = [FormType.K10, FormType.Q10, FormType.K8, FormType.DEF14A]
+    refs = []
+    for form in forms:
+        try:
+            refs.extend(client.list_filings(symbol, form, lookback_years=n_years))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Listing %s filings for %s failed: %s", form.value, symbol, exc)
+    refs.sort(key=lambda f: f.filing_date, reverse=True)
+    return refs
 
 
 def _save_kpi_watchlist(symbol: str, kpis: list, store) -> None:  # type: ignore[no-untyped-def]

@@ -120,6 +120,27 @@ def _safe_frame(ticker, attr: str) -> pd.DataFrame:  # type: ignore[no-untyped-d
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=86400, show_spinner="Fetching full filing text from SEC EDGAR…")
+def load_filing_text(accession_number: str, as_markdown: bool = True) -> str:
+    """Fetch the full text of a single SEC filing by accession number.
+
+    Returns markdown (default) or plain text, disk- and session-cached. Empty
+    string on any failure so the UI can fall back to the source link.
+    """
+    from advisor.research.edgar import EdgarClient
+
+    try:
+        client = EdgarClient()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("EdgarClient init failed for filing text: %s", exc)
+        return ""
+    try:
+        return client.get_filing_text(accession_number, as_markdown=as_markdown)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Filing text fetch failed for %s: %s", accession_number, exc)
+        return ""
+
+
 def refresh_layer(
     report: ResearchReport,
     layer: str,
@@ -232,6 +253,21 @@ def refresh_layer(
         from advisor.research.options_flow import build_options_flow
 
         report.options_flow = build_options_flow(sym)
+
+    elif layer == "filings":
+        from advisor.research.edgar import EdgarClient
+        from advisor.research.models import FormType
+
+        client = EdgarClient()
+        forms = [FormType.K10, FormType.Q10, FormType.K8, FormType.DEF14A]
+        refs = []
+        for form in forms:
+            try:
+                refs.extend(client.list_filings(sym, form, lookback_years=n_years))
+            except Exception:  # noqa: BLE001
+                continue
+        refs.sort(key=lambda f: f.filing_date, reverse=True)
+        report.filings = refs
 
     elif layer == "industry":
         import yfinance as yf
