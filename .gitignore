@@ -8,3 +8,9 @@
 !.env.example
 data/
 out/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/*.tsbuildinfo

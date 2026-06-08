@@ -611,7 +611,150 @@ def research_catalysts(
     _render_catalysts(result)
 
 
+@app.command("portfolio")
+def research_portfolio(
+    account: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--account",
+            "-a",
+            help="Account number or suffix (repeatable). Default: both accounts on file.",
+        ),
+    ] = None,
+    rebuild_uncovered: Annotated[
+        bool,
+        typer.Option(
+            "--rebuild-uncovered/--no-rebuild-uncovered",
+            help="Auto-build a full report for held tickers that have none (slow).",
+        ),
+    ] = True,
+    catalysts: Annotated[
+        bool,
+        typer.Option("--catalysts/--no-catalysts", help="Also fetch earnings/catalysts."),
+    ] = True,
+    concurrency: Annotated[
+        int, typer.Option("--concurrency", help="Tickers reviewed in parallel.")
+    ] = 3,
+    export: Annotated[
+        Optional[str],
+        typer.Option("--export", help="Directory to write portfolio_review.md + .json"),
+    ] = None,
+    output: Annotated[Optional[str], typer.Option("--output")] = None,
+) -> None:
+    """Review every company you hold across your TastyTrade accounts.
+
+    For each holding: checks whether the thesis has changed (KPI monitor) and
+    surfaces upcoming events (earnings + catalysts). The latest review is cached
+    so the dashboard Portfolio page can load it instantly.
+    """
+    from advisor.research.portfolio_review import (
+        build_portfolio_review,
+        render_portfolio_review,
+        save_review,
+    )
+
+    accounts = account or None  # None → module default (both accounts)
+    if rebuild_uncovered:
+        console.print(
+            "[cyan]Building portfolio review…[/cyan] "
+            "[dim]uncovered tickers are auto-researched and may take minutes.[/dim]"
+        )
+    else:
+        console.print("[cyan]Building portfolio review…[/cyan]")
+
+    review = build_portfolio_review(
+        accounts,
+        rebuild_uncovered=rebuild_uncovered,
+        with_catalysts=catalysts,
+        concurrency=concurrency,
+    )
+    save_review(review)
+
+    if export:
+        from pathlib import Path
+
+        out_dir = Path(export)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "portfolio_review.md").write_text(render_portfolio_review(review))
+        (out_dir / "portfolio_review.json").write_text(review.model_dump_json(indent=2))
+        console.print(f"[green]Exported to {out_dir}/portfolio_review.{{md,json}}[/green]")
+
+    if output == "json":
+        output_json(review.model_dump(mode="json"))
+        return
+
+    _render_portfolio(review)
+
+
 # ── Phase 2 renderers ────────────────────────────────────────────────────────
+
+
+def _render_portfolio(review) -> None:  # type: ignore[no-untyped-def]
+    from rich.table import Table
+
+    if not review.positions:
+        console.print(
+            "[yellow]No equity holdings found.[/yellow] "
+            "Check TastyTrade credentials in .env and account selection."
+        )
+        return
+
+    console.print(
+        f"[bold]Portfolio Review[/bold] "
+        f"({review.generated_at:%Y-%m-%d %H:%M}) — "
+        f"accounts {', '.join(review.account_numbers)}"
+    )
+    console.print(
+        f"{len(review.positions)} holdings · "
+        f"[red]{review.n_invalidated} invalidated[/red] · "
+        f"[yellow]{review.n_caution} caution[/yellow] · "
+        f"{review.n_near_term_events} with near-term events"
+    )
+
+    att_color = {"HIGH": "red", "MEDIUM": "yellow", "LOW": "green"}
+    status_color = {"ON_TRACK": "green", "CAUTION": "yellow", "INVALIDATED": "red"}
+
+    table = Table(title="Holdings")
+    table.add_column("Ticker", style="cyan", width=8)
+    table.add_column("Accounts", width=18)
+    table.add_column("Thesis", width=12)
+    table.add_column("Conv", width=7)
+    table.add_column("Base ▲", justify="right", width=8)
+    table.add_column("Earnings", width=12)
+    table.add_column("Events", justify="right", width=6)
+    table.add_column("Attn", width=8)
+
+    for p in review.positions:
+        sc = status_color.get(p.thesis_status, "white")
+        ac = att_color.get(p.attention, "white")
+        upside = f"{p.base_upside:+.0%}" if p.base_upside is not None else "—"
+        table.add_row(
+            p.symbol,
+            ", ".join(p.accounts) or "—",
+            f"[{sc}]{p.thesis_status.replace('_', ' ')}[/{sc}]",
+            p.conviction or "—",
+            upside,
+            p.next_earnings_date or "—",
+            str(len(p.near_term_catalysts)),
+            f"[{ac}]{p.attention}[/{ac}]",
+        )
+    console.print(table)
+
+    # Alerts detail for names that need attention
+    flagged = [p for p in review.positions if p.kpi_alerts or p.attention == "HIGH"]
+    if flagged:
+        console.print("\n[bold]Needs attention[/bold]")
+        for p in flagged:
+            console.print(f"[cyan]{p.symbol}[/cyan] — {p.thesis_status.replace('_', ' ')}")
+            for a in p.kpi_alerts:
+                color = "red" if a.startswith("⚠") else "yellow"
+                console.print(f"  [{color}]{a}[/{color}]")
+            if p.next_earnings_date:
+                console.print(f"  [dim]Next earnings: {p.next_earnings_date}[/dim]")
+            for c in p.near_term_catalysts:
+                console.print(f"  [dim]• {c}[/dim]")
+            if p.error:
+                console.print(f"  [dim red]⚠ {p.error}[/dim red]")
 
 
 def _render_multiples(m) -> None:  # type: ignore[no-untyped-def]

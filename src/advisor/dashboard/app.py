@@ -78,7 +78,10 @@ st.markdown(
     "- **Research** — single-ticker deep fundamentals: statements, ratios, valuation, "
     "ecosystem, catalysts, notes. The workstation lives here.\n"
     "- **Sessions** — browse every research session, see its event timeline, reopen "
-    "or delete."
+    "or delete.\n"
+    "- **Portfolio** — review every company you hold across your TastyTrade accounts: "
+    "thesis health (KPI monitor) + upcoming earnings/catalysts. Phone-friendly via "
+    "`advisor dashboard ui --host 0.0.0.0`."
 )
 
 st.markdown("---")
