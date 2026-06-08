@@ -148,6 +148,7 @@ class FundamentalResult(BaseModel):
     is_clear: bool
     dip_screener: DipScreenerResult | None = None
     pead_screener: PeadScreenerResult | None = None
+    research_notes: list[str] = Field(default_factory=list)  # from research engine
 
 
 class MLResult(BaseModel):

@@ -1,4 +1,4 @@
-"""Perplexity Sonar search client with caching and curated-first strategy."""
+"""Tavily search client with caching and curated-first strategy."""
 
 from __future__ import annotations
 
@@ -14,10 +14,12 @@ from research_agent.store import Store
 if TYPE_CHECKING:
     from research_agent.batch import RateLimiter
 
+_RECENCY_TO_DAYS = {"day": 1, "week": 7, "month": 30, "year": 365}
+
 
 @dataclass
 class SearchResult:
-    """A single result from a Perplexity search."""
+    """A single result from a search."""
 
     url: str
     title: str
@@ -27,15 +29,15 @@ class SearchResult:
 
 @dataclass
 class SearchOptions:
-    """Per-call search parameters for Perplexity API."""
+    """Per-call search parameters."""
 
     search_mode: str | None = None
     search_after_date_filter: str | None = None
     search_recency_filter: str | None = None
 
 
-class PerplexityClient:
-    """Perplexity Sonar API client with caching, rate limiting, and curated-first policy."""
+class TavilyClient:
+    """Tavily search API client with caching, rate limiting, and curated-first policy."""
 
     def __init__(
         self,
@@ -77,11 +79,13 @@ class PerplexityClient:
         max_results: int,
         options: SearchOptions | None = None,
     ) -> dict:
-        """Make a raw Perplexity Sonar API call."""
+        """Make a raw Tavily API call."""
         self._rate_limit()
         payload: dict = {
-            "model": self._config.perplexity_model,
-            "messages": [{"role": "user", "content": query}],
+            "api_key": self._config.tavily_api_key,
+            "query": query,
+            "search_depth": self._config.tavily_search_depth,
+            "max_results": max_results,
         }
 
         recency = (
@@ -90,29 +94,19 @@ class PerplexityClient:
             else self._config.search_recency_filter
         )
         if recency:
-            payload["search_recency_filter"] = recency
+            days = _RECENCY_TO_DAYS.get(recency, 30)
+            payload["days"] = days
 
-        search_mode = (
-            options.search_mode
-            if options and options.search_mode
-            else self._config.default_search_mode
-        )
-        if search_mode:
-            payload["search_mode"] = search_mode
+        if domains:
+            payload["include_domains"] = domains
 
-        if options and options.search_after_date_filter:
-            payload["search_after_date_filter"] = options.search_after_date_filter
+        # SEC mode: use include_domains for sec.gov
+        if options and options.search_mode == "sec":
+            payload["include_domains"] = ["sec.gov"]
 
-        if domains and not search_mode:
-            payload["search_domain_filter"] = domains
-        headers = {
-            "Authorization": f"Bearer {self._config.perplexity_api_key}",
-            "Content-Type": "application/json",
-        }
         resp = httpx.post(
             self._config.search_endpoint,
             json=payload,
-            headers=headers,
             timeout=self._config.http_timeout_seconds,
         )
         resp.raise_for_status()
@@ -125,7 +119,7 @@ class PerplexityClient:
         max_results: int = 5,
         options: SearchOptions | None = None,
     ) -> list[SearchResult]:
-        """Search Perplexity with optional domain filtering and caching.
+        """Search Tavily with optional domain filtering and caching.
 
         Uses curated-first strategy: tries curated domains first, then
         falls back to open web if allowed and needed.  When a search_mode
@@ -173,7 +167,7 @@ class PerplexityClient:
         after_date: str | None = None,
         max_results: int = 5,
     ) -> list[SearchResult]:
-        """Search SEC filings via Perplexity's SEC search mode.
+        """Search SEC filings via Tavily with sec.gov domain filtering.
 
         Args:
             query: Search query (e.g. "AAPL 10-K revenue segments 2024").
@@ -188,13 +182,13 @@ class PerplexityClient:
 
     @staticmethod
     def _parse_results(data: dict) -> list[SearchResult]:
-        """Parse Perplexity Sonar response into SearchResult objects."""
-        items = data.get("search_results", [])
+        """Parse Tavily response into SearchResult objects."""
+        items = data.get("results", [])
         return [
             SearchResult(
                 url=item.get("url", ""),
                 title=item.get("title", ""),
-                content=item.get("snippet", ""),
+                content=item.get("content", ""),
                 score=item.get("score", 0.0),
             )
             for item in items

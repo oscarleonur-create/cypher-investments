@@ -53,14 +53,14 @@ def _run_single(
     """
     from research_agent.agent import run_loop
     from research_agent.evidence import SourceRegistry
-    from research_agent.llm import ClaudeLLM
-    from research_agent.search import PerplexityClient
+    from research_agent.llm import OpenRouterLLM
+    from research_agent.search import TavilyClient
     from research_agent.store import Store
 
     store = Store(config.db_path)
     try:
-        search = PerplexityClient(config, store, rate_limiter=rate_limiter)
-        llm = ClaudeLLM(config)
+        search = TavilyClient(config, store, rate_limiter=rate_limiter)
+        llm = OpenRouterLLM(config)
         registry = SourceRegistry()
         state_input = ResearchInput(mode=InputMode.TICKER, value=symbol.upper())
         from research_agent.models import AgentState

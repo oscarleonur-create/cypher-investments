@@ -10,8 +10,8 @@ from research_agent.search import SearchResult
 
 class TestCheckSentiment:
     @patch("advisor.confluence.sentiment.Store")
-    @patch("advisor.confluence.sentiment.ClaudeLLM")
-    @patch("advisor.confluence.sentiment.PerplexityClient")
+    @patch("advisor.confluence.sentiment.OpenRouterLLM")
+    @patch("advisor.confluence.sentiment.TavilyClient")
     @patch("advisor.confluence.sentiment.ResearchConfig")
     def test_bullish_sentiment(
         self, mock_config_cls, mock_perplexity_cls, mock_llm_cls, mock_store_cls
@@ -51,8 +51,8 @@ class TestCheckSentiment:
         assert result.sources[0].url == "https://reuters.com/article1"
 
     @patch("advisor.confluence.sentiment.Store")
-    @patch("advisor.confluence.sentiment.ClaudeLLM")
-    @patch("advisor.confluence.sentiment.PerplexityClient")
+    @patch("advisor.confluence.sentiment.OpenRouterLLM")
+    @patch("advisor.confluence.sentiment.TavilyClient")
     @patch("advisor.confluence.sentiment.ResearchConfig")
     def test_bullish_llm_receives_formatted_context(
         self, mock_config_cls, mock_perplexity_cls, mock_llm_cls, mock_store_cls
@@ -93,8 +93,8 @@ class TestCheckSentiment:
         assert "[s2]" in user_prompt
 
     @patch("advisor.confluence.sentiment.Store")
-    @patch("advisor.confluence.sentiment.ClaudeLLM")
-    @patch("advisor.confluence.sentiment.PerplexityClient")
+    @patch("advisor.confluence.sentiment.OpenRouterLLM")
+    @patch("advisor.confluence.sentiment.TavilyClient")
     @patch("advisor.confluence.sentiment.ResearchConfig")
     def test_bearish_sentiment(
         self, mock_config_cls, mock_perplexity_cls, mock_llm_cls, mock_store_cls
@@ -128,8 +128,8 @@ class TestCheckSentiment:
         assert result.positive_pct == 20.0
 
     @patch("advisor.confluence.sentiment.Store")
-    @patch("advisor.confluence.sentiment.ClaudeLLM")
-    @patch("advisor.confluence.sentiment.PerplexityClient")
+    @patch("advisor.confluence.sentiment.OpenRouterLLM")
+    @patch("advisor.confluence.sentiment.TavilyClient")
     @patch("advisor.confluence.sentiment.ResearchConfig")
     def test_no_search_results_returns_neutral(
         self, mock_config_cls, mock_perplexity_cls, mock_llm_cls, mock_store_cls
@@ -153,8 +153,8 @@ class TestCheckSentiment:
         assert result.sources == []
 
     @patch("advisor.confluence.sentiment.Store")
-    @patch("advisor.confluence.sentiment.ClaudeLLM")
-    @patch("advisor.confluence.sentiment.PerplexityClient")
+    @patch("advisor.confluence.sentiment.OpenRouterLLM")
+    @patch("advisor.confluence.sentiment.TavilyClient")
     @patch("advisor.confluence.sentiment.ResearchConfig")
     def test_exception_returns_neutral(
         self, mock_config_cls, mock_perplexity_cls, mock_llm_cls, mock_store_cls
@@ -177,8 +177,8 @@ class TestCheckSentiment:
         assert result.sources == []
 
     @patch("advisor.confluence.sentiment.Store")
-    @patch("advisor.confluence.sentiment.ClaudeLLM")
-    @patch("advisor.confluence.sentiment.PerplexityClient")
+    @patch("advisor.confluence.sentiment.OpenRouterLLM")
+    @patch("advisor.confluence.sentiment.TavilyClient")
     @patch("advisor.confluence.sentiment.ResearchConfig")
     def test_source_tiers_populated(
         self, mock_config_cls, mock_perplexity_cls, mock_llm_cls, mock_store_cls

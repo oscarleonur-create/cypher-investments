@@ -21,8 +21,8 @@ import httpx
 import yfinance as yf
 from pydantic import BaseModel, Field
 from research_agent.config import ResearchConfig
-from research_agent.llm import ClaudeLLM
-from research_agent.search import PerplexityClient
+from research_agent.llm import OpenRouterLLM
+from research_agent.search import TavilyClient
 from research_agent.store import Store
 
 from advisor.data.cache import DiskCache
@@ -231,8 +231,8 @@ def _fetch_insider_activity(symbol: str) -> InsiderScore:
     sell_trades: list[InsiderTrade] = []
 
     try:
-        search = PerplexityClient(config, store)
-        llm = ClaudeLLM(config)
+        search = TavilyClient(config, store)
+        llm = OpenRouterLLM(config)
 
         cutoff = datetime.now() - timedelta(days=INSIDER_LOOKBACK_DAYS)
         after_date = cutoff.strftime("%Y-%m-%d")
@@ -393,8 +393,8 @@ def _fetch_congress_trades(symbol: str) -> CongressScore:
     politicians: list[str] = []
 
     try:
-        search = PerplexityClient(config, store)
-        llm = ClaudeLLM(config)
+        search = TavilyClient(config, store)
+        llm = OpenRouterLLM(config)
 
         results = search.search(
             f"{symbol} congressional stock trading disclosures recent",

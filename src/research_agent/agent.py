@@ -16,7 +16,7 @@ from research_agent.llm import (
     GAP_ANALYSIS_PROMPT,
     TRANSCRIPT_SUMMARIZATION_PROMPT,
     TRIGGER_DETECTION_PROMPT,
-    ClaudeLLM,
+    OpenRouterLLM,
 )
 from research_agent.models import (
     AgentState,
@@ -40,7 +40,7 @@ from research_agent.queries import (
     step3_transcript_queries,
     subject_label,
 )
-from research_agent.search import PerplexityClient, SearchResult
+from research_agent.search import SearchResult, TavilyClient
 
 logger = logging.getLogger(__name__)
 
@@ -172,8 +172,8 @@ def _format_evidence_for_llm(state: AgentState, registry: SourceRegistry) -> str
 
 def step1_detect_trigger(
     state: AgentState,
-    search: PerplexityClient,
-    llm: ClaudeLLM,
+    search: TavilyClient,
+    llm: OpenRouterLLM,
     registry: SourceRegistry,
     config: ResearchConfig,
 ) -> None:
@@ -217,7 +217,7 @@ def step1_detect_trigger(
 
 def step2_classify_dip(
     state: AgentState,
-    llm: ClaudeLLM,
+    llm: OpenRouterLLM,
     registry: SourceRegistry,
 ) -> None:
     """Classify the dip as TEMPORARY, STRUCTURAL, or UNCLEAR."""
@@ -252,7 +252,7 @@ def step2_classify_dip(
 def _extract_facts(
     state: AgentState,
     results: list[SearchResult],
-    llm: ClaudeLLM,
+    llm: OpenRouterLLM,
     registry: SourceRegistry,
 ) -> None:
     """Extract structured facts from search results and merge into state.fact_pack."""
@@ -300,8 +300,8 @@ class _GapAnalysisResponse(BaseModel):
 
 def step3_adaptive_followup(
     state: AgentState,
-    search: PerplexityClient,
-    llm: ClaudeLLM,
+    search: TavilyClient,
+    llm: OpenRouterLLM,
     registry: SourceRegistry,
     config: ResearchConfig,
 ) -> None:
@@ -373,8 +373,8 @@ def step3_adaptive_followup(
 
 def step3_research_facts(
     state: AgentState,
-    search: PerplexityClient,
-    llm: ClaudeLLM,
+    search: TavilyClient,
+    llm: OpenRouterLLM,
     registry: SourceRegistry,
     config: ResearchConfig,
 ) -> None:
@@ -493,7 +493,7 @@ def _verify_claims(claims: list[str], registry: SourceRegistry) -> tuple[list[st
 
 def step4_generate_card(
     state: AgentState,
-    llm: ClaudeLLM,
+    llm: OpenRouterLLM,
     registry: SourceRegistry,
 ) -> None:
     """Synthesize all evidence into an OpportunityCard."""
@@ -536,8 +536,8 @@ def step4_generate_card(
 
 def run_loop(
     state: AgentState,
-    search: PerplexityClient,
-    llm: ClaudeLLM,
+    search: TavilyClient,
+    llm: OpenRouterLLM,
     registry: SourceRegistry,
     config: ResearchConfig,
 ) -> OpportunityCard:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 from advisor.confluence.smart_money_screener import (
@@ -42,8 +43,8 @@ class TestFetchInsiderActivity:
     @patch(f"{_P}._cache_set")
     @patch(f"{_P}._cache_get", return_value=None)
     @patch(f"{_P}.Store")
-    @patch(f"{_P}.ClaudeLLM")
-    @patch(f"{_P}.PerplexityClient")
+    @patch(f"{_P}.OpenRouterLLM")
+    @patch(f"{_P}.TavilyClient")
     @patch(f"{_P}.ResearchConfig")
     def test_insider_cluster_buys_scored(
         self, mock_cfg, mock_px, mock_llm_cls, mock_store, _cg, _cs
@@ -106,8 +107,8 @@ class TestFetchInsiderActivity:
     @patch(f"{_P}._cache_set")
     @patch(f"{_P}._cache_get", return_value=None)
     @patch(f"{_P}.Store")
-    @patch(f"{_P}.ClaudeLLM")
-    @patch(f"{_P}.PerplexityClient")
+    @patch(f"{_P}.OpenRouterLLM")
+    @patch(f"{_P}.TavilyClient")
     @patch(f"{_P}.ResearchConfig")
     def test_insider_csuite_large_buy_bonus(
         self, mock_cfg, mock_px, mock_llm_cls, mock_store, _cg, _cs
@@ -149,8 +150,8 @@ class TestFetchInsiderActivity:
     @patch(f"{_P}._cache_set")
     @patch(f"{_P}._cache_get", return_value=None)
     @patch(f"{_P}.Store")
-    @patch(f"{_P}.ClaudeLLM")
-    @patch(f"{_P}.PerplexityClient")
+    @patch(f"{_P}.OpenRouterLLM")
+    @patch(f"{_P}.TavilyClient")
     @patch(f"{_P}.ResearchConfig")
     def test_insider_sells_negative(self, mock_cfg, mock_px, mock_llm_cls, mock_store, _cg, _cs):
         """5 Sale trades -> negative score."""
@@ -194,8 +195,8 @@ class TestFetchInsiderActivity:
     @patch(f"{_P}._cache_set")
     @patch(f"{_P}._cache_get", return_value=None)
     @patch(f"{_P}.Store")
-    @patch(f"{_P}.ClaudeLLM")
-    @patch(f"{_P}.PerplexityClient")
+    @patch(f"{_P}.OpenRouterLLM")
+    @patch(f"{_P}.TavilyClient")
     @patch(f"{_P}.ResearchConfig")
     def test_insider_no_results_empty(self, mock_cfg, mock_px, mock_llm_cls, mock_store, _cg, _cs):
         """Empty search results -> InsiderScore(score=0)."""
@@ -212,8 +213,8 @@ class TestFetchInsiderActivity:
     @patch(f"{_P}._cache_set")
     @patch(f"{_P}._cache_get", return_value=None)
     @patch(f"{_P}.Store")
-    @patch(f"{_P}.ClaudeLLM")
-    @patch(f"{_P}.PerplexityClient")
+    @patch(f"{_P}.OpenRouterLLM")
+    @patch(f"{_P}.TavilyClient")
     @patch(f"{_P}.ResearchConfig")
     def test_insider_exception_returns_empty(
         self, mock_cfg, mock_px, mock_llm_cls, mock_store, _cg, mock_cache_set
@@ -239,8 +240,8 @@ class TestFetchCongressTrades:
     @patch(f"{_P}._cache_set")
     @patch(f"{_P}._cache_get", return_value=None)
     @patch(f"{_P}.Store")
-    @patch(f"{_P}.ClaudeLLM")
-    @patch(f"{_P}.PerplexityClient")
+    @patch(f"{_P}.OpenRouterLLM")
+    @patch(f"{_P}.TavilyClient")
     @patch(f"{_P}.ResearchConfig")
     def test_congress_multiple_buys_scored(
         self, mock_cfg, mock_px, mock_llm_cls, mock_store, _cg, _cs
@@ -248,39 +249,44 @@ class TestFetchCongressTrades:
         """3 buys by 2 politicians -> score=20."""
         search, llm = _setup(mock_cfg, mock_px, mock_llm_cls, mock_store)
 
+        _NOW = datetime(2026, 5, 24)
+
         search.search.return_value = [
             SearchResult(
                 url="https://news.com/1",
                 title="Congress trades",
                 content=(
                     "Congressional Stock Trading Disclosures\n"
-                    "Sen. Smith disclosed a Purchase of AAPL on 2026-01-15\n"
-                    "Rep. Jones disclosed a Purchase of AAPL on 2026-02-01\n"
-                    "Sen. Smith disclosed another Purchase of AAPL on 2026-02-10"
+                    "Sen. Smith disclosed a Purchase of AAPL on 2026-04-15\n"
+                    "Rep. Jones disclosed a Purchase of AAPL on 2026-04-20\n"
+                    "Sen. Smith disclosed another Purchase of AAPL on 2026-05-01"
                 ),
             ),
         ]
         llm.complete.return_value = _CongressTradesResponse(
             trades=[
                 {
-                    "transaction_date": "2026-01-15",
+                    "transaction_date": "2026-04-15",
                     "transaction_type": "Purchase",
                     "politician": "Sen. Smith",
                 },
                 {
-                    "transaction_date": "2026-02-01",
+                    "transaction_date": "2026-04-20",
                     "transaction_type": "Purchase",
                     "politician": "Rep. Jones",
                 },
                 {
-                    "transaction_date": "2026-02-10",
+                    "transaction_date": "2026-05-01",
                     "transaction_type": "Purchase",
                     "politician": "Sen. Smith",
                 },
             ]
         )
 
-        result = _fetch_congress_trades("AAPL")
+        with patch(f"{_P}.datetime") as mock_dt:
+            mock_dt.now.return_value = _NOW
+            mock_dt.strptime = datetime.strptime
+            result = _fetch_congress_trades("AAPL")
 
         assert isinstance(result, CongressScore)
         assert result.recent_buys == 3
@@ -291,8 +297,8 @@ class TestFetchCongressTrades:
     @patch(f"{_P}._cache_set")
     @patch(f"{_P}._cache_get", return_value=None)
     @patch(f"{_P}.Store")
-    @patch(f"{_P}.ClaudeLLM")
-    @patch(f"{_P}.PerplexityClient")
+    @patch(f"{_P}.OpenRouterLLM")
+    @patch(f"{_P}.TavilyClient")
     @patch(f"{_P}.ResearchConfig")
     def test_congress_no_results_empty(self, mock_cfg, mock_px, mock_llm_cls, mock_store, _cg, _cs):
         """Empty search results -> CongressScore(score=0)."""
