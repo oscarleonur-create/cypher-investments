@@ -337,8 +337,8 @@ async def get_enriched_chain(
             bid = float(eq_quote.bid_price or 0)
             ask = float(eq_quote.ask_price or 0)
             underlying_price = round((bid + ask) / 2, 2) if (bid + ask) > 0 else 0.0
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Streamer quote failed for %s: %s", symbol, e)
 
     # Fallback to yfinance if streamer failed
     if underlying_price <= 0:
@@ -349,7 +349,8 @@ async def get_enriched_chain(
             hist = ticker.history(period="1d")
             if not hist.empty:
                 underlying_price = float(hist["Close"].iloc[-1])
-        except Exception:
+        except Exception as e:
+            logger.debug("yfinance price fallback failed for %s: %s", symbol, e)
             underlying_price = 0.0
 
     # Extract put streamer symbols

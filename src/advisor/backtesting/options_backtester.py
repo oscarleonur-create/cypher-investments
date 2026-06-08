@@ -6,7 +6,6 @@ Uses yfinance for price data, core/pricing.py for BSM pricing with full Greeks.
 """
 
 import logging
-import sys
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import timedelta
@@ -222,7 +221,7 @@ class Backtester:
 
         self.df = df.loc[self.start : self.end].copy()
         self.all_df = df  # keep full for lookback
-        print(f"Loaded {len(self.df)} trading days for {self.symbol}", file=sys.stderr)
+        logger.info("Loaded %d trading days for %s", len(self.df), self.symbol)
 
     # ── Shared position management ────────────────────────────────────────
 
@@ -1157,17 +1156,17 @@ class Backtester:
                 _, _, current_regime = compute_vol_regime_labels(prices)
                 policy = AdaptiveExitPolicy(self.config, current_regime)
                 self.config = policy.adapt()
-                print(
-                    f"Adaptive exits: regime={current_regime}, "
-                    f"PT={self.config.profit_target_pct:.0%}, "
-                    f"SL={self.config.stop_loss_multiplier:.1f}x, "
-                    f"DTE={self.config.close_at_dte}",
-                    file=sys.stderr,
+                logger.info(
+                    "Adaptive exits: regime=%s, PT=%.0f%%, SL=%.1fx, DTE=%s",
+                    current_regime,
+                    self.config.profit_target_pct * 100,
+                    self.config.stop_loss_multiplier,
+                    self.config.close_at_dte,
                 )
             except Exception as e:
                 logger.warning("Adaptive exits failed, using defaults: %s", e)
 
-        print(f"Running {strategy} on {self.symbol}...", file=sys.stderr)
+        logger.info("Running %s on %s...", strategy, self.symbol)
         dispatch[strategy]()
         return self.summary(strategy)
 

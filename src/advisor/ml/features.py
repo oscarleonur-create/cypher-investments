@@ -272,8 +272,8 @@ class FeatureEngine:
                     .astype(float)
                     .fillna(1.0)
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("VIX regime feature computation failed: %s", e)
 
         sector_etf = _get_sector_etf(symbol)
         if sector_etf:
@@ -291,8 +291,10 @@ class FeatureEngine:
                     stock_ret = close.pct_change(20)
                     sector_ret = sector_close.pct_change(20)
                     features["sector_rel_strength"] = stock_ret - sector_ret
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(
+                    "Sector relative strength computation failed for %s: %s", sector_etf, e
+                )
 
         # ── Cross-sectional (1) ─────────────────────────────────────────
         # Percentile rank of 20d return vs SPY
@@ -313,8 +315,8 @@ class FeatureEngine:
                 # Simple rank: 1 if stock > SPY, 0 otherwise, smoothed
                 diff = stock_ret_20 - spy_ret_20
                 features["ret_20d_rank"] = diff.rolling(20).rank(pct=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Cross-sectional rank computation failed: %s", e)
 
         # ── Microstructure (5) ──────────────────────────────────────────
         # Volume-price divergence
@@ -373,8 +375,8 @@ class FeatureEngine:
                         days_to = max(0, (ed_ts - df.index[-1]).days)
                         # Sigmoid-like: 1.0 when 0 days, ~0 when 90+ days
                         features["earnings_proximity"] = np.exp(-days_to / 15.0)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Earnings proximity computation failed for %s: %s", symbol, e)
 
             # Analyst target upside (% above current price, capped)
             target = info.get("targetMeanPrice")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Annotated, Optional
 
 import typer
@@ -13,6 +14,8 @@ if TYPE_CHECKING:
     from advisor.confluence.dip_analyzer import DipAnalysisResult
     from advisor.confluence.mispricing_screener import MispricingResult
     from advisor.confluence.smart_money_screener import SmartMoneyResult
+
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(name="market", help="Market-wide scanning with layered pre-filters")
 
@@ -66,8 +69,8 @@ def smart_money_scan(
                 try:
                     r = future.result()
                     results.append(r)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Smart money scan failed for a ticker: %s", e)
                 progress.update(task, advance=1)
 
     # Sort by score, take top N
@@ -234,8 +237,8 @@ def mispricing_scan(
                 try:
                     r = future.result()
                     results.append(r)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Mispricing scan failed for a ticker: %s", e)
                 progress.update(task, advance=1)
 
     # Sort by score, take top N
@@ -608,8 +611,8 @@ def alpha_scan(
                 try:
                     r = future.result()
                     results.append(r)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Alpha score computation failed for a ticker: %s", e)
                 progress.update(task, advance=1)
 
     results.sort(key=lambda r: r.alpha_score, reverse=True)
@@ -795,8 +798,8 @@ def dip_scan(
                 try:
                     r = future.result()
                     results.append(r)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Dip analysis failed for a ticker: %s", e)
                 progress.update(task, advance=1)
 
     results.sort(key=lambda r: r.dip_score, reverse=True)
@@ -1108,7 +1111,8 @@ def market_pipeline(
                 conviction = dip_result.dip_score
                 regime = dip_result.regime
                 verdict = dip_result.verdict.value
-            except Exception:
+            except Exception as e:
+                logger.debug("Dip conviction scoring failed for %s: %s", sym, e)
                 conviction = 50.0
                 regime = "normal"
                 verdict = "N/A"
@@ -1169,7 +1173,8 @@ def market_pipeline(
                 "risk_per_share": atr * 2.0,
                 "risk_total": shares * atr * 2.0,
             }
-        except Exception:
+        except Exception as e:
+            logger.debug("Symbol analysis failed for %s: %s", sym, e)
             return None
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -1389,5 +1394,6 @@ def _compute_live_atr(symbol: str, period: int = 14) -> float:
             return 0.0
 
         return float(sum(trs[-period:]) / period)
-    except Exception:
+    except Exception as e:
+        logger.debug("ATR computation failed: %s", e)
         return 0.0

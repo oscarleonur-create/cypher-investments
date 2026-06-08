@@ -39,7 +39,8 @@ def _extract_atm_iv(ticker: yf.Ticker, price: float, expiry: str) -> float | Non
     """Extract average ATM implied volatility from a single expiration."""
     try:
         chain = ticker.option_chain(expiry)
-    except Exception:
+    except Exception as e:
+        logger.debug("Failed to fetch option chain for expiry %s: %s", expiry, e)
         return None
 
     atm_range = price * 0.05
@@ -177,7 +178,8 @@ def classify_term_structure(
             iv = _extract_atm_iv(ticker, price, exp_str)
             if iv is not None and iv > 0:
                 term_ivs.append((dte, iv))
-        except Exception:
+        except Exception as e:
+            logger.debug("Term structure IV extraction failed for %s: %s", exp_str, e)
             continue
 
     if len(term_ivs) < 2:

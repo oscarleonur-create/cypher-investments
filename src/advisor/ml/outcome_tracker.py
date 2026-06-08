@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -10,6 +11,8 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import yfinance as yf
+
+logger = logging.getLogger(__name__)
 
 SCANNERS = ["dip", "pead", "smart_money", "mispricing", "confluence", "knife_filter", "options"]
 
@@ -52,8 +55,8 @@ def log_signal(
             feats = engine.compute_features(ticker)
             if feats:
                 meta["features"] = feats
-        except Exception:
-            pass  # non-critical — training will fall back to recompute
+        except Exception as e:
+            logger.debug("Feature snapshot failed for %s: %s", ticker, e)
 
     signals = _load_signals()
     record = {
@@ -119,7 +122,8 @@ def resolve_signals() -> int:
             sig["resolved"] = True
             sig["resolved_date"] = datetime.now().isoformat()
             resolved_count += 1
-        except Exception:
+        except Exception as e:
+            logger.debug("Signal resolution failed for %s: %s", tk, e)
             continue
 
     _save_signals(signals)

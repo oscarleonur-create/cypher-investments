@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from typing import Annotated, Optional
 
@@ -14,6 +15,8 @@ from advisor.cli.formatters import (
     print_results_list,
     print_walk_forward_summary,
 )
+
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(name="backtest", help="Run and manage backtests")
 
@@ -482,7 +485,8 @@ def backtest_pipeline(
                             "reasoning": r.reasoning[:100],
                         }
                     )
-                except Exception:
+                except Exception as e:
+                    logger.debug("Dip analysis failed for %s: %s", r.symbol, e)
                     candidates.append(
                         {
                             "symbol": r.symbol,
@@ -522,8 +526,8 @@ def backtest_pipeline(
                                 "reasoning": dip.reasoning[:100],
                             }
                         )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Dip scoring failed for a ticker: %s", e)
 
     if not candidates:
         typer.echo("No candidates passed the minimum score threshold.")
