@@ -38,3 +38,18 @@ export function pnlColor(v: number | null | undefined): string {
   if (v == null || v === 0) return "text-muted";
   return v > 0 ? "text-pos" : "text-neg";
 }
+
+// Guards against non-meaningful model output (a runaway DCF, or one that floors
+// equity at 0 for a pre-profit cash-burner) so the UI shows "n/m" instead of
+// +39,587,605,573,395% or a misleading -100%. Upside is a decimal fraction.
+export function fmtUpside(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return "—";
+  if (!Number.isFinite(v) || Math.abs(v) > 10 || v <= -0.999) return "n/m";
+  return fmtPct(v, { sign: true });
+}
+
+export function fmtPriceSafe(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return "—";
+  if (!Number.isFinite(v) || v <= 0 || Math.abs(v) > 1_000_000) return "n/m";
+  return fmtNum(v);
+}

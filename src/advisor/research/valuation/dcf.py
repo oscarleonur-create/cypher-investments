@@ -69,37 +69,44 @@ def build_dcf(
 
     # Seed FCF from statements or yfinance
     seed_fcf = _seed_fcf(statements, info)
-    seed_fcf_margin = _seed_fcf_margin(statements, info)
     base_revenue = _f(info, "totalRevenue") or 0.0
-    seed_growth = _f(info, "revenueGrowth") or 0.05
     exit_multiple = _f(info, "enterpriseToEbitda")
+
+    # Sanity-bound the drivers. Hypergrowth / cash-burning names report raw
+    # values (e.g. 684% revenue growth, -400% FCF margin) that, extrapolated
+    # over 10y, blow the model up to 1e18+. Clamp to defensible ranges and
+    # assume convergence to a normalized *positive* terminal FCF margin.
+    seed_growth = _clamp(_f(info, "revenueGrowth") or 0.05, -0.30, 0.60)
+    seed_margin = _clamp(_seed_fcf_margin(statements, info), 0.02, 0.40)
+    capex = _clamp(_seed_capex_intensity(statements, info), 0.0, 0.40)
+    exit_multiple = _clamp(exit_multiple, 2.0, 40.0) if exit_multiple else None
 
     base_assump = DcfAssumptions(
         scenario="base",
         revenue_growth_yr1_3=seed_growth,
-        revenue_growth_yr4_10=max(seed_growth * 0.5, 0.03),
-        target_fcf_margin=seed_fcf_margin,
-        capex_intensity=_seed_capex_intensity(statements, info),
+        revenue_growth_yr4_10=_clamp(seed_growth * 0.5, 0.02, 0.25),
+        target_fcf_margin=seed_margin,
+        capex_intensity=capex,
         terminal_growth_rate=0.025,
         terminal_exit_multiple=exit_multiple,
         wacc=wacc,
     )
     bull_assump = DcfAssumptions(
         scenario="bull",
-        revenue_growth_yr1_3=seed_growth * 1.3,
-        revenue_growth_yr4_10=max(seed_growth * 0.7, 0.04),
-        target_fcf_margin=seed_fcf_margin * 1.15,
-        capex_intensity=base_assump.capex_intensity,
+        revenue_growth_yr1_3=_clamp(seed_growth * 1.3, 0.0, 0.65),
+        revenue_growth_yr4_10=_clamp(seed_growth * 0.7, 0.03, 0.30),
+        target_fcf_margin=_clamp(seed_margin * 1.15, 0.02, 0.45),
+        capex_intensity=capex,
         terminal_growth_rate=0.030,
         terminal_exit_multiple=exit_multiple,
         wacc=max(wacc - 0.01, 0.06),
     )
     bear_assump = DcfAssumptions(
         scenario="bear",
-        revenue_growth_yr1_3=max(seed_growth * 0.5, 0.0),
-        revenue_growth_yr4_10=max(seed_growth * 0.2, 0.01),
-        target_fcf_margin=seed_fcf_margin * 0.80,
-        capex_intensity=base_assump.capex_intensity,
+        revenue_growth_yr1_3=_clamp(seed_growth * 0.5, 0.0, 0.40),
+        revenue_growth_yr4_10=_clamp(seed_growth * 0.2, 0.01, 0.20),
+        target_fcf_margin=_clamp(seed_margin * 0.80, 0.0, 0.40),
+        capex_intensity=capex,
         terminal_growth_rate=0.020,
         terminal_exit_multiple=exit_multiple,
         wacc=wacc + 0.01,
@@ -201,33 +208,43 @@ def compute_dcf_scenario(
     projected_fcf: list[float] = []
     revenue = base_revenue
 
+    # Starting FCF margin, clamped: cash-burning names report extreme negative
+    # margins (e.g. -419%) that, faded over 10y, sink every projected year and
+    # zero out the valuation. Bound it so the DCF stays meaningful.
+    if base_revenue:
+        start_margin = _clamp(seed_fcf / max(base_revenue, 1), -0.30, 0.40)
+    else:
+        start_margin = assump.target_fcf_margin
+    target_margin = assump.target_fcf_margin
+
     for year in range(1, _PROJECTION_YEARS + 1):
         g = assump.revenue_growth_yr1_3 if year <= 3 else assump.revenue_growth_yr4_10
-        # Linearly fade margin from seed toward target over 10 years
+        # Linearly fade margin from (clamped) seed toward target over 10 years
         margin_progress = year / _PROJECTION_YEARS
-        fcf_margin = (
-            (
-                (1 - margin_progress) * (seed_fcf / max(base_revenue, 1))
-                + margin_progress * assump.target_fcf_margin
-            )
-            if base_revenue
-            else assump.target_fcf_margin
-        )
+        fcf_margin = (1 - margin_progress) * start_margin + margin_progress * target_margin
         revenue *= 1 + g
         projected_fcf.append(revenue * fcf_margin)
 
     # PV of FCF
     pv_fcf = sum(cf / (1 + wacc) ** t for t, cf in enumerate(projected_fcf, 1))
 
-    # Terminal value — Gordon growth
+    # Terminal value — Gordon growth. Only meaningful with positive terminal
+    # FCF; a negative terminal cash flow makes the perpetuity meaningless (and
+    # previously flipped to a huge positive value), so clamp it to zero.
     terminal_fcf = projected_fcf[-1] * (1 + g_term)
-    tv_gordon = terminal_fcf / max(wacc - g_term, 0.001)
+    tv_gordon = terminal_fcf / max(wacc - g_term, 0.001) if terminal_fcf > 0 else 0.0
     pv_gordon = tv_gordon / (1 + wacc) ** _PROJECTION_YEARS
 
-    # Terminal value — exit multiple (if available)
+    # Terminal value — exit multiple (if available). Requires positive terminal
+    # FCF + margin so the EBITDA proxy doesn't go negative.
     pv_exit: float | None = None
-    if assump.terminal_exit_multiple and projected_fcf:
-        terminal_ebitda_proxy = projected_fcf[-1] / max(assump.target_fcf_margin, 0.01) * 0.25
+    if (
+        assump.terminal_exit_multiple
+        and projected_fcf
+        and projected_fcf[-1] > 0
+        and assump.target_fcf_margin > 0
+    ):
+        terminal_ebitda_proxy = projected_fcf[-1] / assump.target_fcf_margin * 0.25
         tv_exit = terminal_ebitda_proxy * assump.terminal_exit_multiple
         pv_exit = tv_exit / (1 + wacc) ** _PROJECTION_YEARS
 
@@ -308,6 +325,13 @@ def _seed_capex_intensity(statements: StatementBundle | None, info: dict) -> flo
         if inc and cf and inc.revenue and cf.capex:
             return abs(cf.capex) / inc.revenue
     return 0.05  # default 5% of revenue
+
+
+def _clamp(x: float | None, lo: float, hi: float) -> float:
+    """Clamp x into [lo, hi]; None falls back to lo."""
+    if x is None:
+        return lo
+    return max(lo, min(hi, x))
 
 
 def _f(info: dict[str, Any], key: str) -> float | None:

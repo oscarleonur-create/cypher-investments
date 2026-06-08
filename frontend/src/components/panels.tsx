@@ -9,7 +9,7 @@ import {
   YAxis,
 } from "recharts";
 import type { ResearchReport } from "@/lib/types";
-import { fmtNum, fmtPct, fmtUsd, pnlColor } from "@/lib/utils";
+import { fmtNum, fmtPct, fmtPriceSafe, fmtUpside, fmtUsd, pnlColor } from "@/lib/utils";
 import { Badge } from "./ui/badge";
 import { KV, Section, Td, Th, ThesisBadge } from "./common";
 
@@ -62,9 +62,9 @@ export function ThesisPanel({ r }: { r: ResearchReport }) {
                 <tr key={s.scenario} className="border-t border-border/40">
                   <Td className="capitalize">{s.scenario}</Td>
                   <Td className="text-right">{fmtPct(s.probability)}</Td>
-                  <Td className="text-right">{s.target_price ? fmtNum(s.target_price) : "—"}</Td>
+                  <Td className="text-right">{fmtPriceSafe(s.target_price)}</Td>
                   <Td className={`text-right ${pnlColor(s.upside_pct)}`}>
-                    {s.upside_pct == null ? "—" : fmtPct(s.upside_pct, { sign: true })}
+                    {fmtUpside(s.upside_pct)}
                   </Td>
                 </tr>
               ))}
@@ -111,6 +111,9 @@ export function ValuationPanel({ r }: { r: ResearchReport }) {
         }))
     : [];
   const peers = m ? [m.subject, ...(m.peers || [])].filter(Boolean) : [];
+  const dcfSane = data.every(
+    (d) => Number.isFinite(d.price) && d.price > 0 && d.price < 1_000_000
+  );
 
   return (
     <Section title="Valuation" empty={!dcf && !m}>
@@ -124,7 +127,7 @@ export function ValuationPanel({ r }: { r: ResearchReport }) {
               <span>Implied growth {fmtPct(dcf.implied_growth_rate)}</span>
             )}
           </div>
-          {data.length > 0 && (
+          {data.length > 0 && dcfSane ? (
             <ResponsiveContainer width="100%" height={180}>
               <BarChart data={data} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
                 <CartesianGrid stroke={grid} vertical={false} />
@@ -143,7 +146,18 @@ export function ValuationPanel({ r }: { r: ResearchReport }) {
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
-          )}
+          ) : data.length > 0 ? (
+            <div className="text-sm text-muted">
+              DCF output is out of plausible range — rebuild research to recompute.
+              <div className="mt-1 flex gap-4">
+                {data.map((d) => (
+                  <span key={d.name} className="capitalize">
+                    {d.name}: {fmtPriceSafe(d.price)} ({fmtUpside(d.upside)})
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </div>
       )}
 
