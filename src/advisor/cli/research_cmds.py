@@ -491,6 +491,88 @@ def research_list(
     console.print(table)
 
 
+@app.command("monitor")
+def research_monitor(
+    symbol: Annotated[str, typer.Argument(help="Ticker symbol")],
+    rebuild: Annotated[
+        bool,
+        typer.Option(
+            "--rebuild/--no-rebuild",
+            help="Re-generate KPI definitions from the thesis (re-runs LLM)",
+        ),
+    ] = False,
+    output: Annotated[Optional[str], typer.Option("--output")] = None,
+) -> None:
+    """Re-check KPI values for a ticker and show thesis health status."""
+    from advisor.research.kpi_tracker import build_thesis_monitor, re_check_kpis
+
+    sym = symbol.upper()
+    console.print(f"[cyan]{'Rebuilding' if rebuild else 'Refreshing'} KPIs for {sym}…[/cyan]")
+
+    if rebuild:
+        from advisor.research.config import get_settings
+        from advisor.research.store import ResearchStore
+
+        report = ResearchStore(get_settings().db_path).load_latest_report(sym)
+        if report is None:
+            output_error(f"No cached report for {sym}. Run: advisor research ticker {sym}")
+            return
+        result = build_thesis_monitor(report)
+        store = ResearchStore(get_settings().db_path)
+        try:
+            store.save_kpi_watchlist(sym, result.kpis)
+            store.save_kpi_check(sym, result)
+        finally:
+            store.close()
+    else:
+        result = re_check_kpis(sym)
+
+    if output == "json":
+        output_json(result.model_dump(mode="json"))
+        return
+
+    _render_monitor(result)
+
+
+@app.command("memo")
+def research_memo(
+    symbol: Annotated[str, typer.Argument(help="Ticker symbol")],
+    account: Annotated[
+        Optional[float],
+        typer.Option("--account", help="Account size in USD (reserved for future dollar sizing)"),
+    ] = None,
+    output: Annotated[Optional[str], typer.Option("--output")] = None,
+) -> None:
+    """Render the IC-format Investment Memo from the cached research report."""
+    from advisor.research.config import get_settings
+    from advisor.research.investment_memo import build_investment_memo
+    from advisor.research.management_quality import build_management_quality
+    from advisor.research.store import ResearchStore
+
+    sym = symbol.upper()
+    report = ResearchStore(get_settings().db_path).load_latest_report(sym)
+    if report is None:
+        output_error(f"No cached report for {sym}. Run: advisor research ticker {sym}")
+        return
+
+    # Compute management quality if not already present
+    if report.management_quality is None and report.ecosystem:
+        report.management_quality = build_management_quality(
+            sym,
+            ratios=report.ratios,
+            holders=report.ecosystem.holders,
+            insiders=report.ecosystem.insiders,
+        )
+
+    memo = build_investment_memo(report, account_size=account)
+
+    if output == "json":
+        output_json(memo.model_dump(mode="json"))
+        return
+
+    _render_memo(memo)
+
+
 @app.command("network")
 def research_network(
     symbol: Annotated[str, typer.Argument(help="Ticker symbol")],
@@ -775,6 +857,166 @@ def _render_catalysts(result) -> None:  # type: ignore[no-untyped-def]
         console.print(risk_table)
     elif not result.catalysts:
         console.print("[dim]No catalyst/risk data found.[/dim]")
+
+
+def _render_monitor(result) -> None:  # type: ignore[no-untyped-def]
+    from rich.panel import Panel
+    from rich.table import Table
+
+    status_color = {"ON_TRACK": "green", "CAUTION": "yellow", "INVALIDATED": "red"}.get(
+        result.thesis_status, "white"
+    )
+    console.print(
+        Panel(
+            f"[{status_color}]{result.thesis_status.replace('_', ' ')}[/{status_color}]",
+            title=f"Thesis Monitor — {result.symbol}",
+            border_style=status_color,
+        )
+    )
+
+    table = Table(title=f"KPI Dashboard  ({result.checked_at:%Y-%m-%d %H:%M})")
+    table.add_column("KPI", min_width=24)
+    table.add_column("Current", justify="right", width=12)
+    table.add_column("Bull ≥", justify="right", width=10)
+    table.add_column("Bear <", justify="right", width=10)
+    table.add_column("Status", width=12)
+
+    for kpi in result.kpis:
+        kpi_color = {
+            "on_track": "green",
+            "caution": "yellow",
+            "breached": "red",
+            "unknown": "dim",
+        }.get(kpi.status.value, "white")
+        table.add_row(
+            kpi.metric_name,
+            _fmt_kpi(kpi.current_value, kpi.unit),
+            _fmt_kpi(kpi.bull_threshold, kpi.unit),
+            _fmt_kpi(kpi.bear_threshold, kpi.unit),
+            f"[{kpi_color}]{kpi.status.value.upper().replace('_', ' ')}[/{kpi_color}]",
+        )
+    console.print(table)
+
+    if result.alerts:
+        console.print("\n[bold]Alerts[/bold]")
+        for alert in result.alerts:
+            is_breach = "breached" in alert.lower() or alert.startswith("⚠")
+            color = "red" if is_breach else "yellow"
+            console.print(f"  [{color}]{alert}[/{color}]")
+
+
+def _fmt_kpi(v: float | None, unit: str) -> str:
+    if v is None:
+        return "—"
+    if unit == "pct":
+        return f"{v:.1%}"
+    if unit in ("x", "ratio"):
+        return f"{v:.2f}x"
+    if unit == "usd":
+        abs_v = abs(v)
+        if abs_v >= 1e9:
+            return f"${v / 1e9:,.2f}B"
+        if abs_v >= 1e6:
+            return f"${v / 1e6:,.1f}M"
+        return f"${v:,.0f}"
+    return f"{v:.3f}"
+
+
+def _render_memo(memo) -> None:  # type: ignore[no-untyped-def]
+    from rich.panel import Panel
+    from rich.table import Table
+
+    conv_color = {"HIGH": "green", "MEDIUM": "yellow", "LOW": "dim"}.get(memo.conviction, "white")
+
+    # Header
+    console.print(
+        Panel(
+            f"[bold cyan]{memo.symbol}[/bold cyan]"
+            + (f" — {memo.company_name}" if memo.company_name != memo.symbol else ""),
+            title="Investment Memo",
+            border_style="cyan",
+        )
+    )
+
+    # §0 Executive Summary
+    if memo.executive_summary:
+        console.print(f"\n[italic]{memo.executive_summary}[/italic]")
+    if memo.key_insight:
+        console.print(f"\n[bold]Edge:[/bold] {memo.key_insight}")
+    if memo.mispricing_type and memo.mispricing_type not in ("none", ""):
+        console.print(
+            f"[dim]Mispricing type: {memo.mispricing_type.replace('_', ' ').title()}[/dim]"
+        )
+
+    # §1 Business Quality
+    console.print(f"\n[bold]Moat:[/bold] {memo.moat_type.replace('_', ' ').title()}")
+    if memo.moat_description:
+        console.print(f"  {memo.moat_description}")
+    if memo.management_quality_score is not None:
+        mq_color = {"HIGH": "green", "MEDIUM": "yellow", "LOW": "red"}.get(
+            memo.management_quality_tier, "white"
+        )
+        mq_label = f"{memo.management_quality_score:.0f}/100 — {memo.management_quality_tier}"
+        console.print(f"[bold]Management Quality:[/bold] [{mq_color}]{mq_label}[/{mq_color}]")
+
+    # §2 Valuation
+    val_table = Table(title="Valuation")
+    val_table.add_column("Scenario", style="cyan")
+    val_table.add_column("Target", justify="right")
+    val_table.add_column("Upside", justify="right")
+    if memo.bear_target:
+        color = "red" if (memo.bear_upside or 0) < 0 else "green"
+        val_table.add_row(
+            "Bear",
+            f"${memo.bear_target:,.2f}",
+            f"[{color}]{memo.bear_upside:+.1%}[/{color}]" if memo.bear_upside is not None else "—",
+        )
+    if memo.base_target:
+        color = "green" if (memo.base_upside or 0) > 0 else "red"
+        val_table.add_row(
+            "Base",
+            f"${memo.base_target:,.2f}",
+            f"[{color}]{memo.base_upside:+.1%}[/{color}]" if memo.base_upside is not None else "—",
+        )
+    if memo.bull_target:
+        val_table.add_row(
+            "Bull",
+            f"${memo.bull_target:,.2f}",
+            f"[green]{memo.bull_upside:+.1%}[/green]" if memo.bull_upside is not None else "—",
+        )
+    if memo.consensus_target:
+        val_table.add_row(
+            f"Consensus ({memo.n_analysts} analysts)",
+            f"${memo.consensus_target:,.2f}",
+            f"{memo.consensus_upside:+.1%}" if memo.consensus_upside is not None else "—",
+        )
+    console.print(val_table)
+
+    # §3 Catalysts
+    if memo.key_catalysts:
+        console.print("\n[bold]Key Catalysts[/bold]")
+        for cat in memo.key_catalysts:
+            console.print(f"  • {cat}")
+
+    # §4 Downside
+    if memo.max_loss_scenario:
+        console.print(f"\n[bold red]Max-Loss Scenario:[/bold red] {memo.max_loss_scenario}")
+
+    # §5 Position Sizing
+    console.print(
+        f"\n[bold]Position Sizing:[/bold] "
+        f"[{conv_color}]{memo.conviction}[/{conv_color}] conviction → "
+        f"[bold]{memo.position_size_pct_low:.1f}%–"
+        f"{memo.position_size_pct_high:.1f}%[/bold] of portfolio"
+    )
+    if memo.sizing_rationale:
+        console.print(f"  [dim]{memo.sizing_rationale}[/dim]")
+
+    # §6 Exit Triggers
+    if memo.exit_triggers:
+        console.print("\n[bold yellow]Exit Triggers[/bold yellow]")
+        for t in memo.exit_triggers:
+            console.print(f"  ⚠  {t}")
 
 
 def _render_network(net) -> None:  # type: ignore[no-untyped-def]

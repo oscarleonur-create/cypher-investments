@@ -33,6 +33,22 @@ CREATE TABLE IF NOT EXISTS research_artifacts (
     fetched_at TEXT DEFAULT (datetime('now')),
     PRIMARY KEY (symbol, kind, key)
 );
+
+CREATE TABLE IF NOT EXISTS kpi_watchlist (
+    symbol TEXT NOT NULL PRIMARY KEY,
+    kpis_json TEXT NOT NULL,    -- JSON array of KpiDefinition
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS kpi_history (
+    symbol TEXT NOT NULL,
+    checked_at TEXT NOT NULL,
+    result_json TEXT NOT NULL,  -- ThesisMonitorResult JSON
+    PRIMARY KEY (symbol, checked_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_kpi_history_symbol
+    ON kpi_history(symbol, checked_at DESC);
 """
 
 
@@ -100,3 +116,58 @@ class ResearchStore:
         if row is None:
             return None
         return row["payload_json"], datetime.fromisoformat(row["fetched_at"])
+
+    # ── KPI watchlist ─────────────────────────────────────────────────────
+
+    def save_kpi_watchlist(self, symbol: str, kpis: list) -> None:
+        import json
+
+        self._conn.execute(
+            "INSERT OR REPLACE INTO kpi_watchlist (symbol, kpis_json, updated_at) "
+            "VALUES (?, ?, ?)",
+            (
+                symbol.upper(),
+                json.dumps([k.model_dump(mode="json") for k in kpis]),
+                datetime.now().isoformat(),
+            ),
+        )
+        self._conn.commit()
+
+    def load_kpi_watchlist(self, symbol: str) -> list | None:
+        import json
+
+        from advisor.research.models import KpiDefinition
+
+        row = self._conn.execute(
+            "SELECT kpis_json FROM kpi_watchlist WHERE symbol = ?",
+            (symbol.upper(),),
+        ).fetchone()
+        if row is None:
+            return None
+        return [KpiDefinition.model_validate(k) for k in json.loads(row["kpis_json"])]
+
+    # ── KPI history ───────────────────────────────────────────────────────
+
+    def save_kpi_check(self, symbol: str, result) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO kpi_history (symbol, checked_at, result_json) "
+            "VALUES (?, ?, ?)",
+            (symbol.upper(), result.checked_at.isoformat(), result.model_dump_json()),
+        )
+        self._conn.commit()
+
+    def load_kpi_history(self, symbol: str, limit: int = 30) -> list:
+        from advisor.research.models import ThesisMonitorResult
+
+        rows = self._conn.execute(
+            "SELECT result_json FROM kpi_history WHERE symbol = ? "
+            "ORDER BY checked_at DESC LIMIT ?",
+            (symbol.upper(), limit),
+        ).fetchall()
+        results = []
+        for row in rows:
+            try:
+                results.append(ThesisMonitorResult.model_validate_json(row["result_json"]))
+            except Exception:  # noqa: BLE001
+                pass
+        return results

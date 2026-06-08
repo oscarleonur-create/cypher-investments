@@ -121,7 +121,7 @@ def build_report(
         )
     report.dcf = dcf
 
-    # ── Layer 3: Ecosystem / Catalysts / Risks ────────────────────────────────
+    # ── Layer 3: Ecosystem / Catalysts / Risks / Management Quality ──────────
     holders = _run(
         f"holders({sym})",
         lambda: __import__(
@@ -165,6 +165,14 @@ def build_report(
         top_suppliers=suppliers,
     )
 
+    report.management_quality = _run(
+        f"management_quality({sym})",
+        lambda: __import__(
+            "advisor.research.management_quality", fromlist=["build_management_quality"]
+        ).build_management_quality(sym, ratios=report.ratios, holders=holders, insiders=insiders),
+        progress,
+    )
+
     catalyst_result: CatalystRiskResult | None = _run(
         f"catalysts({sym})",
         lambda: __import__(
@@ -177,6 +185,15 @@ def build_report(
         lambda: __import__("advisor.research.risks", fromlist=["build_risks"]).build_risks(
             sym, company_name, report.red_flags, catalyst_result
         ),
+        progress,
+    )
+
+    # ── Layer 3.5b: X / Twitter social sentiment ─────────────────────────────
+    report.x_sentiment = _run(
+        f"x_sentiment({sym})",
+        lambda: __import__(
+            "advisor.research.x_sentiment", fromlist=["build_x_sentiment"]
+        ).build_x_sentiment(sym, company_name),
         progress,
     )
 
@@ -255,6 +272,39 @@ def build_report(
         progress,
     )
 
+    # ── Layer 6: KPI Monitor (after thesis so KPIs can reference thesis context)
+    report.kpi_monitor = _run(
+        f"kpi_monitor({sym})",
+        lambda: __import__(
+            "advisor.research.kpi_tracker", fromlist=["build_thesis_monitor"]
+        ).build_thesis_monitor(report),
+        progress,
+    )
+    if report.kpi_monitor is not None:
+        try:
+            _save_kpi_watchlist(sym, report.kpi_monitor.kpis, store)
+            store.save_kpi_check(sym, report.kpi_monitor)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("KPI persistence failed for %s: %s", sym, exc)
+
+    # ── Layer 7: Options flow (live chain data — fast, no AI)
+    report.options_flow = _run(
+        f"options_flow({sym})",
+        lambda: __import__(
+            "advisor.research.options_flow", fromlist=["build_options_flow"]
+        ).build_options_flow(sym),
+        progress,
+    )
+
+    # ── Layer 8: Investment Memo (synthesis — runs last so all layers are ready)
+    report.investment_memo = _run(
+        f"investment_memo({sym})",
+        lambda: __import__(
+            "advisor.research.investment_memo", fromlist=["build_investment_memo"]
+        ).build_investment_memo(report),
+        progress,
+    )
+
     store.save_report(report)
     return report
 
@@ -291,6 +341,10 @@ def _build_statements(symbol: str, n_years: int):  # type: ignore[no-untyped-def
     except Exception:  # noqa: BLE001
         pass
     return extract_statements(symbol, edgar_client=edgar_client, n_years=n_years)
+
+
+def _save_kpi_watchlist(symbol: str, kpis: list, store) -> None:  # type: ignore[no-untyped-def]
+    store.save_kpi_watchlist(symbol, kpis)
 
 
 def _company_meta(symbol: str) -> tuple[str, str, str]:

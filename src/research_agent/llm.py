@@ -72,6 +72,26 @@ class OpenRouterLLM:
 
         return text
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+    def chat(
+        self,
+        system_prompt: str,
+        messages: list[dict],
+    ) -> str:
+        """Multi-turn chat with full message history.
+
+        `messages` is a list of {"role": "user"|"assistant", "content": str} dicts
+        representing the full conversation so far. The system prompt is injected once
+        at the front and is NOT part of `messages`.
+        """
+        response = self._client.chat.completions.create(
+            model=self._config.llm_model,
+            max_tokens=self._config.llm_max_tokens,
+            temperature=0.3,
+            messages=[{"role": "system", "content": system_prompt}, *messages],
+        )
+        return response.choices[0].message.content or ""
+
 
 # ── Prompt templates ─────────────────────────────────────────────────────────
 

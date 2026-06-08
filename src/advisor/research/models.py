@@ -469,8 +469,13 @@ class IndustryAnalysis(BaseModel):
     porters_forces: PortersForces | None = None
     moat_type: MoatType = MoatType.NONE
     moat_description: str = ""
+    moat_strength: float | None = None  # 0–10; 0=none, 5=narrow, 8+=wide
+    competitive_advantages: list[str] = Field(default_factory=list)
+    competitive_position: str = ""  # "leader" | "challenger" | "niche" | "laggard"
     market_share_narrative: str = ""
     key_competitors: list[str] = Field(default_factory=list)
+    sector_tailwinds: list[str] = Field(default_factory=list)
+    sector_headwinds: list[str] = Field(default_factory=list)
     fetched_at: datetime = Field(default_factory=datetime.now)
 
 
@@ -607,6 +612,201 @@ class VariantPerceptionResult(BaseModel):
     fetched_at: datetime = Field(default_factory=datetime.now)
 
 
+# ── KPI Tracker (Phase 6) ─────────────────────────────────────────────────────
+
+
+class KpiStatus(StrEnum):
+    ON_TRACK = "on_track"
+    CAUTION = "caution"
+    BREACHED = "breached"
+    UNKNOWN = "unknown"
+
+
+class KpiDefinition(BaseModel):
+    """One measurable KPI that validates or invalidates the investment thesis."""
+
+    metric_name: str
+    description: str = ""
+    measurement_source: str  # e.g. "yfinance:revenueGrowth" or "ratio:roic"
+    bull_threshold: float | None = None  # above this = bullish signal
+    bear_threshold: float | None = None  # below this = thesis challenged
+    current_value: float | None = None
+    previous_value: float | None = None  # last check, for trend
+    status: KpiStatus = KpiStatus.UNKNOWN
+    checked_at: datetime | None = None
+    unit: str = "ratio"  # "ratio" | "pct" | "usd" | "x" | "days"
+
+
+class ThesisMonitorResult(BaseModel):
+    """Snapshot of all KPIs at a point in time — thesis health dashboard."""
+
+    symbol: str
+    kpis: list[KpiDefinition] = Field(default_factory=list)
+    alerts: list[str] = Field(default_factory=list)  # human-readable breach messages
+    thesis_status: str = "ON_TRACK"  # "ON_TRACK" | "CAUTION" | "INVALIDATED"
+    checked_at: datetime = Field(default_factory=datetime.now)
+
+
+# ── Management Quality (Phase 5) ─────────────────────────────────────────────
+
+
+class ManagementQualityScore(BaseModel):
+    """Capital allocation quality + insider behaviour composite (0–100)."""
+
+    symbol: str
+
+    # Components (each 0–max_points, documented inline)
+    roic_trend: str = "stable"  # "improving" | "stable" | "declining"
+    roic_points: int = 0  # 0–25
+    insider_ownership_pct: float | None = None
+    insider_ownership_points: int = 0  # 0–20
+    c_suite_buying: bool = False
+    c_suite_buying_points: int = 0  # 0–15
+    net_insider_buying: bool = True  # net buying direction
+    net_insider_buying_points: int = 0  # 0–10
+    compensation_risk_score: float | None = None  # ISS 1–10 from yfinance
+    compensation_points: int = 0  # 0–15
+    capital_return_points: int = 0  # 0–15 (buybacks+dividends consistency)
+
+    composite_score: float = 50.0  # 0–100
+    quality_tier: str = "MEDIUM"  # "HIGH" | "MEDIUM" | "LOW"
+
+    fetched_at: datetime = Field(default_factory=datetime.now)
+
+
+# ── Investment Memo (Phase 5) ─────────────────────────────────────────────────
+
+
+class InvestmentMemo(BaseModel):
+    """IC-presentation format — readable in under 90 seconds."""
+
+    symbol: str
+    company_name: str = ""
+    created_at: datetime = Field(default_factory=datetime.now)
+
+    # §0 Executive Summary
+    executive_summary: str = ""
+
+    # §1 Our Edge
+    key_insight: str = ""
+    mispricing_type: str = ""
+
+    # §2 Business Quality
+    moat_type: str = ""
+    moat_description: str = ""
+    management_quality_score: float | None = None
+    management_quality_tier: str = ""
+
+    # §3 Valuation snapshot
+    current_price: float | None = None
+    bear_target: float | None = None
+    base_target: float | None = None
+    bull_target: float | None = None
+    bear_upside: float | None = None
+    base_upside: float | None = None
+    bull_upside: float | None = None
+    consensus_target: float | None = None
+    consensus_upside: float | None = None
+    n_analysts: int = 0
+
+    # §4 Top catalysts
+    key_catalysts: list[str] = Field(default_factory=list)
+
+    # §5 Downside-first
+    max_loss_scenario: str = ""  # LLM: if fully wrong, what happens
+    bear_case_deep_dive: str = ""
+
+    # §6 Position sizing (conviction-based tiers)
+    conviction: str = "MEDIUM"
+    position_size_pct_low: float = 0.0
+    position_size_pct_high: float = 0.0
+    sizing_rationale: str = ""
+
+    # §7 Exit triggers
+    exit_triggers: list[str] = Field(default_factory=list)
+
+
+# ── Options flow (live market data) ──────────────────────────────────────────
+
+
+class UnusualOptionTrade(BaseModel):
+    """Single contract flagged for unusually high volume relative to open interest."""
+
+    contract_symbol: str
+    expiration: str
+    strike: float
+    option_type: str  # "call" | "put"
+    volume: int
+    open_interest: int
+    volume_oi_ratio: float
+    implied_volatility: float
+    last_price: float
+    estimated_premium: float  # volume * last_price * 100 (notional)
+
+
+class OptionsExpirationSummary(BaseModel):
+    """Per-expiration aggregate across all strikes."""
+
+    expiration: str
+    call_volume: int = 0
+    put_volume: int = 0
+    call_oi: int = 0
+    put_oi: int = 0
+    pcr_volume: float | None = None  # put/call ratio by volume
+
+
+class OptionsFlowResult(BaseModel):
+    """Aggregated options market snapshot — pulled live from yfinance."""
+
+    symbol: str
+    current_price: float | None = None
+
+    # Aggregate flow
+    put_call_ratio: float | None = None  # total put vol / total call vol
+    total_call_volume: int = 0
+    total_put_volume: int = 0
+    total_call_oi: int = 0
+    total_put_oi: int = 0
+
+    # Pricing signals
+    max_pain_price: float | None = None  # nearest expiry max-pain strike
+    atm_iv: float | None = None  # avg IV of strikes ±5% of current price
+
+    # Notable flow
+    unusual_activity: list[UnusualOptionTrade] = Field(default_factory=list)
+
+    # Per-expiration breakdown (nearest N expirations)
+    expirations: list[OptionsExpirationSummary] = Field(default_factory=list)
+    nearest_expiry: str = ""
+
+    fetched_at: datetime = Field(default_factory=datetime.now)
+
+
+# ── X / Twitter social sentiment (optional enrichment) ──────────────────────
+
+
+class XPost(BaseModel):
+    """Single X/Twitter post extracted from Tavily search results."""
+
+    text: str
+    sentiment: str = "neutral"  # "bullish" | "bearish" | "neutral"
+    themes: list[str] = Field(default_factory=list)
+    url: str = ""
+
+
+class XSentimentResult(BaseModel):
+    """Aggregated X.com social sentiment for a ticker."""
+
+    symbol: str
+    score: float = 50.0  # 0-100 composite (50 = neutral)
+    positive_pct: float = 50.0  # 0-100
+    top_bullish_themes: list[str] = Field(default_factory=list)
+    top_bearish_themes: list[str] = Field(default_factory=list)
+    key_posts: list[XPost] = Field(default_factory=list)
+    post_count: int = 0
+    as_of: datetime = Field(default_factory=datetime.now)
+
+
 # ── Research report (full Phase 1 + 2 + 3 model) ────────────────────────────
 
 
@@ -657,6 +857,21 @@ class ResearchReport(BaseModel):
     # § Variant Perception (Phase 4)
     consensus: AnalystConsensus | None = None
     variant_perception: VariantPerceptionResult | None = None
+
+    # § Management Quality (Phase 5)
+    management_quality: ManagementQualityScore | None = None
+
+    # § Investment Memo (Phase 5)
+    investment_memo: InvestmentMemo | None = None
+
+    # § X / Twitter social sentiment (optional)
+    x_sentiment: XSentimentResult | None = None
+
+    # § Options flow (live)
+    options_flow: OptionsFlowResult | None = None
+
+    # § KPI Monitor (Phase 6)
+    kpi_monitor: ThesisMonitorResult | None = None
 
     filings: list[FilingRef] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)

@@ -6,14 +6,20 @@ import streamlit as st
 from advisor.dashboard import data, state
 from advisor.dashboard.components.activity import render_activity
 from advisor.dashboard.components.catalysts import render_catalysts
+from advisor.dashboard.components.competitive import render_competitive
 from advisor.dashboard.components.ecosystem import render_ecosystem
 from advisor.dashboard.components.edge import render_edge
 from advisor.dashboard.components.financials import render_financials
 from advisor.dashboard.components.header import render_header
+from advisor.dashboard.components.kpi import render_kpi
+from advisor.dashboard.components.memo import render_memo
 from advisor.dashboard.components.notes import render_notes
+from advisor.dashboard.components.options_flow import render_options_flow
 from advisor.dashboard.components.overview import render_overview
 from advisor.dashboard.components.ratios import render_ratios
+from advisor.dashboard.components.thesis_chat import render_thesis_chat
 from advisor.dashboard.components.valuation import render_valuation
+from advisor.dashboard.components.x_sentiment import render_x_sentiment
 from advisor.dashboard.persistence import get_store
 from advisor.dashboard.theme import apply_page_config
 
@@ -124,6 +130,10 @@ with st.sidebar:
             ("Catalysts", "catalysts"),
             ("Transcripts", "transcripts"),
             ("Edge", "edge"),
+            ("KPIs", "kpi"),
+            ("Memo", "memo"),
+            ("Industry", "industry"),
+            ("Options Flow", "options_flow"),
         ]
         for i, (label, key) in enumerate(layer_buttons):
             col = layer_cols[i % 2]
@@ -275,12 +285,18 @@ else:
     tabs = st.tabs(
         [
             "Overview",
+            "Thesis Builder",
+            "Memo",
             "Edge",
+            "KPI Monitor",
             "Financials",
             "Ratios",
             "Valuation",
             "Ecosystem",
+            "Competitive",
             "Catalysts & Risks",
+            "Options Flow",
+            "Social Sentiment",
             "Notes & Sources",
             "Activity",
         ]
@@ -289,18 +305,30 @@ else:
     with tabs[0]:
         render_overview(report, session_id=session_id)
     with tabs[1]:
-        render_edge(report)
+        render_thesis_chat(report, session_id=session_id)
     with tabs[2]:
-        render_financials(report)
+        render_memo(report)
     with tabs[3]:
-        render_ratios(report)
+        render_edge(report)
     with tabs[4]:
-        render_valuation(report)
+        render_kpi(report)
     with tabs[5]:
-        render_ecosystem(report)
+        render_financials(report)
     with tabs[6]:
-        render_catalysts(report)
+        render_ratios(report)
     with tabs[7]:
-        render_notes(report, session_id)
+        render_valuation(report)
     with tabs[8]:
+        render_ecosystem(report)
+    with tabs[9]:
+        render_competitive(report)
+    with tabs[10]:
+        render_catalysts(report)
+    with tabs[11]:
+        render_options_flow(report)
+    with tabs[12]:
+        render_x_sentiment(report)
+    with tabs[13]:
+        render_notes(report, session_id)
+    with tabs[14]:
         render_activity(session_id, report.symbol)

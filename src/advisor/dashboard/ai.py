@@ -64,6 +64,25 @@ One sentence on the specific data point or event that would flip the verdict.
 Bulleted list of near-term catalysts from the data, with dates."""
 
 
+THESIS_CHAT_SYSTEM_PROMPT = """\
+You are a senior buy-side analyst and investment thesis collaborator.
+
+The user is building or stress-testing an investment thesis for the ticker shown
+in the research data below. Your job is to help them think through the thesis
+rigorously — answer their questions, challenge weak assumptions, surface overlooked
+risks, and help draft thesis sections on demand.
+
+Guidelines:
+- Always ground your answers in the provided research data. Quote specific figures.
+- If the data doesn't cover something, say so clearly rather than guessing.
+- Be direct. One crisp paragraph beats three vague ones.
+- When the user asks you to "draft" something (a bull case, an invalidation clause,
+  a position sizing rationale), produce a concise, investor-ready block of text.
+- Push back on overconfident framing. A good thesis acknowledges its own blind spots.
+
+{context}"""
+
+
 def is_configured() -> bool:
     """Return True if the OpenRouter API key is set in the environment."""
     try:
@@ -99,6 +118,28 @@ def generate_thesis(report: ResearchReport) -> str:
     return cleaned
 
 
+def build_chat_context(report: ResearchReport) -> str:
+    """Build the system prompt for the thesis chat, injecting all available data."""
+    data_block = format_data_block(report)
+    lines = [data_block]
+
+    if report.x_sentiment and report.x_sentiment.post_count > 0:
+        xs = report.x_sentiment
+        lines.append("## X.com / Twitter sentiment")
+        lines.append(
+            f"- Score: {xs.score:.0f}/100 · Positive: {xs.positive_pct:.0f}% · "
+            f"Posts analyzed: {xs.post_count}"
+        )
+        if xs.top_bullish_themes:
+            lines.append("- Bullish themes: " + ", ".join(xs.top_bullish_themes))
+        if xs.top_bearish_themes:
+            lines.append("- Bearish themes: " + ", ".join(xs.top_bearish_themes))
+        lines.append("")
+
+    context = "\n".join(lines)
+    return THESIS_CHAT_SYSTEM_PROMPT.format(context=context)
+
+
 # ── Data digest ─────────────────────────────────────────────────────────────
 
 
@@ -109,15 +150,35 @@ def format_data_block(report: ResearchReport) -> str:
     if report.business_model:
         lines.append(f"Company: {report.business_model}")
     if report.industry:
+        ind = report.industry
         bits = []
-        if report.industry.sector:
-            bits.append(f"sector={report.industry.sector}")
-        if report.industry.industry:
-            bits.append(f"industry={report.industry.industry}")
-        if report.industry.moat_type and report.industry.moat_type.value != "none":
-            bits.append(f"moat={report.industry.moat_type.value}")
+        if ind.sector:
+            bits.append(f"sector={ind.sector}")
+        if ind.industry:
+            bits.append(f"industry={ind.industry}")
+        if ind.moat_type and ind.moat_type.value != "none":
+            bits.append(f"moat={ind.moat_type.value}")
+        if ind.moat_strength is not None:
+            tier = (
+                "wide"
+                if ind.moat_strength >= 7.5
+                else "narrow"
+                if ind.moat_strength >= 4
+                else "none"
+            )
+            bits.append(f"moat_strength={ind.moat_strength:.1f}/10 ({tier})")
+        if ind.competitive_position:
+            bits.append(f"position={ind.competitive_position}")
         if bits:
             lines.append("Industry: " + ", ".join(bits))
+        if ind.competitive_advantages:
+            lines.append("Competitive advantages:")
+            for adv in ind.competitive_advantages:
+                lines.append(f"  - {adv}")
+        if ind.sector_tailwinds:
+            lines.append("Sector tailwinds: " + "; ".join(ind.sector_tailwinds))
+        if ind.sector_headwinds:
+            lines.append("Sector headwinds: " + "; ".join(ind.sector_headwinds))
     lines.append("")
 
     # Market snapshot (from multiples.subject — usually the freshest)

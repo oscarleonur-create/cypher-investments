@@ -36,11 +36,28 @@ _INCOME_MAP: dict[str, list[str]] = {
     "cost_of_revenue": ["Cost Of Revenue", "Cost of Revenue", "Reconciled Cost Of Revenue"],
     "gross_profit": ["Gross Profit"],
     "operating_expenses": ["Operating Expense", "Operating Expenses"],
-    "operating_income": ["Operating Income", "Total Operating Income As Reported"],
-    "interest_expense": ["Interest Expense", "Interest Expense Non Operating"],
-    "pretax_income": ["Pretax Income", "Pre-Tax Income"],
-    "income_tax": ["Tax Provision", "Income Tax Expense"],
-    "net_income": ["Net Income", "Net Income Common Stockholders"],
+    "operating_income": [
+        "Operating Income",
+        "Total Operating Income As Reported",
+        "Operating Income (Loss)",  # EDGAR XBRL label
+    ],
+    "interest_expense": [
+        "Interest Expense",
+        "Interest Expense Non Operating",
+        "InterestExpenseNonoperating",  # EDGAR XBRL label
+    ],
+    "pretax_income": [
+        "Pretax Income",
+        "Pre-Tax Income",
+        # EDGAR XBRL full label
+        "Income (Loss) from Continuing Operations before Income Taxes, Noncontrolling Interest",
+    ],
+    "income_tax": ["Tax Provision", "Income Tax Expense", "Income Tax Expense (Benefit)"],
+    "net_income": [
+        "Net Income",
+        "Net Income Common Stockholders",
+        "Net Income (Loss) Attributable to Parent",  # EDGAR XBRL label
+    ],
     "eps_basic": ["Basic EPS"],
     "eps_diluted": ["Diluted EPS"],
     "shares_basic": ["Basic Average Shares"],
@@ -49,36 +66,83 @@ _INCOME_MAP: dict[str, list[str]] = {
 }
 
 _BALANCE_MAP: dict[str, list[str]] = {
-    "cash_and_equivalents": ["Cash And Cash Equivalents", "Cash"],
+    "cash_and_equivalents": [
+        "Cash And Cash Equivalents",
+        "Cash",
+        "Cash and Cash Equivalents, at Carrying Value",  # EDGAR XBRL label
+    ],
     "short_term_investments": ["Other Short Term Investments", "Short Term Investments"],
-    "accounts_receivable": ["Accounts Receivable", "Receivables"],
-    "inventory": ["Inventory"],
-    "current_assets": ["Current Assets", "Total Current Assets"],
+    "accounts_receivable": [
+        "Accounts Receivable",
+        "Receivables",
+        "Accounts Receivable, after Allowance for Credit Loss, Current",  # EDGAR XBRL label
+    ],
+    "inventory": ["Inventory", "Inventory, Net"],
+    "current_assets": ["Current Assets", "Total Current Assets", "Assets, Current"],
     "goodwill": ["Goodwill"],
     "intangibles": ["Other Intangible Assets", "Intangible Assets"],
-    "total_assets": ["Total Assets"],
-    "accounts_payable": ["Accounts Payable", "Payables"],
-    "short_term_debt": ["Current Debt", "Short Long Term Debt"],
-    "current_liabilities": ["Current Liabilities", "Total Current Liabilities"],
-    "long_term_debt": ["Long Term Debt"],
-    "total_liabilities": ["Total Liabilities Net Minority Interest", "Total Liab"],
+    "total_assets": ["Total Assets", "Assets"],  # EDGAR uses "Assets" for the total
+    "accounts_payable": ["Accounts Payable", "Payables", "Accounts Payable, Current"],
+    "short_term_debt": [
+        "Current Debt",
+        "Short Long Term Debt",
+        "Long-term Debt, Current Maturities",  # EDGAR XBRL label
+    ],
+    "current_liabilities": [
+        "Current Liabilities",
+        "Total Current Liabilities",
+        "Liabilities, Current",
+    ],
+    "long_term_debt": ["Long Term Debt", "Long-term Debt, Excluding Current Maturities"],
+    "total_liabilities": [
+        "Total Liabilities Net Minority Interest",
+        "Total Liab",
+        "Liabilities",  # EDGAR uses "Liabilities" for total
+    ],
     "total_equity": [
         "Stockholders Equity",
         "Total Stockholder Equity",
         "Common Stock Equity",
+        "Stockholders' Equity Attributable to Parent",  # EDGAR XBRL label
     ],
     "shares_outstanding": ["Share Issued", "Ordinary Shares Number"],
 }
 
 _CASHFLOW_MAP: dict[str, list[str]] = {
-    "operating_cash_flow": ["Operating Cash Flow", "Total Cash From Operating Activities"],
-    "capex": ["Capital Expenditure", "Capital Expenditures"],
+    "operating_cash_flow": [
+        "Operating Cash Flow",
+        "Total Cash From Operating Activities",
+        "Net Cash Provided by (Used in) Operating Activities",  # EDGAR XBRL label
+    ],
+    "capex": [
+        "Capital Expenditure",
+        "Capital Expenditures",
+        "Payments to Acquire Property, Plant, and Equipment",  # EDGAR XBRL label
+    ],
     "free_cash_flow": ["Free Cash Flow"],
-    "investing_cash_flow": ["Investing Cash Flow", "Total Cashflows From Investing Activities"],
-    "financing_cash_flow": ["Financing Cash Flow", "Total Cash From Financing Activities"],
+    "investing_cash_flow": [
+        "Investing Cash Flow",
+        "Total Cashflows From Investing Activities",
+        "Net Cash Provided by (Used in) Investing Activities",  # EDGAR XBRL label
+    ],
+    "financing_cash_flow": [
+        "Financing Cash Flow",
+        "Total Cash From Financing Activities",
+        "Net Cash Provided by (Used in) Financing Activities",  # EDGAR XBRL label
+    ],
     "dividends_paid": ["Cash Dividends Paid", "Dividends Paid"],
-    "share_repurchases": ["Repurchase Of Capital Stock", "Common Stock Repurchase"],
-    "net_change_in_cash": ["Changes In Cash", "Change In Cash"],
+    "share_repurchases": [
+        "Repurchase Of Capital Stock",
+        "Common Stock Repurchase",
+        "Payment, Tax Withholding, Share-based Payment Arrangement",  # EDGAR XBRL label
+    ],
+    "net_change_in_cash": [
+        "Changes In Cash",
+        "Change In Cash",
+        # EDGAR XBRL full label
+        "Cash, Cash Equivalents, Restricted Cash and Restricted Cash Equivalents, "
+        "Period Increase (Decrease), Including Exchange Rate Effect",
+    ],
 }
 
 

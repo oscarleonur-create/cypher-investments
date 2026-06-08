@@ -206,6 +206,47 @@ def refresh_layer(
             industry=report.industry,
         )
 
+    elif layer == "memo":
+        from advisor.research.investment_memo import build_investment_memo
+        from advisor.research.management_quality import build_management_quality
+
+        holders = report.ecosystem.holders if report.ecosystem else None
+        insiders = report.ecosystem.insiders if report.ecosystem else None
+        report.management_quality = build_management_quality(
+            sym, ratios=report.ratios, holders=holders, insiders=insiders
+        )
+        report.investment_memo = build_investment_memo(report)
+
+    elif layer == "kpi":
+        from advisor.research.kpi_tracker import build_thesis_monitor
+
+        report.kpi_monitor = build_thesis_monitor(report)
+        store = ResearchStore(get_settings().db_path)
+        try:
+            store.save_kpi_watchlist(sym, report.kpi_monitor.kpis)
+            store.save_kpi_check(sym, report.kpi_monitor)
+        finally:
+            store.close()
+
+    elif layer == "options_flow":
+        from advisor.research.options_flow import build_options_flow
+
+        report.options_flow = build_options_flow(sym)
+
+    elif layer == "industry":
+        import yfinance as yf
+
+        from advisor.research.industry import build_industry
+
+        info = yf.Ticker(sym).info
+        existing = report.industry
+        report.industry = build_industry(
+            sym,
+            company_name=report.business_model or sym,
+            sector=info.get("sector", existing.sector if existing else ""),
+            industry=info.get("industry", existing.industry if existing else ""),
+        )
+
     else:
         raise ValueError(f"Unknown layer: {layer}")
 

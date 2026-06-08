@@ -127,9 +127,8 @@ def _render_consensus_vs_dcf(report: ResearchReport) -> None:
             delta_color="normal",
         )
     else:
-        cols[0].metric(
-            "Consensus target", cn.target_price_mean and f"${cn.target_price_mean:,.2f}" or "—"
-        )
+        mean = cn.target_price_mean if cn else None
+        cols[0].metric("Consensus target", f"${mean:,.2f}" if mean else "—")
 
     if our_base and current:
         our_upside = (our_base / current) - 1

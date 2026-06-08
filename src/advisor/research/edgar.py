@@ -129,11 +129,10 @@ class EdgarClient:
         from edgar import Company
 
         company = Company(symbol.upper())
-        financials = company.financials  # edgartools Financials helper
-
-        income = _frame_to_records(getattr(financials, "income_statement", None))
-        balance = _frame_to_records(getattr(financials, "balance_sheet", None))
-        cashflow = _frame_to_records(getattr(financials, "cashflow_statement", None))
+        # edgartools ≥ 3.x removed .financials; each statement is now a method
+        income = _frame_to_records(_call_statement(company, "income_statement"))
+        balance = _frame_to_records(_call_statement(company, "balance_sheet"))
+        cashflow = _frame_to_records(_call_statement(company, "cashflow_statement"))
 
         # Trim to requested year count (most-recent first)
         payload = {
@@ -161,19 +160,79 @@ def _filing_to_ref(f: Any, form: FormType) -> FilingRef:
     )
 
 
+def _call_statement(company: Any, method: str) -> Any:
+    """Call a statement method/property on a Company, returning None on failure."""
+    attr = getattr(company, method, None)
+    if attr is None:
+        return None
+    return attr() if callable(attr) else attr
+
+
 def _frame_to_records(frame: Any) -> list[dict[str, Any]]:
-    """Convert an edgartools statement frame (DataFrame-like) to list[dict]."""
+    """Convert an edgartools statement (old or new API) to list[period-dicts].
+
+    New API (edgartools ≥ 3): MultiPeriodStatement with .to_dataframe() that
+    has concept-indexed rows, a 'label' column with human-readable names, and
+    one column per fiscal period ("FY 2025", "Q1 2024", …).
+
+    Old API: DataFrame-like with .data where columns are period end-dates and
+    rows are line items.
+    """
+    import re
+
     if frame is None:
         return []
-    # edgartools returns a wrapper with `.data` (DataFrame) or behaves DataFrame-like
+
+    # ── New edgartools API: MultiPeriodStatement ──────────────────────────────
+    if hasattr(frame, "to_dataframe"):
+        try:
+            df = frame.to_dataframe()
+            period_cols = [c for c in df.columns if re.match(r"(FY|Q[1-4])\s+\d{4}", str(c))]
+            if not period_cols:
+                return []
+            records = []
+            for col in period_cols:
+                row: dict[str, Any] = {"index": _fy_label_to_date(col)}
+                for concept, data_row in df.iterrows():
+                    label = data_row.get("label", concept)
+                    val = data_row.get(col)
+                    if label and label == label:  # skip NaN labels
+                        row[str(label)] = val
+                records.append(row)
+            return records
+        except Exception:  # noqa: BLE001
+            return []
+
+    # ── Old API: DataFrame-like with .data ────────────────────────────────────
     df = getattr(frame, "data", frame)
     if df is None or not hasattr(df, "to_dict"):
         return []
-    # Periods are columns; transpose so each row is a period
     try:
         return df.T.reset_index().to_dict(orient="records")
     except Exception:  # noqa: BLE001
         return df.to_dict(orient="records") if hasattr(df, "to_dict") else []
+
+
+def _fy_label_to_date(label: str) -> date:
+    """Convert an edgartools period label to an approximate period-end date.
+
+    "FY 2025"  → 2025-12-31
+    "Q1 2025"  → 2025-03-31
+    "Q2 2025"  → 2025-06-30
+    "Q3 2025"  → 2025-09-30
+    "Q4 2025"  → 2025-12-31
+    """
+    import re
+
+    m = re.match(r"(FY|Q([1-4]))\s+(\d{4})", label)
+    if not m:
+        return date.today()
+    year = int(m.group(3))
+    if m.group(1) == "FY" or m.group(2) == "4":
+        return date(year, 12, 31)
+    quarter_end = {"1": (3, 31), "2": (6, 30), "3": (9, 30)}
+    mo, dy = quarter_end[m.group(2)]
+    return date(year, mo, dy)
 
 
 def _coerce_date(value: Any) -> date | None:
