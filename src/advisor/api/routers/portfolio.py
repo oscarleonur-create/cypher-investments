@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from advisor.api import deps
+from advisor.research.models import BayesianOverrides
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
@@ -158,3 +159,60 @@ async def refresh_review(rebuild_uncovered: bool = False, catalysts: bool = True
 
     asyncio.create_task(asyncio.to_thread(_run))
     return {"job_id": job_id}
+
+
+# ── Bayesian fair-value (what-if sliders) ────────────────────────────────────────
+
+
+@router.get("/bayesian/{symbol}")
+async def bayesian(symbol: str) -> dict:
+    """Return the cached baseline Bayesian posterior for a held symbol.
+
+    The baseline is computed during the portfolio review, so only reviewed
+    holdings have one — non-held tickers get a 404 the UI renders as empty.
+    """
+    from advisor.research.models import BayesianPriceResult
+    from advisor.research.store import ResearchStore
+
+    sym = symbol.upper()
+    store = ResearchStore(deps.db_path())
+    try:
+        loaded = store.load_artifact(sym, "bayesian", "latest")
+    finally:
+        store.close()
+
+    if loaded is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No Bayesian pricing for {sym}. Run the portfolio review to compute it.",
+        )
+    payload_json, fetched_at = loaded
+    result = BayesianPriceResult.model_validate_json(payload_json)
+    return {"result": result.model_dump(mode="json"), "fetched_at": fetched_at.isoformat()}
+
+
+@router.post("/bayesian/{symbol}")
+async def recompute_bayesian_endpoint(symbol: str, overrides: BayesianOverrides) -> dict:
+    """Recompute the posterior under user slider overrides (pure-compute, fast)."""
+    from advisor.research.store import ResearchStore
+    from advisor.research.valuation.bayesian import recompute_bayesian
+
+    sym = symbol.upper()
+    store = ResearchStore(deps.db_path())
+    try:
+        # Gate to reviewed holdings: a stored baseline means it went through the
+        # portfolio review. Avoids a TastyTrade round-trip on every slider move.
+        if store.load_artifact(sym, "bayesian", "latest") is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"{sym} is not a reviewed holding. Run the portfolio review first.",
+            )
+        report = store.load_latest_report(sym)
+    finally:
+        store.close()
+
+    if report is None:
+        raise HTTPException(status_code=404, detail=f"No cached research for {sym}.")
+
+    result = recompute_bayesian(report, overrides)
+    return {"result": result.model_dump(mode="json")}

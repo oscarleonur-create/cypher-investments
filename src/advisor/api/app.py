@@ -14,7 +14,7 @@ _FRONTEND_DIST = _REPO_ROOT / "frontend" / "dist"
 
 
 def create_app() -> FastAPI:
-    from advisor.api.routers import portfolio, research
+    from advisor.api.routers import agent, portfolio, research, watchlist
     from advisor.api.ws import router as ws_router
 
     app = FastAPI(title="Advisor — Investment Frontend", version="0.1.0")
@@ -33,6 +33,8 @@ def create_app() -> FastAPI:
 
     app.include_router(portfolio.router)
     app.include_router(research.router)
+    app.include_router(agent.router)
+    app.include_router(watchlist.router)
     app.include_router(ws_router)
 
     _mount_spa(app)

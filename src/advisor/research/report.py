@@ -231,6 +231,16 @@ def build_report(
         progress,
     )
 
+    # Consolidated fair value (DCF + multiples + Bayesian + consensus). Pure
+    # compute, so it survives even when the LLM-backed layers fail.
+    report.fair_price = _run(
+        f"fair_price({sym})",
+        lambda: __import__(
+            "advisor.research.valuation.fair_price", fromlist=["build_fair_price"]
+        ).build_fair_price(report),
+        progress,
+    )
+
     vp: VariantPerceptionResult | None = _run(
         f"variant_perception({sym})",
         lambda: __import__(
@@ -298,6 +308,15 @@ def build_report(
 
     # ── Layer 7.5: Filing index (so the report can link/read full filings) ───
     report.filings = _run(f"filings({sym})", lambda: _list_filings(sym, n_years), progress) or []
+
+    # ── Layer 7.6: Deep Research (white-paper, cited brief — SEC + news + web) ─
+    report.deep_research = _run(
+        f"deep_research({sym})",
+        lambda: __import__(
+            "advisor.research.deep_research", fromlist=["build_deep_research"]
+        ).build_deep_research(sym, company_name, sector, industry, report.filings),
+        progress,
+    )
 
     # ── Layer 8: Investment Memo (synthesis — runs last so all layers are ready)
     report.investment_memo = _run(

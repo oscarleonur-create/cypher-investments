@@ -49,6 +49,25 @@ CREATE TABLE IF NOT EXISTS kpi_history (
 
 CREATE INDEX IF NOT EXISTS idx_kpi_history_symbol
     ON kpi_history(symbol, checked_at DESC);
+
+CREATE TABLE IF NOT EXISTS agent_conversations (
+    id TEXT NOT NULL PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    messages_json TEXT NOT NULL DEFAULT '[]',  -- JSON array of {role, content, tools?}
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_conversations_symbol
+    ON agent_conversations(symbol, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS watchlist (
+    symbol TEXT NOT NULL PRIMARY KEY,
+    note TEXT NOT NULL DEFAULT '',
+    added_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
 """
 
 
@@ -171,3 +190,103 @@ class ResearchStore:
             except Exception:  # noqa: BLE001
                 pass
         return results
+
+    # ── Agent conversations ───────────────────────────────────────────────
+
+    def create_conversation(self, symbol: str, title: str = "") -> str:
+        import uuid
+
+        conv_id = uuid.uuid4().hex[:12]
+        now = datetime.now().isoformat()
+        self._conn.execute(
+            "INSERT INTO agent_conversations "
+            "(id, symbol, title, messages_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, '[]', ?, ?)",
+            (conv_id, symbol.upper(), title[:120], now, now),
+        )
+        self._conn.commit()
+        return conv_id
+
+    def append_messages(self, conversation_id: str, messages: list[dict]) -> None:
+        """Append visible transcript turns to a conversation."""
+        import json
+
+        row = self._conn.execute(
+            "SELECT messages_json FROM agent_conversations WHERE id = ?",
+            (conversation_id,),
+        ).fetchone()
+        if row is None:
+            return
+        existing = json.loads(row["messages_json"])
+        existing.extend(messages)
+        self._conn.execute(
+            "UPDATE agent_conversations SET messages_json = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(existing), datetime.now().isoformat(), conversation_id),
+        )
+        self._conn.commit()
+
+    def list_conversations(self, symbol: str, limit: int = 50) -> list[dict]:
+        import json
+
+        rows = self._conn.execute(
+            "SELECT id, title, created_at, updated_at, messages_json "
+            "FROM agent_conversations WHERE symbol = ? ORDER BY updated_at DESC LIMIT ?",
+            (symbol.upper(), limit),
+        ).fetchall()
+        out = []
+        for r in rows:
+            try:
+                n = len(json.loads(r["messages_json"]))
+            except Exception:  # noqa: BLE001
+                n = 0
+            out.append(
+                {
+                    "id": r["id"],
+                    "title": r["title"],
+                    "created_at": r["created_at"],
+                    "updated_at": r["updated_at"],
+                    "message_count": n,
+                }
+            )
+        return out
+
+    def load_conversation(self, conversation_id: str) -> dict | None:
+        import json
+
+        row = self._conn.execute(
+            "SELECT id, symbol, title, messages_json, created_at, updated_at "
+            "FROM agent_conversations WHERE id = ?",
+            (conversation_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "symbol": row["symbol"],
+            "title": row["title"],
+            "messages": json.loads(row["messages_json"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    # ── Watchlist ─────────────────────────────────────────────────────────
+
+    def add_to_watchlist(self, symbol: str, note: str = "") -> None:
+        now = datetime.now().isoformat()
+        self._conn.execute(
+            "INSERT INTO watchlist (symbol, note, added_at, updated_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(symbol) DO UPDATE SET note=excluded.note, updated_at=excluded.updated_at",
+            (symbol.upper(), note, now, now),
+        )
+        self._conn.commit()
+
+    def remove_from_watchlist(self, symbol: str) -> None:
+        self._conn.execute("DELETE FROM watchlist WHERE symbol = ?", (symbol.upper(),))
+        self._conn.commit()
+
+    def load_watchlist(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT symbol, note, added_at, updated_at FROM watchlist ORDER BY added_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]

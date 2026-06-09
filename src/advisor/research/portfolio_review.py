@@ -179,6 +179,15 @@ def _review_symbol(
             if report.dcf is not None and report.dcf.base is not None:
                 review.base_target = report.dcf.base.implied_price
                 review.base_upside = report.dcf.base.upside_pct
+                # Compute + cache the baseline Bayesian posterior so the ticker
+                # page's what-if panel has a stored starting point per holding.
+                try:
+                    from advisor.research.valuation.bayesian import build_bayesian_pricing
+
+                    result = build_bayesian_pricing(report)
+                    store.save_artifact(symbol, "bayesian", "latest", result.model_dump_json())
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Bayesian pricing failed for %s: %s", symbol, exc)
 
         # Thesis health
         try:

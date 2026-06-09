@@ -10,7 +10,12 @@ from __future__ import annotations
 import logging
 from datetime import date
 
-from advisor.research.models import TranscriptAnalysis, TranscriptSummary, TranscriptTone
+from advisor.research.models import (
+    TranscriptAnalysis,
+    TranscriptSource,
+    TranscriptSummary,
+    TranscriptTone,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -18,18 +23,21 @@ logger = logging.getLogger(__name__)
 def build_transcripts(symbol: str, company_name: str = "") -> TranscriptAnalysis:
     """Return TranscriptAnalysis for the last 4 reported quarters."""
     name = company_name or symbol
-    summaries, trend = _fetch_and_analyse(symbol, name)
+    summaries, trend, sources = _fetch_and_analyse(symbol, name)
     return TranscriptAnalysis(
         symbol=symbol.upper(),
         summaries=summaries,
         tone_trend=trend,
+        sources=sources,
     )
 
 
 # ── LLM extraction ───────────────────────────────────────────────────────────
 
 
-def _fetch_and_analyse(symbol: str, name: str) -> tuple[list[TranscriptSummary], str]:
+def _fetch_and_analyse(
+    symbol: str, name: str
+) -> tuple[list[TranscriptSummary], str, list[TranscriptSource]]:
     try:
         from pydantic import BaseModel
         from research_agent.config import ResearchConfig
@@ -39,7 +47,7 @@ def _fetch_and_analyse(symbol: str, name: str) -> tuple[list[TranscriptSummary],
 
         config = ResearchConfig()
         if not config.openrouter_api_key or not config.tavily_api_key:
-            return [], ""
+            return [], "", []
 
         store = Store(config.db_path)
         searcher = TavilyClient(config, store)
@@ -55,9 +63,16 @@ def _fetch_and_analyse(symbol: str, name: str) -> tuple[list[TranscriptSummary],
         )
         results = searcher.search(query, max_results=8)
         if not results:
-            return [], ""
+            return [], "", []
 
-        context = "\n\n".join(f"[{r.title}]\n{r.content[:800]}" for r in results[:6])
+        # Number sources so the LLM can cite the one each quarter draws from by
+        # index — we map index → URL ourselves rather than trust an LLM-emitted
+        # URL (which it tends to hallucinate).
+        used = results[:6]
+        sources = [TranscriptSource(url=r.url, title=r.title) for r in used if r.url]
+        context = "\n\n".join(
+            f"[{i}] {r.title}\n{r.url}\n{r.content[:800]}" for i, r in enumerate(used)
+        )
 
         class QuarterOut(BaseModel):
             quarter: str
@@ -67,6 +82,7 @@ def _fetch_and_analyse(symbol: str, name: str) -> tuple[list[TranscriptSummary],
             management_guidance: str
             analyst_concerns: str
             highlight_quote: str
+            source_index: int  # index of the source [n] this quarter is based on
 
         class TranscriptOut(BaseModel):
             quarters: list[QuarterOut]
@@ -83,7 +99,9 @@ def _fetch_and_analyse(symbol: str, name: str) -> tuple[list[TranscriptSummary],
                 "ones are present. Each quarter must include an `earnings_date` "
                 "in ISO format (YYYY-MM-DD) when the source mentions a date. "
                 "tone must be: bullish, neutral, or bearish. key_topics: 3-5 "
-                "bullet strings. Base everything on the provided text."
+                "bullet strings. `source_index` must be the [n] number of the "
+                "source this quarter's summary is primarily drawn from. Base "
+                "everything on the provided text."
             ),
             user_prompt=f"Company: {name} ({symbol})\n\n{context}",
             response_model=TranscriptOut,
@@ -96,6 +114,9 @@ def _fetch_and_analyse(symbol: str, name: str) -> tuple[list[TranscriptSummary],
                 tone = TranscriptTone(tone_str)
             except ValueError:
                 tone = TranscriptTone.NEUTRAL
+            source_url = ""
+            if 0 <= q.source_index < len(used):
+                source_url = used[q.source_index].url
             summaries.append(
                 TranscriptSummary(
                     quarter=q.quarter,
@@ -105,11 +126,12 @@ def _fetch_and_analyse(symbol: str, name: str) -> tuple[list[TranscriptSummary],
                     management_guidance=q.management_guidance,
                     analyst_concerns=q.analyst_concerns,
                     highlight_quote=q.highlight_quote,
+                    source_url=source_url,
                 )
             )
 
-        return summaries, out.tone_trend
+        return summaries, out.tone_trend, sources
 
     except Exception as exc:  # noqa: BLE001
         logger.warning("Transcript analysis failed for %s: %s", symbol, exc)
-        return [], ""
+        return [], "", []
