@@ -68,6 +68,24 @@ CREATE TABLE IF NOT EXISTS watchlist (
     added_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS theses (
+    id TEXT NOT NULL PRIMARY KEY,             -- uuid4().hex[:12]
+    symbol TEXT NOT NULL DEFAULT '',          -- '' = thematic (no ticker)
+    title TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '',         -- markdown body
+    tags_json TEXT NOT NULL DEFAULT '[]',     -- JSON array of strings
+    conviction TEXT NOT NULL DEFAULT 'MEDIUM',-- HIGH | MEDIUM | LOW
+    status TEXT NOT NULL DEFAULT 'DRAFT',     -- DRAFT | ACTIVE | ARCHIVED
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_theses_symbol
+    ON theses(symbol, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_theses_updated
+    ON theses(updated_at DESC);
 """
 
 
@@ -290,3 +308,85 @@ class ResearchStore:
             "SELECT symbol, note, added_at, updated_at FROM watchlist ORDER BY added_at DESC"
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # ── Theses ────────────────────────────────────────────────────────────
+
+    def list_theses(self, symbol: str | None = None) -> list[dict]:
+        """Metadata rows (no markdown body) for list views, newest first."""
+        cols = "id, symbol, title, tags_json, conviction, status, created_at, updated_at"
+        if symbol:
+            rows = self._conn.execute(
+                f"SELECT {cols} FROM theses WHERE symbol = ? ORDER BY updated_at DESC",
+                (symbol.upper(),),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                f"SELECT {cols} FROM theses ORDER BY updated_at DESC"
+            ).fetchall()
+        return [self._thesis_row(r, include_content=False) for r in rows]
+
+    def get_thesis(self, thesis_id: str) -> dict | None:
+        row = self._conn.execute("SELECT * FROM theses WHERE id = ?", (thesis_id,)).fetchone()
+        return self._thesis_row(row, include_content=True) if row else None
+
+    def save_thesis(
+        self,
+        *,
+        thesis_id: str | None = None,
+        symbol: str = "",
+        title: str = "",
+        content: str = "",
+        tags: list[str] | None = None,
+        conviction: str = "MEDIUM",
+        status: str = "DRAFT",
+    ) -> dict:
+        """Create (no id) or update (existing id) a thesis; returns the saved row.
+
+        ``created_at`` is preserved on update; ``updated_at`` always advances.
+        """
+        import json
+        import uuid
+
+        now = datetime.now().isoformat()
+        tags_json = json.dumps(tags or [])
+        sym = (symbol or "").strip().upper()
+        if thesis_id:
+            self._conn.execute(
+                "UPDATE theses SET symbol=?, title=?, content=?, tags_json=?, "
+                "conviction=?, status=?, updated_at=? WHERE id=?",
+                (sym, title, content, tags_json, conviction, status, now, thesis_id),
+            )
+        else:
+            thesis_id = uuid.uuid4().hex[:12]
+            self._conn.execute(
+                "INSERT INTO theses (id, symbol, title, content, tags_json, "
+                "conviction, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (thesis_id, sym, title, content, tags_json, conviction, status, now, now),
+            )
+        self._conn.commit()
+        saved = self.get_thesis(thesis_id)
+        assert saved is not None  # just written
+        return saved
+
+    def delete_thesis(self, thesis_id: str) -> None:
+        self._conn.execute("DELETE FROM theses WHERE id = ?", (thesis_id,))
+        self._conn.commit()
+
+    @staticmethod
+    def _thesis_row(row, *, include_content: bool) -> dict:
+        import json
+
+        out = {
+            "id": row["id"],
+            "symbol": row["symbol"],
+            "title": row["title"],
+            "tags": json.loads(row["tags_json"]),
+            "conviction": row["conviction"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+        if include_content:
+            out["content"] = row["content"]
+        return out

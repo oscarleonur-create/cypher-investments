@@ -9,6 +9,9 @@ import type {
   PortfolioReview,
   PriceHistoryResult,
   ResearchReport,
+  Thesis,
+  ThesisInput,
+  ThesisSummary,
   WatchlistResponse,
 } from "./types";
 
@@ -26,6 +29,19 @@ async function post<T>(url: string, body?: unknown): Promise<T> {
     method: "POST",
     headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail || `${res.status} ${res.statusText}`);
+  }
+  return res.json();
+}
+
+async function put<T>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}));
@@ -68,6 +84,15 @@ export const api = {
     post<{ symbol: string; job_id: string }>("/api/watchlist", { symbol, note }),
   removeWatchlist: (symbol: string) =>
     del<{ symbol: string; removed: boolean }>(`/api/watchlist/${symbol}`),
+  theses: (symbol?: string) =>
+    get<{ theses: ThesisSummary[] }>(
+      symbol ? `/api/theses?symbol=${encodeURIComponent(symbol)}` : "/api/theses"
+    ),
+  thesis: (id: string) => get<Thesis>(`/api/theses/${id}`),
+  createThesis: (body: ThesisInput) => post<Thesis>("/api/theses", body),
+  updateThesis: (id: string, body: ThesisInput) => put<Thesis>(`/api/theses/${id}`, body),
+  deleteThesis: (id: string) =>
+    del<{ id: string; removed: boolean }>(`/api/theses/${id}`),
 };
 
 /**
