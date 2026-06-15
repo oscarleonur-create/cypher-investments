@@ -330,6 +330,38 @@ export interface WatchlistResponse {
   watchlist: WatchlistItem[];
 }
 
+// ── Investment theses (long-form research write-ups) ──────────────────────────
+
+export type Conviction = "HIGH" | "MEDIUM" | "LOW";
+export type ThesisStatus = "DRAFT" | "ACTIVE" | "ARCHIVED";
+
+// List-row shape (GET /api/theses) — no markdown body.
+export interface ThesisSummary {
+  id: string;
+  symbol: string; // "" = thematic
+  title: string;
+  tags: string[];
+  conviction: Conviction;
+  status: ThesisStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+// Full document (GET /api/theses/:id) — includes the markdown body.
+export interface Thesis extends ThesisSummary {
+  content: string;
+}
+
+// Body for create/update (POST/PUT /api/theses).
+export interface ThesisInput {
+  symbol: string;
+  title: string;
+  content: string;
+  tags: string[];
+  conviction: Conviction;
+  status: ThesisStatus;
+}
+
 // ── Research agent (interactive chat) ─────────────────────────────────────────
 
 // One SSE event streamed from POST /api/research/:symbol/chat.

@@ -2,6 +2,8 @@ import { Link, NavLink, Route, Routes } from "react-router-dom";
 import { LineChart } from "lucide-react";
 import Portfolio from "./pages/Portfolio";
 import Ticker from "./pages/Ticker";
+import Theses from "./pages/Theses";
+import ThesisEditor from "./pages/ThesisEditor";
 import Watchlist from "./pages/Watchlist";
 import { useQuotes } from "./lib/useQuotes";
 import { cn } from "./lib/utils";
@@ -32,6 +34,9 @@ export default function App() {
               <NavLink to="/watchlist" className={tabClass}>
                 Watchlist
               </NavLink>
+              <NavLink to="/theses" className={tabClass}>
+                Theses
+              </NavLink>
             </nav>
           </div>
           <div className="flex items-center gap-2 text-xs">
@@ -51,6 +56,9 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Portfolio quotes={quotes} />} />
           <Route path="/watchlist" element={<Watchlist quotes={quotes} />} />
+          <Route path="/theses" element={<Theses />} />
+          <Route path="/theses/new" element={<ThesisEditor />} />
+          <Route path="/theses/:id" element={<ThesisEditor />} />
           <Route path="/ticker/:symbol" element={<Ticker quotes={quotes} />} />
         </Routes>
       </main>

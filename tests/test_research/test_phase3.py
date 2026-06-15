@@ -279,11 +279,19 @@ def test_build_report_cache_round_trip(tmp_path: Path):
 
     db = tmp_path / "research.db"
 
+    # Blank the research-agent API keys so every Tavily/LLM-backed layer hits its
+    # offline guard and returns empty — same path keyless CI takes. Without this,
+    # a developer machine with real keys in .env makes live LLM calls here and hangs.
+    from research_agent.config import ResearchConfig
+
+    offline_cfg = ResearchConfig(openrouter_api_key="", tavily_api_key="")
+
     # Patch every expensive layer so the test runs offline and fast
     with (
         patch("advisor.research.report._build_statements", return_value=None),
         patch("advisor.research.report._company_meta", return_value=("FakeCo", "Tech", "SW")),
         patch("advisor.research.config.get_settings") as mock_settings,
+        patch("research_agent.config.ResearchConfig", return_value=offline_cfg),
     ):
         mock_settings.return_value.db_path = db
         report = build_report("FAKE", n_years=1, force_refresh=True)
