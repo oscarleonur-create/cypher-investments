@@ -6,8 +6,10 @@ import type {
   ConversationSummary,
   HoldingsResponse,
   Job,
+  MarketContext,
   PortfolioReview,
   PriceHistoryResult,
+  RotationResponse,
   ResearchReport,
   Thesis,
   ThesisInput,
@@ -65,6 +67,8 @@ export const api = {
     get<{ review: PortfolioReview | null; fetched_at: string | null }>("/api/portfolio/review"),
   refreshReview: (rebuild = false) =>
     post<{ job_id: string }>(`/api/portfolio/review/refresh?rebuild_uncovered=${rebuild}`),
+  market: () => get<MarketContext>("/api/portfolio/market"),
+  rotation: () => get<RotationResponse>("/api/portfolio/rotation"),
   research: (symbol: string) => get<ResearchReport>(`/api/research/${symbol}`),
   priceHistory: (symbol: string) =>
     get<{ result: PriceHistoryResult; fetched_at: string }>(
