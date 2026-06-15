@@ -41,6 +41,51 @@ async def get_report(symbol: str) -> dict:
     return report.model_dump(mode="json")
 
 
+@router.get("/research/{symbol}/price-history")
+async def get_price_history(symbol: str) -> dict:
+    """Daily price series + fundamentals overlay for the ticker chart.
+
+    Cached as a research artifact and refetched from yfinance only when the
+    cached copy is older than 12h, so range-tab switching (done client-side)
+    and revisits are instant.
+    """
+    import asyncio
+    from datetime import datetime, timedelta
+
+    from advisor.research.models import PriceHistoryResult
+    from advisor.research.price_history import build_price_history
+    from advisor.research.store import ResearchStore
+
+    sym = symbol.upper()
+    store = ResearchStore(deps.db_path())
+    try:
+        cached = store.load_artifact(sym, "price_history", "daily")
+        if cached is not None:
+            payload_json, fetched_at = cached
+            if datetime.now() - fetched_at < timedelta(hours=12):
+                result = PriceHistoryResult.model_validate_json(payload_json)
+                return {
+                    "result": result.model_dump(mode="json"),
+                    "fetched_at": fetched_at.isoformat(),
+                }
+
+        report = store.load_latest_report(sym)
+        if report is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No cached research for {sym}. Rebuild it from the ticker page.",
+            )
+        # yfinance download is blocking I/O — keep the event loop free.
+        result = await asyncio.to_thread(build_price_history, sym, report)
+        store.save_artifact(sym, "price_history", "daily", result.model_dump_json())
+        return {
+            "result": result.model_dump(mode="json"),
+            "fetched_at": result.fetched_at.isoformat(),
+        }
+    finally:
+        store.close()
+
+
 @router.post("/research/{symbol}/refresh")
 async def refresh_report(symbol: str) -> dict:
     """Rebuild the full 7-layer report in the background; poll the returned job id."""

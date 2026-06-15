@@ -6,7 +6,7 @@ import { api } from "@/lib/api";
 import type { Holding, HoldingsResponse } from "@/lib/types";
 import type { QuotesState } from "@/lib/useQuotes";
 import { useJob } from "@/lib/useJob";
-import { cn, fmtMoney, fmtNum, fmtPct, fmtUsd, pnlColor } from "@/lib/utils";
+import { cn, fmtMoney, fmtNum, fmtPct, fmtUpside, fmtUsd, pnlColor } from "@/lib/utils";
 import { AttentionDot, Stat, Th, ThesisBadge } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -197,9 +197,7 @@ function HoldingRow({ r }: { r: Row }) {
         <ThesisBadge status={r.research?.thesis_status} />
       </td>
       <td className={cn("px-2 py-2 text-right tnum", pnlColor(r.research?.base_upside))}>
-        {r.research?.base_upside == null
-          ? "—"
-          : fmtPct(r.research.base_upside, { sign: true, scale: true })}
+        {fmtUpside(r.research?.base_upside)}
       </td>
       <td className="px-2 py-2 text-right">
         <Link to={`/ticker/${r.symbol}`} className="text-muted hover:text-text">

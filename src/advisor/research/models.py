@@ -288,6 +288,186 @@ class DcfResult(BaseModel):
     fetched_at: datetime = Field(default_factory=datetime.now)
 
 
+# ── Fair price (consolidated valuation) ──────────────────────────────────────
+#
+# A single headline fair value blended from whichever valuation methods produced
+# a usable estimate (DCF base, peer multiples, Bayesian median, analyst target).
+
+
+class FairPriceMethod(BaseModel):
+    """One method's contribution to the blended fair price."""
+
+    name: str  # "dcf_base" | "multiples" | "bayesian_median" | "analyst_target"
+    label: str
+    estimate: float
+    weight: float  # renormalized so the present methods sum to 1.0
+
+
+class FairPriceResult(BaseModel):
+    """Consolidated fair-value estimate with a range and per-method breakdown."""
+
+    symbol: str
+    current_price: float
+    fair_price: float  # weighted blend of the methods below
+    low: float
+    high: float
+    upside_pct: float  # fair_price / current_price − 1
+    methods: list[FairPriceMethod] = Field(default_factory=list)
+    confidence: str = "LOW"  # "HIGH" | "MEDIUM" | "LOW"
+    note: str = ""
+    as_of: datetime = Field(default_factory=datetime.now)
+
+
+# ── Bayesian pricing (posterior fair-value distribution) ─────────────────────
+#
+# Treats the DCF drivers as prior distributions, lets research signals update
+# them (precision-weighted Normal conjugate update), and Monte-Carlos the
+# implied price through the same projection as dcf.compute_dcf_scenario. The
+# three groups below are the "connections that affect pricing" surfaced — and
+# made adjustable — in the frontend's what-if panel.
+
+
+class PriorDriver(BaseModel):
+    """One valuation driver modelled as a prior distribution (mean + uncertainty)."""
+
+    key: str  # e.g. "revenue_growth_yr1_3" | "target_fcf_margin" | "wacc"
+    label: str
+    mean: float  # prior mean (seeded from the base DCF scenario)
+    std: float  # prior uncertainty, 1σ (seeded from the bull/bear spread)
+    min: float  # slider / clamp bound (matches dcf.py ranges)
+    max: float
+    unit: str = "pct"  # "pct" | "x" | "ratio"
+
+
+class EvidenceSignal(BaseModel):
+    """A research signal that nudges a driver's prior toward a posterior.
+
+    ``observed`` is the driver value the signal implies (Normal observation);
+    when ``observed`` is None the signal only inflates the driver's uncertainty
+    (e.g. high option-implied vol → wider fair-value distribution).
+    """
+
+    key: str  # "analyst_target" | "reverse_dcf" | "options_iv" | "mgmt_quality" | "red_flags"
+    label: str
+    target_driver: str  # which PriorDriver.key it informs
+    observed: float | None = None
+    precision: float = 1.0  # base precision relative to the prior
+    weight: float = 1.0  # 0..1 user-adjustable confidence on this signal
+    note: str = ""
+
+
+class EcosystemFactor(BaseModel):
+    """A toggleable ecosystem node (customer/supplier/holder/peer) that perturbs a driver."""
+
+    key: str
+    label: str
+    kind: str  # "customer" | "supplier" | "holder" | "peer"
+    driver: str  # which PriorDriver.key it perturbs when active
+    active: bool = False
+    mean_delta: float = 0.0  # additive shift to the driver mean when active
+    std_delta: float = 0.0  # additive shift to the driver uncertainty when active
+    note: str = ""
+
+
+class HistogramBin(BaseModel):
+    x: float  # bin centre (implied price)
+    count: int
+
+
+class BayesianOverrides(BaseModel):
+    """User adjustments from the what-if sliders. All fields optional."""
+
+    driver_mean: dict[str, float] = Field(default_factory=dict)
+    driver_std: dict[str, float] = Field(default_factory=dict)
+    evidence_weight: dict[str, float] = Field(default_factory=dict)
+    ecosystem_active: dict[str, bool] = Field(default_factory=dict)
+    n_draws: int | None = None
+
+
+class BayesianPriceResult(BaseModel):
+    """Posterior distribution over fair value + the connections that shaped it."""
+
+    symbol: str
+    current_price: float
+    n_draws: int = 0
+
+    # The three groups of adjustable "connections" surfaced in the UI.
+    drivers: list[PriorDriver] = Field(default_factory=list)
+    evidence: list[EvidenceSignal] = Field(default_factory=list)
+    ecosystem: list[EcosystemFactor] = Field(default_factory=list)
+
+    # Posterior fair-value summary.
+    mean_price: float = 0.0
+    median_price: float = 0.0
+    p5: float = 0.0
+    p25: float = 0.0
+    p75: float = 0.0
+    p95: float = 0.0
+    prob_undervalued: float = 0.0  # P(fair value > current price)
+    expected_upside_pct: float = 0.0  # median / current − 1
+    histogram: list[HistogramBin] = Field(default_factory=list)
+
+    # Honesty flags: a revenue-growth DCF can't value a pre-revenue or
+    # deeply cash-burning company, so the posterior collapses to ~net-cash or
+    # zero. When meaningful is False the UI shows `note` instead of fake stats.
+    meaningful: bool = True
+    note: str = ""
+
+    as_of: datetime = Field(default_factory=datetime.now)
+
+
+# ── Price history + fundamentals overlay ─────────────────────────────────────
+
+
+class PriceBar(BaseModel):
+    """One daily price observation for the chart."""
+
+    date: date
+    close: float
+    volume: float | None = None
+
+
+class EarningsMarker(BaseModel):
+    """A reported-earnings point plotted on the price line.
+
+    Shows actuals (revenue / diluted EPS) plus YoY EPS growth — we don't store
+    historical consensus estimates, so this is not a literal beat/miss.
+    """
+
+    date: date
+    revenue: float | None = None
+    eps: float | None = None
+    yoy_eps_growth: float | None = None  # vs the same period a year earlier
+
+
+class PePoint(BaseModel):
+    """Trailing P/E aligned to a price bar (null where EPS ≤ 0)."""
+
+    date: date
+    pe: float | None = None
+
+
+class FundamentalPoint(BaseModel):
+    """A fiscal period's headline figures for the revenue/EPS sub-panel."""
+
+    date: date
+    fiscal_year: int
+    revenue: float | None = None
+    eps: float | None = None
+    net_margin: float | None = None
+
+
+class PriceHistoryResult(BaseModel):
+    """Daily price series + the fundamentals overlaid on the ticker chart."""
+
+    symbol: str
+    bars: list[PriceBar] = Field(default_factory=list)
+    earnings: list[EarningsMarker] = Field(default_factory=list)
+    pe_series: list[PePoint] = Field(default_factory=list)
+    fundamentals: list[FundamentalPoint] = Field(default_factory=list)
+    fetched_at: datetime = Field(default_factory=datetime.now)
+
+
 # ── Ecosystem (Phase 2) ──────────────────────────────────────────────────────
 
 
@@ -488,6 +668,13 @@ class TranscriptTone(StrEnum):
     BEARISH = "bearish"
 
 
+class TranscriptSource(BaseModel):
+    """A web source the transcript analysis was built from (link to the call)."""
+
+    url: str
+    title: str = ""
+
+
 class TranscriptSummary(BaseModel):
     quarter: str  # e.g. "Q1 2025"
     earnings_date: str = ""
@@ -496,12 +683,14 @@ class TranscriptSummary(BaseModel):
     management_guidance: str = ""
     analyst_concerns: str = ""
     highlight_quote: str = ""
+    source_url: str = ""  # link to the full transcript for this quarter, if known
 
 
 class TranscriptAnalysis(BaseModel):
     symbol: str
     summaries: list[TranscriptSummary] = Field(default_factory=list)
     tone_trend: str = ""
+    sources: list[TranscriptSource] = Field(default_factory=list)
     fetched_at: datetime = Field(default_factory=datetime.now)
 
 
@@ -807,6 +996,82 @@ class XSentimentResult(BaseModel):
     as_of: datetime = Field(default_factory=datetime.now)
 
 
+# ── Deep Research (white-paper, cited brief) ─────────────────────────────────
+
+
+class SourceType(StrEnum):
+    SEC_FILING = "sec_filing"  # 10-K / 10-Q / 8-K
+    NEWS = "news"
+    WEBSITE = "website"  # company's own site / IR / product pages
+    OTHER = "other"
+
+
+class Reference(BaseModel):
+    """A numbered bibliography entry the brief's claims cite by id."""
+
+    id: int  # 1-based footnote number
+    title: str = ""
+    url: str = ""
+    source_type: SourceType = SourceType.OTHER
+    published_date: str = ""  # ISO when known (filing date / article date)
+    detail: str = ""  # e.g. "10-K, Item 1. Business" or publisher
+
+
+class CustomerUseCase(BaseModel):
+    customer: str
+    use_case: str = ""  # what they use the product FOR
+    program: str = ""  # specific program/product, e.g. "USS Gerald R. Ford"
+    citation_ids: list[int] = Field(default_factory=list)
+
+
+class SupplyChainPosition(BaseModel):
+    market_share_pct: float | None = None
+    share_basis: str = ""  # e.g. "near-term semi-grade AlSiC (AGM presentation)"
+    geographic_note: str = ""  # e.g. "majority of production in East Asia"
+    global_players: list[str] = Field(default_factory=list)  # Denka, Sumitomo, BYD, JFC
+    sole_source: bool | None = None
+    position_note: str = ""  # e.g. "primary US/Western hedge"
+    citation_ids: list[int] = Field(default_factory=list)
+
+
+class RecentDevelopment(BaseModel):
+    date: str = ""
+    headline: str
+    amount_usd: float | None = None
+    citation_ids: list[int] = Field(default_factory=list)
+
+
+class FilingQuote(BaseModel):
+    quote: str  # verbatim from filing text
+    form: str = ""  # 10-K / 10-Q
+    filing_date: str = ""
+    accession_number: str = ""
+    url: str = ""
+    citation_id: int | None = None
+
+
+class SecondOrderThesis(BaseModel):
+    thesis: str = ""
+    analogs: list[str] = Field(default_factory=list)  # "InP→telecom", "Toto→memory"
+    is_speculative: bool = True  # always true; UI badges it "Speculative"
+    citation_ids: list[int] = Field(default_factory=list)
+
+
+class DeepResearch(BaseModel):
+    """White-paper-style, citation-backed business brief (SEC + news + website)."""
+
+    symbol: str
+    abstract: str = ""  # white-paper abstract / TLDR
+    what_they_do: str = ""
+    customers: list[CustomerUseCase] = Field(default_factory=list)
+    supply_chain: SupplyChainPosition | None = None
+    recent_developments: list[RecentDevelopment] = Field(default_factory=list)
+    management_quotes: list[FilingQuote] = Field(default_factory=list)
+    second_order_thesis: SecondOrderThesis | None = None
+    references: list[Reference] = Field(default_factory=list)  # the bibliography
+    fetched_at: datetime = Field(default_factory=datetime.now)
+
+
 # ── Research report (full Phase 1 + 2 + 3 model) ────────────────────────────
 
 
@@ -833,6 +1098,7 @@ class ResearchReport(BaseModel):
     # § Valuation (Phase 2)
     multiples: MultiplesResult | None = None
     dcf: DcfResult | None = None
+    fair_price: FairPriceResult | None = None  # consolidated headline fair value
 
     # § Catalysts & Risks (Phase 2)
     catalyst_risk: CatalystRiskResult | None = None
@@ -874,4 +1140,8 @@ class ResearchReport(BaseModel):
     kpi_monitor: ThesisMonitorResult | None = None
 
     filings: list[FilingRef] = Field(default_factory=list)
+
+    # § Deep Research (white-paper, cited brief — SEC + news + website)
+    deep_research: DeepResearch | None = None
+
     notes: list[str] = Field(default_factory=list)

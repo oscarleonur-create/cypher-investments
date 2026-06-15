@@ -77,5 +77,294 @@ export interface Job {
   finished_at: string | null;
 }
 
+export interface FilingRef {
+  accession_number: string;
+  form: string; // "10-K" | "10-Q" | "8-K" | "DEF 14A" | "13F-HR" | "4"
+  filing_date: string;
+  period_of_report: string | null;
+  url: string;
+}
+
+export interface TranscriptSource {
+  url: string;
+  title: string;
+}
+
+export interface TranscriptSummary {
+  quarter: string;
+  earnings_date: string;
+  tone: "bullish" | "neutral" | "bearish";
+  key_topics: string[];
+  management_guidance: string;
+  analyst_concerns: string;
+  highlight_quote: string;
+  source_url: string;
+}
+
+export interface TranscriptAnalysis {
+  symbol: string;
+  summaries: TranscriptSummary[];
+  tone_trend: string;
+  sources: TranscriptSource[];
+  fetched_at: string;
+}
+
+// ── Deep Research (white-paper, cited brief) ──────────────────────────────────
+
+export type SourceType = "sec_filing" | "news" | "website" | "other";
+
+export interface Reference {
+  id: number;
+  title: string;
+  url: string;
+  source_type: SourceType;
+  published_date: string;
+  detail: string;
+}
+
+export interface CustomerUseCase {
+  customer: string;
+  use_case: string;
+  program: string;
+  citation_ids: number[];
+}
+
+export interface SupplyChainPosition {
+  market_share_pct: number | null;
+  share_basis: string;
+  geographic_note: string;
+  global_players: string[];
+  sole_source: boolean | null;
+  position_note: string;
+  citation_ids: number[];
+}
+
+export interface RecentDevelopment {
+  date: string;
+  headline: string;
+  amount_usd: number | null;
+  citation_ids: number[];
+}
+
+export interface FilingQuote {
+  quote: string;
+  form: string;
+  filing_date: string;
+  accession_number: string;
+  url: string;
+  citation_id: number | null;
+}
+
+export interface SecondOrderThesis {
+  thesis: string;
+  analogs: string[];
+  is_speculative: boolean;
+  citation_ids: number[];
+}
+
+export interface DeepResearch {
+  symbol: string;
+  abstract: string;
+  what_they_do: string;
+  customers: CustomerUseCase[];
+  supply_chain: SupplyChainPosition | null;
+  recent_developments: RecentDevelopment[];
+  management_quotes: FilingQuote[];
+  second_order_thesis: SecondOrderThesis | null;
+  references: Reference[];
+  fetched_at: string;
+}
+
 // ResearchReport is large + deeply nested; the panels read it defensively.
 export type ResearchReport = Record<string, any>;
+
+// ── Bayesian pricing (what-if posterior) ──────────────────────────────────────
+
+export interface PriorDriver {
+  key: string;
+  label: string;
+  mean: number;
+  std: number;
+  min: number;
+  max: number;
+  unit: "pct" | "x" | "ratio";
+}
+
+export interface EvidenceSignal {
+  key: string;
+  label: string;
+  target_driver: string;
+  observed: number | null;
+  precision: number;
+  weight: number;
+  note: string;
+}
+
+export interface EcosystemFactor {
+  key: string;
+  label: string;
+  kind: "customer" | "supplier" | "holder" | "peer";
+  driver: string;
+  active: boolean;
+  mean_delta: number;
+  std_delta: number;
+  note: string;
+}
+
+export interface HistogramBin {
+  x: number;
+  count: number;
+}
+
+export interface BayesianPriceResult {
+  symbol: string;
+  current_price: number;
+  n_draws: number;
+  drivers: PriorDriver[];
+  evidence: EvidenceSignal[];
+  ecosystem: EcosystemFactor[];
+  mean_price: number;
+  median_price: number;
+  p5: number;
+  p25: number;
+  p75: number;
+  p95: number;
+  prob_undervalued: number;
+  expected_upside_pct: number;
+  histogram: HistogramBin[];
+  meaningful: boolean;
+  note: string;
+  as_of: string;
+}
+
+// ── Price history + fundamentals overlay ──────────────────────────────────────
+
+export interface PriceBar {
+  date: string;
+  close: number;
+  volume: number | null;
+}
+
+export interface EarningsMarker {
+  date: string;
+  revenue: number | null;
+  eps: number | null;
+  yoy_eps_growth: number | null;
+}
+
+export interface PePoint {
+  date: string;
+  pe: number | null;
+}
+
+export interface FundamentalPoint {
+  date: string;
+  fiscal_year: number;
+  revenue: number | null;
+  eps: number | null;
+  net_margin: number | null;
+}
+
+export interface PriceHistoryResult {
+  symbol: string;
+  bars: PriceBar[];
+  earnings: EarningsMarker[];
+  pe_series: PePoint[];
+  fundamentals: FundamentalPoint[];
+  fetched_at: string;
+}
+
+// Slider adjustments POSTed back to recompute the posterior. All optional.
+export interface BayesianOverrides {
+  driver_mean?: Record<string, number>;
+  driver_std?: Record<string, number>;
+  evidence_weight?: Record<string, number>;
+  ecosystem_active?: Record<string, boolean>;
+  n_draws?: number;
+}
+
+// ── Fair price (consolidated valuation) ───────────────────────────────────────
+
+export interface FairPriceMethod {
+  name: string; // dcf_base | multiples | bayesian_median | analyst_target
+  label: string;
+  estimate: number;
+  weight: number;
+}
+
+export interface FairPriceResult {
+  symbol: string;
+  current_price: number;
+  fair_price: number;
+  low: number;
+  high: number;
+  upside_pct: number;
+  methods: FairPriceMethod[];
+  confidence: "HIGH" | "MEDIUM" | "LOW";
+  note: string;
+  as_of: string;
+}
+
+// ── Watchlist ─────────────────────────────────────────────────────────────────
+
+export interface WatchlistSummary {
+  has_report: boolean;
+  thesis_status: string;
+  attention: "HIGH" | "MEDIUM" | "LOW";
+  conviction: string | null;
+  base_upside: number | null;
+  current_price: number | null;
+  fair_price: number | null;
+  fair_upside: number | null;
+  kpi_alerts: string[];
+}
+
+export interface WatchlistItem {
+  symbol: string;
+  note: string;
+  added_at: string;
+  research: WatchlistSummary | null;
+}
+
+export interface WatchlistResponse {
+  watchlist: WatchlistItem[];
+}
+
+// ── Research agent (interactive chat) ─────────────────────────────────────────
+
+// One SSE event streamed from POST /api/research/:symbol/chat.
+export type ChatEvent =
+  | { type: "meta"; conversation_id: string }
+  | { type: "tool_call"; name: string; args: Record<string, unknown> }
+  | { type: "tool_result"; name: string; ok: boolean }
+  | { type: "token"; text: string }
+  | { type: "done"; text: string }
+  | { type: "error"; message: string };
+
+export interface ToolEvent {
+  name: string;
+  ok?: boolean;
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  tools?: string[]; // tool names used (assistant turns)
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export interface Conversation {
+  id: string;
+  symbol: string;
+  title: string;
+  messages: ChatMessage[];
+  created_at: string;
+  updated_at: string;
+}

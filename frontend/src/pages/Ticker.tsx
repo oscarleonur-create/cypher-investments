@@ -9,17 +9,24 @@ import { cn, fmtNum, fmtPct, fmtUsd } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Stat } from "@/components/common";
+import { AgentPanel } from "@/components/AgentPanel";
 import {
+  BayesianPricingPanel,
   CatalystsPanel,
+  DeepResearchPanel,
   EcosystemPanel,
+  FairPricePanel,
+  FilingsPanel,
   FinancialsPanel,
   KpiPanel,
   MemoPanel,
   MoatPanel,
   OptionsFlowPanel,
+  PriceChartPanel,
   RatiosPanel,
   SentimentPanel,
   ThesisPanel,
+  TranscriptsPanel,
   ValuationPanel,
 } from "@/components/panels";
 
@@ -89,6 +96,14 @@ export default function Ticker({ quotes }: { quotes: QuotesState }) {
         </Card>
       )}
 
+      {/* Live price chart + fundamentals overlay; renders nothing until a
+          report is cached for this ticker (the endpoint 404s without one). */}
+      <PriceChartPanel symbol={sym} quotes={quotes} />
+
+      {/* Interactive, tool-using research agent — always available on a ticker
+          page (it can work even before a full report has been built). */}
+      <AgentPanel symbol={sym} />
+
       {isLoading ? (
         <Card className="p-6 text-sm text-muted">Loading research…</Card>
       ) : error ? (
@@ -102,13 +117,20 @@ export default function Ticker({ quotes }: { quotes: QuotesState }) {
           </Button>
         </Card>
       ) : data ? (
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="space-y-4">
+          {/* Headline white-paper brief — full width */}
+          <DeepResearchPanel r={data} />
+          {/* Portfolio-only Bayesian what-if; renders nothing for non-holdings. */}
+          <BayesianPricingPanel symbol={sym} />
+          <div className="grid gap-4 lg:grid-cols-2">
           <div className="space-y-4">
+            <FairPricePanel r={data} />
             <MemoPanel r={data} />
             <ThesisPanel r={data} />
             <ValuationPanel r={data} />
             <FinancialsPanel r={data} />
             <RatiosPanel r={data} />
+            <TranscriptsPanel r={data} />
           </div>
           <div className="space-y-4">
             <KpiPanel r={data} />
@@ -117,6 +139,8 @@ export default function Ticker({ quotes }: { quotes: QuotesState }) {
             <EcosystemPanel r={data} />
             <OptionsFlowPanel r={data} />
             <SentimentPanel r={data} />
+            <FilingsPanel r={data} />
+          </div>
           </div>
         </div>
       ) : null}
