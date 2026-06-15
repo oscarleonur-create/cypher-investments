@@ -9,6 +9,12 @@ export interface ResearchSummary {
   base_upside: number | null;
   has_report: boolean;
   kpi_alerts: string[];
+  sector: string | null;
+  bayes_upside: number | null;
+  bayes_prob_undervalued: number | null;
+  analyst_target: number | null;
+  analyst_upside: number | null;
+  analyst_n: number | null;
 }
 
 export interface Holding {
@@ -64,6 +70,50 @@ export interface PortfolioReview {
   generated_at: string;
   account_numbers: string[];
   positions: PositionReview[];
+}
+
+// ── Market context (VIX + regime) ─────────────────────────────────────────────
+
+export interface VixPoint {
+  date: string;
+  vix: number;
+}
+
+export interface VixSnapshot {
+  current: number;
+  sma20: number;
+  percentile_1y: number;
+  history: VixPoint[];
+}
+
+export interface Regime {
+  date: string;
+  regime_name: string;
+  label: string; // Calm | Normal | Stressed
+  vix: number;
+  regime_prob: number[];
+  spy_vol: number;
+}
+
+export interface MarketContext {
+  vix: VixSnapshot | null;
+  regime: Regime | null;
+}
+
+// ── Sector rotation ───────────────────────────────────────────────────────────
+
+export interface SectorMomentum {
+  etf: string;
+  etf_return_1m: number | null;
+  etf_return_3m: number | null;
+  rel_1m: number | null;
+  rel_3m: number | null;
+  leading: boolean;
+}
+
+export interface RotationResponse {
+  rotation: Record<string, SectorMomentum>;
+  weights: Record<string, number>;
 }
 
 export interface Job {

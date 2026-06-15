@@ -36,6 +36,23 @@ _REVIEW_SYMBOL = "_PORTFOLIO"
 _REVIEW_KIND = "review"
 _REVIEW_KEY = "latest"
 
+# Canonical sector ⇄ SPDR sector-ETF mapping. Sector names match yfinance's
+# ``info["sector"]`` strings so holdings classify consistently with rotation.
+SECTOR_NAME_TO_ETF: dict[str, str] = {
+    "Technology": "XLK",
+    "Financial Services": "XLF",
+    "Energy": "XLE",
+    "Healthcare": "XLV",
+    "Consumer Cyclical": "XLY",
+    "Consumer Defensive": "XLP",
+    "Industrials": "XLI",
+    "Utilities": "XLU",
+    "Real Estate": "XLRE",
+    "Communication Services": "XLC",
+    "Basic Materials": "XLB",
+}
+_ETF_TO_SECTOR: dict[str, str] = {etf: name for name, etf in SECTOR_NAME_TO_ETF.items()}
+
 
 # ── Models ─────────────────────────────────────────────────────────────────────
 
@@ -48,6 +65,17 @@ class PositionReview(BaseModel):
     accounts: list[str] = Field(default_factory=list)
     instrument_types: list[str] = Field(default_factory=list)
 
+    # Position economics (from live TastyTrade holdings)
+    market_value: float = 0.0  # signed USD exposure across this underlying's legs
+    cost_basis: float = 0.0  # signed USD cost across legs
+    weight: float = 0.0  # fraction of total book market value (filled post-aggregation)
+    current_price: float | None = None  # equity mark price per share
+    unrealized_pnl: float | None = None
+    unrealized_pnl_pct: float | None = None
+
+    # Classification
+    sector: str | None = None
+
     # Thesis health (from kpi_tracker.re_check_kpis)
     thesis_status: str = "UNKNOWN"  # ON_TRACK | CAUTION | INVALIDATED | UNKNOWN
     kpi_alerts: list[str] = Field(default_factory=list)
@@ -58,6 +86,16 @@ class PositionReview(BaseModel):
     base_upside: float | None = None  # decimal, e.g. 0.18 = +18%
     report_was_built: bool = False
     has_report: bool = False
+
+    # Bayesian fair-value posterior (from build_bayesian_pricing, when meaningful)
+    bayes_fair_value: float | None = None  # posterior median price
+    bayes_prob_undervalued: float | None = None  # 0–1
+    bayes_upside: float | None = None  # decimal, median/current - 1
+
+    # Sell-side analyst consensus (from report.consensus)
+    analyst_target: float | None = None  # mean price target
+    analyst_upside: float | None = None  # decimal, (target − price) / price
+    analyst_n: int | None = None  # number of contributing analysts
 
     # Events (from catalysts.build_catalysts)
     near_term_catalysts: list[str] = Field(default_factory=list)
@@ -91,6 +129,11 @@ class PortfolioReview(BaseModel):
     def n_high_attention(self) -> int:
         return sum(1 for p in self.positions if p.attention == "HIGH")
 
+    @property
+    def total_market_value(self) -> float:
+        """Sum of absolute market value across holdings (the book size)."""
+        return sum(abs(p.market_value) for p in self.positions)
+
 
 # ── Holdings ───────────────────────────────────────────────────────────────────
 
@@ -98,6 +141,12 @@ class PortfolioReview(BaseModel):
 class _HeldInfo(BaseModel):
     accounts: set[str] = Field(default_factory=set)
     instrument_types: set[str] = Field(default_factory=set)
+
+    # Aggregated position economics across this underlying's legs (signed).
+    market_value: float = 0.0
+    cost_basis: float = 0.0
+    equity_shares: float = 0.0
+    current_price: float | None = None  # equity mark price per share
 
     class Config:
         arbitrary_types_allowed = True
@@ -108,7 +157,8 @@ def get_held_symbols(account_numbers: list[str] | None = None) -> dict[str, _Hel
 
     Keeps equity and equity-option positions (both resolve to a stock underlying);
     futures/crypto/etc. are skipped. ``account_numbers`` defaults to both accounts
-    on file.
+    on file. Dollar exposure is aggregated per underlying so the dashboard can
+    compute portfolio weights and concentration.
     """
     from advisor.market.tastytrade_client import get_positions
 
@@ -129,9 +179,25 @@ def get_held_symbols(account_numbers: list[str] | None = None) -> dict[str, _Hel
             underlying = (p.get("underlying_symbol") or p.get("symbol") or "").strip().upper()
             if not underlying:
                 continue
+
+            is_option = "OPTION" in itype
             info = held.setdefault(underlying, _HeldInfo())
             info.accounts.add(acct)
-            info.instrument_types.add("OPTION" if "OPTION" in itype else "EQUITY")
+            info.instrument_types.add("OPTION" if is_option else "EQUITY")
+
+            # Dollar exposure: quantity × price × multiplier, signed by direction.
+            sign = -1.0 if str(p.get("quantity_direction", "Long")).lower() == "short" else 1.0
+            qty = float(p.get("quantity", 0) or 0)
+            mark = float(p.get("mark_price", 0) or 0) or float(p.get("close_price", 0) or 0)
+            avg = float(p.get("average_open_price", 0) or 0)
+            mult = float(p.get("multiplier", 100) if is_option else 1)
+
+            info.market_value += sign * qty * mark * mult
+            info.cost_basis += sign * qty * avg * mult
+            if not is_option:
+                info.equity_shares += sign * qty
+                if mark > 0:
+                    info.current_price = mark
 
     return held
 
@@ -171,6 +237,7 @@ def _review_symbol(
                 review.error = f"report build failed: {exc}"
 
         review.has_report = report is not None
+        review.sector = _lookup_sector(symbol, report)
 
         if report is not None:
             review.company_name = report.business_model or symbol
@@ -186,8 +253,22 @@ def _review_symbol(
 
                     result = build_bayesian_pricing(report)
                     store.save_artifact(symbol, "bayesian", "latest", result.model_dump_json())
+                    if result.meaningful:
+                        review.bayes_fair_value = result.median_price
+                        review.bayes_prob_undervalued = result.prob_undervalued
+                        review.bayes_upside = result.expected_upside_pct
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Bayesian pricing failed for %s: %s", symbol, exc)
+
+            # Sell-side analyst consensus (independent of the DCF/Bayesian model).
+            if report.consensus is not None:
+                c = report.consensus
+                review.analyst_target = c.target_price_mean
+                review.analyst_n = c.n_analysts or None
+                upside = c.consensus_upside_pct
+                if upside is None and c.target_price_mean and c.current_price:
+                    upside = c.target_price_mean / c.current_price - 1.0
+                review.analyst_upside = upside
 
         # Thesis health
         try:
@@ -218,6 +299,47 @@ def _review_symbol(
         return review
     finally:
         store.close()
+
+
+_SECTOR_CACHE: dict[str, str | None] = {}
+
+
+def _lookup_sector(symbol: str, report=None) -> str | None:  # type: ignore[no-untyped-def]
+    """Best-effort sector for a holding; never raises, cached per process.
+
+    Prefers the sector already on the research report (``industry.sector``),
+    then falls back to yfinance ticker info, then the static sector-ETF map.
+    """
+    sym = symbol.upper()
+    if sym in _SECTOR_CACHE:
+        return _SECTOR_CACHE[sym]
+
+    sector: str | None = None
+    if report is not None:
+        ind = getattr(report, "industry", None)
+        if ind is not None and getattr(ind, "sector", ""):
+            sector = ind.sector
+
+    if not sector:
+        try:
+            from advisor.data.yahoo import YahooDataProvider
+
+            info = YahooDataProvider().get_ticker_info(sym)
+            sector = info.get("sector") or None
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Sector lookup via yfinance failed for %s: %s", sym, exc)
+
+    if not sector:
+        try:
+            from advisor.ml.features import _get_sector_etf
+
+            etf = _get_sector_etf(sym)
+            sector = _ETF_TO_SECTOR.get(etf) if etf else None
+        except Exception:  # noqa: BLE001
+            sector = None
+
+    _SECTOR_CACHE[sym] = sector
+    return sector
 
 
 def _next_earnings_date(cat) -> str | None:  # type: ignore[no-untyped-def]
@@ -290,6 +412,23 @@ def build_portfolio_review(
     with ThreadPoolExecutor(max_workers=workers) as pool:
         results = list(pool.map(_worker, symbols))
 
+    # Copy live dollar exposure onto each position and derive weights / PnL.
+    for r in results:
+        info = held.get(r.symbol)
+        if info is None:
+            continue
+        r.market_value = info.market_value
+        r.cost_basis = info.cost_basis
+        r.current_price = info.current_price
+        if info.cost_basis:
+            r.unrealized_pnl = info.market_value - info.cost_basis
+            r.unrealized_pnl_pct = r.unrealized_pnl / abs(info.cost_basis)
+
+    total = sum(abs(r.market_value) for r in results)
+    if total > 0:
+        for r in results:
+            r.weight = abs(r.market_value) / total
+
     # Sort by attention (HIGH first), then symbol, for a useful default order.
     rank = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
     results.sort(key=lambda r: (rank.get(r.attention, 3), r.symbol))
@@ -348,15 +487,19 @@ def render_portfolio_review(review: PortfolioReview) -> str:
 
     # Summary table
     lines.append(
-        "| Ticker | Accounts | Thesis | Conviction | Base upside | Next earnings | Attention |"
+        "| Ticker | Weight | Accounts | Thesis | Conviction | Base upside "
+        "| Next earnings | Attention |"
     )
     lines.append(
-        "|--------|----------|--------|-----------|------------|---------------|-----------|"
+        "|--------|--------|----------|--------|-----------|------------"
+        "|---------------|-----------|"
     )
     for p in review.positions:
         upside = f"{p.base_upside:+.0%}" if p.base_upside is not None else "—"
+        weight = f"{p.weight:.1%}" if p.weight else "—"
         lines.append(
             f"| {p.symbol} "
+            f"| {weight} "
             f"| {', '.join(p.accounts) or '—'} "
             f"| {p.thesis_status.replace('_', ' ')} "
             f"| {p.conviction or '—'} "

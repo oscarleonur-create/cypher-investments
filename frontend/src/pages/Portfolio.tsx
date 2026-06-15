@@ -8,6 +8,12 @@ import type { QuotesState } from "@/lib/useQuotes";
 import { useJob } from "@/lib/useJob";
 import { cn, fmtMoney, fmtNum, fmtPct, fmtUpside, fmtUsd, pnlColor } from "@/lib/utils";
 import { AttentionDot, Stat, Th, ThesisBadge } from "@/components/common";
+import {
+  ConcentrationPanel,
+  MarketPanel,
+  SectorRotationPanel,
+  ValuationRiskPanel,
+} from "@/components/portfolioAnalytics";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 
@@ -165,6 +171,18 @@ export default function Portfolio({ quotes }: { quotes: QuotesState }) {
           </div>
         )}
       </Card>
+
+      {/* Portfolio analytics */}
+      {rows.length > 0 && (
+        <>
+          <ConcentrationPanel rows={rows} />
+          <ValuationRiskPanel rows={rows} />
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+            <SectorRotationPanel />
+            <MarketPanel />
+          </div>
+        </>
+      )}
     </div>
   );
 }

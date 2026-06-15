@@ -111,6 +111,12 @@ def _merge_research_summary(rows: dict[str, dict]) -> None:
                 "base_upside": p.base_upside,
                 "has_report": p.has_report,
                 "kpi_alerts": p.kpi_alerts,
+                "sector": p.sector,
+                "bayes_upside": p.bayes_upside,
+                "bayes_prob_undervalued": p.bayes_prob_undervalued,
+                "analyst_target": p.analyst_target,
+                "analyst_upside": p.analyst_upside,
+                "analyst_n": p.analyst_n,
             }
             if p
             else None
@@ -159,6 +165,45 @@ async def refresh_review(rebuild_uncovered: bool = False, catalysts: bool = True
 
     asyncio.create_task(asyncio.to_thread(_run))
     return {"job_id": job_id}
+
+
+# ── Market context + sector rotation ──────────────────────────────────────────
+
+
+@router.get("/market")
+async def market() -> dict:
+    """VIX snapshot + (optional) HMM volatility regime for the market panel."""
+    import asyncio
+
+    from advisor.research.market_context import get_market_context
+
+    # yfinance + model load are blocking; keep the event loop free.
+    return await asyncio.to_thread(get_market_context)
+
+
+@router.get("/rotation")
+async def rotation() -> dict:
+    """Sector-ETF momentum (vs SPY) for the sectors currently held.
+
+    Sectors come from the latest cached review; rebuild the review first if a
+    holding has no sector yet. Returns ``{}`` when nothing is classified.
+    """
+    import asyncio
+
+    from advisor.research.portfolio_analytics import sector_breakdown, sector_rotation
+    from advisor.research.portfolio_review import load_latest_review
+
+    loaded = load_latest_review()
+    if loaded is None:
+        return {"rotation": {}, "weights": {}}
+    review = loaded[0]
+
+    weights = {s: w for s, w in sector_breakdown(review).items() if s != "Unknown"}
+    if not weights:
+        return {"rotation": {}, "weights": {}}
+
+    rot = await asyncio.to_thread(sector_rotation, list(weights.keys()))
+    return {"rotation": rot, "weights": weights}
 
 
 # ── Bayesian fair-value (what-if sliders) ────────────────────────────────────────
