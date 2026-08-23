@@ -56,6 +56,9 @@ def _earnings_catalysts(symbol: str) -> list[CatalystItem]:
                         expected_date=d.isoformat(),
                         is_near_term=is_near,
                         source="yfinance",
+                        probability=0.5,  # coin-flip on beat/miss at time of build
+                        direction="mixed",
+                        price_impact_pct=None,  # filled from options IV if available
                     )
                 )
             except Exception:  # noqa: BLE001
@@ -101,9 +104,19 @@ def _news_catalysts(symbol: str, name: str) -> list[CatalystItem]:
         extracted = llm.complete(
             system_prompt=(
                 "You are a financial analyst. Extract upcoming near-term catalysts. "
-                "For each: description (string), catalyst_type (one of: EARNINGS, "
-                "PRODUCT_LAUNCH, REGULATORY, CONTRACT, MACRO, OTHER), "
-                "expected_date (YYYY-MM-DD or quarter string), is_near_term (bool). "
+                "For each return a JSON object with: "
+                "description (string), "
+                "catalyst_type (one of: EARNINGS, PRODUCT_LAUNCH, REGULATORY, CONTRACT, MACRO, "
+                "OTHER), "
+                "expected_date (YYYY-MM-DD or quarter string), "
+                "is_near_term (bool, true = within 90 days), "
+                "probability (float 0-1: estimated likelihood this event occurs in the next "
+                "12 months; use 0.5 for genuinely uncertain, >0.7 for highly likely, "
+                "<0.3 for speculative), "
+                "direction (one of: bullish, bearish, mixed, neutral — impact on the stock "
+                "if it occurs), "
+                "price_impact_pct (float: estimated % stock price move magnitude if it occurs; "
+                "unsigned — sign is implied by direction; e.g. 8.0 for an 8% expected move). "
                 "Only include catalysts with a concrete timeline mentioned in the text."
             ),
             user_prompt=f"Company: {name} ({symbol})\n\n{context}",
@@ -112,6 +125,8 @@ def _news_catalysts(symbol: str, name: str) -> list[CatalystItem]:
         items: list[CatalystItem] = []
         for item in extracted.catalysts[:8]:
             try:
+                raw_prob = item.get("probability")
+                raw_impact = item.get("price_impact_pct")
                 items.append(
                     CatalystItem(
                         description=str(item.get("description", "")),
@@ -119,6 +134,9 @@ def _news_catalysts(symbol: str, name: str) -> list[CatalystItem]:
                         expected_date=str(item.get("expected_date", "")),
                         is_near_term=bool(item.get("is_near_term", True)),
                         source="tavily",
+                        probability=float(raw_prob) if raw_prob is not None else None,
+                        direction=str(item.get("direction", "neutral")),
+                        price_impact_pct=float(raw_impact) if raw_impact is not None else None,
                     )
                 )
             except Exception:  # noqa: BLE001

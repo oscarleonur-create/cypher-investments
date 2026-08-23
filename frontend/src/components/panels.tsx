@@ -20,6 +20,7 @@ import { api } from "@/lib/api";
 import type {
   BayesianOverrides,
   BayesianPriceResult,
+  CatalystScenario,
   EcosystemFactor,
   EvidenceSignal,
   PriorDriver,
@@ -596,6 +597,26 @@ export function MoatPanel({ r }: { r: ResearchReport }) {
 
 // ── Catalysts & Risks ───────────────────────────────────────────────────────
 
+function catalystProbColor(p: number | undefined): string {
+  if (p == null) return "text-muted";
+  if (p >= 0.7) return "text-pos";
+  if (p >= 0.4) return "text-warn";
+  return "text-muted";
+}
+
+function directionIcon(d: string | undefined): string {
+  if (d === "bullish") return "▲";
+  if (d === "bearish") return "▼";
+  if (d === "mixed") return "↔";
+  return "";
+}
+
+function directionColor(d: string | undefined): string {
+  if (d === "bullish") return "text-pos";
+  if (d === "bearish") return "text-neg";
+  return "text-muted";
+}
+
 export function CatalystsPanel({ r }: { r: ResearchReport }) {
   const cr = r.catalyst_risk;
   const catalysts = cr?.catalysts || [];
@@ -603,12 +624,27 @@ export function CatalystsPanel({ r }: { r: ResearchReport }) {
   return (
     <Section title="Catalysts & Risks" empty={catalysts.length === 0 && risks.length === 0}>
       {catalysts.length > 0 && (
-        <div className="mb-3 space-y-1">
+        <div className="mb-3 space-y-1.5">
           {catalysts.map((c: any, i: number) => (
-            <div key={i} className="flex items-center gap-2 text-sm">
+            <div key={i} className="flex items-start gap-2 text-sm">
               <Badge variant={c.is_near_term ? "warn" : "muted"}>{c.catalyst_type}</Badge>
-              <span className="text-muted tnum">{c.expected_date}</span>
-              <span>{c.description}</span>
+              <span className="text-muted tnum shrink-0">{c.expected_date}</span>
+              {c.direction && c.direction !== "neutral" && (
+                <span className={`shrink-0 font-mono text-xs ${directionColor(c.direction)}`}>
+                  {directionIcon(c.direction)}
+                </span>
+              )}
+              <span className="min-w-0 flex-1">{c.description}</span>
+              {c.probability != null && (
+                <span className={`shrink-0 tnum text-xs font-medium ${catalystProbColor(c.probability)}`}>
+                  {Math.round(c.probability * 100)}%
+                </span>
+              )}
+              {c.price_impact_pct != null && (
+                <span className="shrink-0 tnum text-xs text-muted">
+                  ±{c.price_impact_pct.toFixed(0)}%
+                </span>
+              )}
             </div>
           ))}
         </div>
@@ -1266,6 +1302,62 @@ function EvidenceRow({
   );
 }
 
+function ScenarioEvTable({
+  scenarios,
+  currentPrice,
+}: {
+  scenarios: CatalystScenario[];
+  currentPrice: number;
+}) {
+  const totalP = scenarios.reduce((s, sc) => s + sc.probability, 0);
+  const ev = totalP > 0 ? scenarios.reduce((s, sc) => s + sc.probability * sc.target_price, 0) / totalP : 0;
+  const evUpside = currentPrice > 0 ? ev / currentPrice - 1 : 0;
+
+  return (
+    <div className="mt-4">
+      <div className="mb-1.5 text-xs font-medium uppercase tracking-wide text-muted">
+        Scenario probability table
+      </div>
+      <table className="w-full text-xs tnum">
+        <thead>
+          <tr className="border-b border-border text-muted">
+            <th className="pb-1 text-left font-normal">Scenario</th>
+            <th className="pb-1 text-right font-normal">P</th>
+            <th className="pb-1 text-right font-normal">Target</th>
+            <th className="pb-1 text-right font-normal">Upside</th>
+          </tr>
+        </thead>
+        <tbody>
+          {scenarios.map((sc, i) => {
+            const lbl = sc.label.toLowerCase();
+            const isBull = lbl.includes("bull");
+            const isBear = lbl.includes("bear");
+            const rowColor = isBull ? "text-pos" : isBear ? "text-neg" : "";
+            return (
+              <tr key={i} className={`border-b border-border/40 ${rowColor}`}>
+                <td className="py-1 pr-2 max-w-[180px] truncate">{sc.label}</td>
+                <td className="py-1 text-right">{fmtPct(sc.probability)}</td>
+                <td className="py-1 text-right">{fmtPriceSafe(sc.target_price)}</td>
+                <td className={`py-1 text-right ${pnlColor(sc.upside_pct)}`}>
+                  {fmtUpside(sc.upside_pct)}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+        <tfoot>
+          <tr className="font-semibold">
+            <td className="pt-2">Expected value (EV)</td>
+            <td className="pt-2 text-right text-muted">{fmtPct(totalP)}</td>
+            <td className="pt-2 text-right">{fmtPriceSafe(ev)}</td>
+            <td className={`pt-2 text-right ${pnlColor(evUpside)}`}>{fmtUpside(evUpside)}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
 export function BayesianPricingPanel({ symbol }: { symbol: string }) {
   const baseline = useQuery({
     queryKey: ["bayesian", symbol],
@@ -1462,6 +1554,10 @@ export function BayesianPricingPanel({ symbol }: { symbol: string }) {
             </div>
           ))}
         </ConnGroup>
+      )}
+
+      {result.catalyst_scenarios && result.catalyst_scenarios.length > 0 && (
+        <ScenarioEvTable scenarios={result.catalyst_scenarios} currentPrice={result.current_price} />
       )}
     </Section>
   );

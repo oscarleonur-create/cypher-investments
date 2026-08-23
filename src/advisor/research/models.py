@@ -327,6 +327,17 @@ class FairPriceResult(BaseModel):
 # made adjustable — in the frontend's what-if panel.
 
 
+class CatalystScenario(BaseModel):
+    """One discrete scenario in the scenario × catalyst EV table."""
+
+    label: str
+    probability: float
+    target_price: float
+    upside_pct: float
+    supporting_catalysts: list[str] = Field(default_factory=list)
+    invalidating_catalysts: list[str] = Field(default_factory=list)
+
+
 class PriorDriver(BaseModel):
     """One valuation driver modelled as a prior distribution (mean + uncertainty)."""
 
@@ -412,6 +423,9 @@ class BayesianPriceResult(BaseModel):
     # zero. When meaningful is False the UI shows `note` instead of fake stats.
     meaningful: bool = True
     note: str = ""
+
+    # Discrete scenario × catalyst EV table (bull/base/bear with catalyst attribution).
+    catalyst_scenarios: list[CatalystScenario] = Field(default_factory=list)
 
     as_of: datetime = Field(default_factory=datetime.now)
 
@@ -546,6 +560,9 @@ class CatalystItem(BaseModel):
     expected_date: str = ""  # YYYY-MM-DD or quarter string
     is_near_term: bool = True  # within 90 days
     source: str = ""
+    probability: float | None = None  # 0–1 estimated probability of occurring
+    direction: str = "neutral"  # "bullish" | "bearish" | "mixed" | "neutral"
+    price_impact_pct: float | None = None  # % price move magnitude if fires (positive = up)
 
 
 class RiskSeverity(StrEnum):

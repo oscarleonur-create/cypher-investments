@@ -17,7 +17,7 @@ def test_defaults():
     assert config.llm_temperature == 0.1
     assert config.curated_first is True
     assert config.offline_mode is False
-    assert config.llm_model == "anthropic/claude-sonnet-4"
+    assert config.llm_model == "z-ai/glm-5.2"
 
 
 def test_curated_domain_list():

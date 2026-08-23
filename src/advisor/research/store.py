@@ -86,6 +86,31 @@ CREATE INDEX IF NOT EXISTS idx_theses_symbol
 
 CREATE INDEX IF NOT EXISTS idx_theses_updated
     ON theses(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+    snapshot_date TEXT NOT NULL,
+    account       TEXT NOT NULL,
+    net_liq       REAL NOT NULL,
+    cash          REAL NOT NULL,
+    recorded_at   TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (snapshot_date, account)
+);
+
+CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_date
+    ON portfolio_snapshots(snapshot_date DESC);
+
+CREATE TABLE IF NOT EXISTS portfolio_cash_flows (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    flow_date     TEXT NOT NULL,
+    account       TEXT NOT NULL,
+    amount        REAL NOT NULL,
+    description   TEXT NOT NULL DEFAULT '',
+    tastytrade_id INTEGER UNIQUE,
+    recorded_at   TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_portfolio_cash_flows_date
+    ON portfolio_cash_flows(flow_date DESC);
 """
 
 
@@ -390,3 +415,78 @@ class ResearchStore:
         if include_content:
             out["content"] = row["content"]
         return out
+
+    # ── Portfolio snapshots ───────────────────────────────────────────────
+
+    def upsert_snapshot(
+        self, snapshot_date: str, account: str, net_liq: float, cash: float
+    ) -> None:
+        self._conn.execute(
+            "INSERT OR IGNORE INTO portfolio_snapshots "
+            "(snapshot_date, account, net_liq, cash) VALUES (?, ?, ?, ?)",
+            (snapshot_date, account, net_liq, cash),
+        )
+        self._conn.commit()
+
+    def load_combined_snapshots(
+        self, start_date: str | None = None, end_date: str | None = None
+    ) -> list[dict]:
+        """Return daily NLV summed across all accounts, sorted ascending."""
+        where = []
+        params: list = []
+        if start_date:
+            where.append("snapshot_date >= ?")
+            params.append(start_date)
+        if end_date:
+            where.append("snapshot_date <= ?")
+            params.append(end_date)
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+        rows = self._conn.execute(
+            f"SELECT snapshot_date, SUM(net_liq) AS net_liq, SUM(cash) AS cash "
+            f"FROM portfolio_snapshots {clause} "
+            f"GROUP BY snapshot_date ORDER BY snapshot_date ASC",
+            params,
+        ).fetchall()
+        return [
+            {"date": r["snapshot_date"], "net_liq": r["net_liq"], "cash": r["cash"]} for r in rows
+        ]
+
+    # ── Portfolio cash flows ──────────────────────────────────────────────
+
+    def upsert_cash_flow(
+        self,
+        flow_date: str,
+        account: str,
+        amount: float,
+        description: str,
+        tastytrade_id: int | None,
+    ) -> None:
+        self._conn.execute(
+            "INSERT OR IGNORE INTO portfolio_cash_flows "
+            "(flow_date, account, amount, description, tastytrade_id) VALUES (?, ?, ?, ?, ?)",
+            (flow_date, account, amount, description, tastytrade_id),
+        )
+        self._conn.commit()
+
+    def load_cash_flows(
+        self, start_date: str | None = None, end_date: str | None = None
+    ) -> list[dict]:
+        where = []
+        params: list = []
+        if start_date:
+            where.append("flow_date >= ?")
+            params.append(start_date)
+        if end_date:
+            where.append("flow_date <= ?")
+            params.append(end_date)
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+        rows = self._conn.execute(
+            f"SELECT flow_date AS date, account, amount, description FROM portfolio_cash_flows "
+            f"{clause} ORDER BY flow_date ASC",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def load_latest_cash_flow_date(self) -> str | None:
+        row = self._conn.execute("SELECT MAX(flow_date) AS d FROM portfolio_cash_flows").fetchone()
+        return row["d"] if row else None
