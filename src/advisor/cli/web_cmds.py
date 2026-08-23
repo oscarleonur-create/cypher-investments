@@ -2,16 +2,28 @@
 
 from __future__ import annotations
 
+import socket
 from pathlib import Path
 
 import typer
-
-from advisor.cli.dashboard_cmds import _lan_ip
 
 app = typer.Typer(help="Investment web app — live portfolio + research (FastAPI + React)")
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _FRONTEND_DIST = _REPO_ROOT / "frontend" / "dist"
+
+
+def _lan_ip() -> str | None:
+    """Best-effort local network IP (the address a phone on the same WiFi uses)."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))  # no traffic sent; just resolves the route
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 @app.command("serve")
