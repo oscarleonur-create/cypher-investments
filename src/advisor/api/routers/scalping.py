@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from advisor.api import deps
+from advisor.risk.gate import gate_signals
 from advisor.scalping.models import ScalpScanResult
 from advisor.scalping.scanner import ScalpScanner
 from advisor.scalping.strategies import SCALP_STRATEGIES, default_params
@@ -82,6 +83,7 @@ async def run_scan(req: RunRequest) -> dict:
         raise HTTPException(status_code=400, detail=f"Unknown strategies: {', '.join(bad)}")
 
     session = await _try_session()
+    net_liq, open_notional = await _account_risk_state(session)
     job_id = deps.new_job("scalp", target=req.universe)
     deps.update_job(job_id, message=f"scanning {len(symbols)} symbols…")
 
@@ -96,14 +98,15 @@ async def run_scan(req: RunRequest) -> dict:
                 min_rvol=req.min_rvol,
                 use_llm=req.enrich_llm,
             )
+            result.signals = gate_signals(
+                result.signals, net_liq=net_liq, open_notional_by_symbol=open_notional
+            )
             global _latest_job
             _results[job_id] = result
             _latest_job = job_id
-            deps.update_job(
-                job_id,
-                status="done",
-                message=f"{len(result.signals)} signals ({result.source})",
-            )
+            approved = sum(1 for s in result.signals if s.risk_approved)
+            msg = f"{len(result.signals)} signals, {approved} risk-approved ({result.source})"
+            deps.update_job(job_id, status="done", message=msg)
         except Exception as exc:  # noqa: BLE001
             logger.exception("scalp scan failed")
             deps.update_job(job_id, status="error", error=str(exc), message="failed")
@@ -176,3 +179,28 @@ async def _try_session():
     except Exception as exc:  # noqa: BLE001
         logger.warning("TastyTrade session unavailable, scalp scan will use yfinance: %s", exc)
         return None
+
+
+async def _account_risk_state(session) -> tuple[float, dict[str, float]]:
+    """Net liq + open notional per underlying, for sizing the risk gate.
+
+    Best-effort: an unavailable session (or API hiccup) just means every
+    signal gets gated with net_liq=0, i.e. blocked rather than sized blind.
+    """
+    if session is None:
+        return 0.0, {}
+    try:
+        from advisor.market.tastytrade_client import get_balances, get_positions
+
+        balances, positions = await asyncio.gather(get_balances(session), get_positions(session))
+        open_notional: dict[str, float] = {}
+        for p in positions:
+            price = p["mark"] or p["close_price"] or p["average_open_price"]
+            notional = abs(p["quantity"]) * price * p["multiplier"]
+            open_notional[p["underlying_symbol"]] = (
+                open_notional.get(p["underlying_symbol"], 0.0) + notional
+            )
+        return balances["net_liq"], open_notional
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("risk gate: could not load account state: %s", exc)
+        return 0.0, {}

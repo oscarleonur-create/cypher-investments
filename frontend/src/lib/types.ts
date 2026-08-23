@@ -490,6 +490,10 @@ export interface ScalpSignal {
   headlines: string[];
   sentiment_score: number | null;
   catalyst_note: string;
+  // risk gate verdict
+  risk_approved: boolean | null;
+  risk_quantity: number | null;
+  risk_note: string;
 }
 
 export interface ScalpScanResult {

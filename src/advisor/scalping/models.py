@@ -38,6 +38,11 @@ class ScalpSignal(BaseModel):
     sentiment_score: float | None = None  # 0–100 LLM news sentiment (50 = neutral)
     catalyst_note: str = ""  # one-line "why it's moving" summary
 
+    # ── Risk gate verdict (populated by advisor.risk.gate) ──────────────────
+    risk_approved: bool | None = None  # None = not yet gated
+    risk_quantity: int | None = None  # sized share count if approved
+    risk_note: str = ""  # sizing caps applied / veto reason
+
     @property
     def risk_reward(self) -> float:
         risk = abs(self.entry - self.stop)

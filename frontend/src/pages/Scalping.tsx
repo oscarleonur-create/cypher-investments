@@ -251,6 +251,7 @@ function ScannerTab() {
                   <Th className="text-right">RVOL</Th>
                   <Th className="text-right">Gap</Th>
                   <Th className="text-right">Score</Th>
+                  <Th>Risk</Th>
                   <Th>Catalyst</Th>
                 </tr>
               </thead>
@@ -284,6 +285,15 @@ function ScannerTab() {
                       {s.gap_pct != null ? fmtPct(s.gap_pct, { sign: true }) : "—"}
                     </td>
                     <td className="px-2 py-2 text-right tnum">{fmtNum(s.score, 0)}</td>
+                    <td className="px-2 py-2 text-xs" title={s.risk_note}>
+                      {s.risk_approved == null ? (
+                        <span className="text-muted">—</span>
+                      ) : s.risk_approved ? (
+                        <Badge variant="pos">{s.risk_quantity ?? 0} sh</Badge>
+                      ) : (
+                        <Badge variant="neg">blocked</Badge>
+                      )}
+                    </td>
                     <td className="px-2 py-2 text-xs">
                       <div className="flex flex-wrap items-center gap-1">
                         {s.earnings_today && <Badge variant="warn">earnings</Badge>}
