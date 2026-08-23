@@ -1,1 +1,0 @@
-"""Streamlit research workstation dashboard."""
