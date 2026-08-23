@@ -14,7 +14,6 @@ from advisor.cli.ml_cmds import app as ml_app
 from advisor.cli.options_cmds import app as options_app
 from advisor.cli.research_cmds import app as research_app
 from advisor.cli.scenario_cmds import app as scenario_app
-from advisor.cli.simulator_cmds import app as simulator_app
 from advisor.cli.strategy_cmds import app as strategy_app
 from advisor.cli.web_cmds import app as web_app
 
@@ -30,7 +29,6 @@ app.add_typer(backtest_app, name="backtest")
 app.add_typer(data_app, name="data")
 app.add_typer(confluence_app, name="confluence")
 app.add_typer(options_app, name="options")
-app.add_typer(simulator_app, name="simulator")
 app.add_typer(ml_app, name="ml")
 app.add_typer(research_app, name="research")
 app.add_typer(scenario_app, name="scenario")
