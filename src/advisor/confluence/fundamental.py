@@ -8,6 +8,7 @@ from datetime import date, timedelta
 import yfinance as yf
 
 from advisor.confluence.models import FundamentalResult
+from advisor.data.yahoo import fetch_earnings_dates
 
 logger = logging.getLogger(__name__)
 
@@ -28,35 +29,14 @@ def check_fundamental(symbol: str, use_research: bool = False) -> FundamentalRes
     earnings_within_7 = False
     earnings_dt: date | None = None
 
-    try:
-        calendar = ticker.calendar
-        if calendar is not None:
-            # calendar can be a dict with 'Earnings Date' key or similar
-            if isinstance(calendar, dict):
-                raw_dates = calendar.get("Earnings Date", [])
-                if not isinstance(raw_dates, list):
-                    raw_dates = [raw_dates]
-            else:
-                # DataFrame format — try to get the first row
-                raw_dates = []
-
-            for raw in raw_dates:
-                if hasattr(raw, "date"):
-                    dt = raw.date()
-                elif isinstance(raw, date):
-                    dt = raw
-                else:
-                    continue
-
-                if today <= dt <= today + timedelta(days=7):
-                    earnings_within_7 = True
-                    earnings_dt = dt
-                    break
-                # Keep the nearest future date
-                if dt >= today and (earnings_dt is None or dt < earnings_dt):
-                    earnings_dt = dt
-    except Exception as e:
-        logger.warning(f"Could not fetch earnings calendar for {symbol}: {e}")
+    for dt in fetch_earnings_dates(symbol, ticker=ticker):
+        if today <= dt <= today + timedelta(days=7):
+            earnings_within_7 = True
+            earnings_dt = dt
+            break
+        # Keep the nearest future date
+        if dt >= today and (earnings_dt is None or dt < earnings_dt):
+            earnings_dt = dt
 
     # --- Insider transactions check ---
     insider_buying = False

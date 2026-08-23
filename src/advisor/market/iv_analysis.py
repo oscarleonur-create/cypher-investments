@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import date, datetime
+from datetime import date
 
 import numpy as np
 import yfinance as yf
 from pydantic import BaseModel
+
+from advisor.data.yahoo import fetch_earnings_dates
 
 logger = logging.getLogger(__name__)
 
@@ -239,39 +241,6 @@ def get_next_earnings_date(symbol: str, ticker: yf.Ticker | None = None) -> date
 
     Returns None if no upcoming earnings date is found.
     """
-    if ticker is None:
-        ticker = yf.Ticker(symbol.upper())
-
-    try:
-        cal = ticker.calendar
-        if cal is None:
-            return None
-
-        # yfinance returns calendar as a dict with "Earnings Date" key
-        # containing a list of datetime objects
-        if isinstance(cal, dict):
-            earnings_dates = cal.get("Earnings Date", [])
-            if earnings_dates:
-                today = date.today()
-                for dt in earnings_dates:
-                    if isinstance(dt, datetime):
-                        d = dt.date()
-                    elif isinstance(dt, date):
-                        d = dt
-                    else:
-                        continue
-                    if d >= today:
-                        return d
-        # Fallback: DataFrame format (older yfinance versions)
-        elif hasattr(cal, "columns"):
-            if "Earnings Date" in cal.columns:
-                vals = cal["Earnings Date"].dropna().tolist()
-                today = date.today()
-                for v in vals:
-                    d = v.date() if hasattr(v, "date") else v
-                    if d >= today:
-                        return d
-    except Exception as e:
-        logger.debug(f"Failed to get earnings date for {symbol}: {e}")
-
-    return None
+    today = date.today()
+    dates = fetch_earnings_dates(symbol, ticker=ticker)
+    return next((d for d in dates if d >= today), None)

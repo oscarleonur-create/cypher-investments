@@ -85,14 +85,16 @@ class YahooDataProvider:
         return list(ticker.options)
 
 
-def fetch_earnings_dates(symbol: str) -> list[date]:
+def fetch_earnings_dates(symbol: str, ticker: yf.Ticker | None = None) -> list[date]:
     """Upcoming/recent earnings dates from yfinance's calendar, best-effort.
 
+    Pass an already-constructed `ticker` to reuse it (avoids a second network
+    round-trip when the caller already has one, e.g. alongside `.info`).
     Returns an empty list on any lookup failure — callers treat "no earnings
     data" as a normal, silent case rather than an error.
     """
     try:
-        cal = yf.Ticker(symbol.upper()).calendar
+        cal = (ticker or yf.Ticker(symbol.upper())).calendar
         raw = cal.get("Earnings Date", []) if isinstance(cal, dict) else []
         if not isinstance(raw, list):
             raw = [raw]

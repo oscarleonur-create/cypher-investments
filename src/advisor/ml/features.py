@@ -361,20 +361,14 @@ class FeatureEngine:
 
             # Days to next earnings (0-1 scale, 1 = imminent)
             try:
-                cal = ticker.calendar
-                if cal is not None:
-                    # calendar may be dict or DataFrame
-                    if isinstance(cal, dict):
-                        ed = cal.get("Earnings Date")
-                        if isinstance(ed, list) and ed:
-                            ed = ed[0]
-                    else:
-                        ed = cal.iloc[0, 0] if not cal.empty else None
-                    if ed is not None:
-                        ed_ts = pd.Timestamp(ed)
-                        days_to = max(0, (ed_ts - df.index[-1]).days)
-                        # Sigmoid-like: 1.0 when 0 days, ~0 when 90+ days
-                        features["earnings_proximity"] = np.exp(-days_to / 15.0)
+                from advisor.data.yahoo import fetch_earnings_dates
+
+                dates = fetch_earnings_dates(symbol, ticker=ticker)
+                if dates:
+                    ed_ts = pd.Timestamp(dates[0])
+                    days_to = max(0, (ed_ts - df.index[-1]).days)
+                    # Sigmoid-like: 1.0 when 0 days, ~0 when 90+ days
+                    features["earnings_proximity"] = np.exp(-days_to / 15.0)
             except Exception as e:
                 logger.debug("Earnings proximity computation failed for %s: %s", symbol, e)
 
