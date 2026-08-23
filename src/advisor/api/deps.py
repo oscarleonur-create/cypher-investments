@@ -72,3 +72,23 @@ def get_job(job_id: str) -> dict | None:
     with _jobs_lock:
         job = _jobs.get(job_id)
         return dict(job) if job else None
+
+
+# ── Symbol universe resolution (shared by scalping/swing scan requests) ─────────
+
+
+def resolve_symbols(universe: str, symbols: list[str], cap: int) -> list[str]:
+    """Custom symbols or a named universe, de-duped and order-preserved, capped."""
+    if universe == "custom":
+        syms = [s.strip().upper() for s in symbols if s.strip()]
+    else:
+        from advisor.data.universe import fetch_universe
+
+        syms = [s.symbol for s in fetch_universe(universe)]
+    seen: set[str] = set()
+    out: list[str] = []
+    for s in syms:
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out[:cap]

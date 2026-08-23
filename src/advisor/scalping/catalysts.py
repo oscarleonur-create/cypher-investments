@@ -82,30 +82,16 @@ def _gap_pct(df: pd.DataFrame) -> float | None:
 
 def earnings_context(symbol: str) -> tuple[bool, int | None]:
     """Return ``(earnings_today, days_to_earnings)`` using the yfinance calendar."""
-    try:
-        import yfinance as yf
+    from advisor.data.yahoo import fetch_earnings_dates
 
-        cal = yf.Ticker(symbol.upper()).calendar
-        dates = cal.get("Earnings Date", []) if isinstance(cal, dict) else []
-        if not isinstance(dates, list):
-            dates = [dates]
-        today = date.today()
-        deltas = []
-        for raw in dates:
-            try:
-                d = pd.Timestamp(raw).date()
-                deltas.append((d - today).days)
-            except Exception:  # noqa: BLE001
-                continue
-        if not deltas:
-            return False, None
-        # nearest absolute, but prefer the soonest upcoming
-        upcoming = [x for x in deltas if x >= 0]
-        nearest = min(upcoming) if upcoming else max(deltas)
-        return (nearest == 0), nearest
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("earnings_context failed for %s: %s", symbol, exc)
+    today = date.today()
+    deltas = [(d - today).days for d in fetch_earnings_dates(symbol)]
+    if not deltas:
         return False, None
+    # nearest absolute, but prefer the soonest upcoming
+    upcoming = [x for x in deltas if x >= 0]
+    nearest = min(upcoming) if upcoming else max(deltas)
+    return (nearest == 0), nearest
 
 
 # ── Tier 3a: recent news headlines (gated, yfinance) ────────────────────────

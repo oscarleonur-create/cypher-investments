@@ -13,6 +13,7 @@ import {
 } from "recharts";
 import { Activity, Play } from "lucide-react";
 import { api } from "@/lib/api";
+import { UNIVERSES } from "@/lib/constants";
 import type { ScalpPreview, ScalpScanResult, ScalpSignal, ScalpStrategyInfo } from "@/lib/types";
 import { useJob } from "@/lib/useJob";
 import { cn, fmtNum, fmtPct, pnlColor } from "@/lib/utils";
@@ -23,11 +24,6 @@ import { Card } from "@/components/ui/card";
 import { Slider, Toggle } from "@/components/ui/slider";
 
 const INTERVALS = ["1m", "5m", "15m"] as const;
-const UNIVERSES = [
-  { key: "semiconductors", label: "Semiconductors" },
-  { key: "sp500", label: "S&P 500" },
-  { key: "custom", label: "Custom" },
-] as const;
 
 const chartAxis = { stroke: "#8b97ad", fontSize: 11 };
 const grid = "#232b3b";

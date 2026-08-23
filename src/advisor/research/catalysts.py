@@ -30,43 +30,25 @@ def build_catalysts(symbol: str, company_name: str = "") -> CatalystRiskResult:
 
 
 def _earnings_catalysts(symbol: str) -> list[CatalystItem]:
-    import yfinance as yf
+    from advisor.data.yahoo import fetch_earnings_dates
 
-    try:
-        cal = yf.Ticker(symbol.upper()).calendar
-        if cal is None:
-            return []
-
-        dates = cal.get("Earnings Date", []) if isinstance(cal, dict) else []
-        if not isinstance(dates, list):
-            dates = [dates]
-
-        items: list[CatalystItem] = []
-        today = date.today()
-        for raw in dates:
-            try:
-                import pandas as pd
-
-                d = pd.Timestamp(raw).date()
-                is_near = d <= today + timedelta(days=90)
-                items.append(
-                    CatalystItem(
-                        description=f"Earnings release expected {d.isoformat()}",
-                        catalyst_type=CatalystType.EARNINGS,
-                        expected_date=d.isoformat(),
-                        is_near_term=is_near,
-                        source="yfinance",
-                        probability=0.5,  # coin-flip on beat/miss at time of build
-                        direction="mixed",
-                        price_impact_pct=None,  # filled from options IV if available
-                    )
-                )
-            except Exception:  # noqa: BLE001
-                continue
-        return items
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Earnings calendar failed for %s: %s", symbol, exc)
-        return []
+    today = date.today()
+    items: list[CatalystItem] = []
+    for d in fetch_earnings_dates(symbol):
+        is_near = d <= today + timedelta(days=90)
+        items.append(
+            CatalystItem(
+                description=f"Earnings release expected {d.isoformat()}",
+                catalyst_type=CatalystType.EARNINGS,
+                expected_date=d.isoformat(),
+                is_near_term=is_near,
+                source="yfinance",
+                probability=0.5,  # coin-flip on beat/miss at time of build
+                direction="mixed",
+                price_impact_pct=None,  # filled from options IV if available
+            )
+        )
+    return items
 
 
 # ── News catalysts via Tavily ────────────────────────────────────────────────

@@ -41,20 +41,7 @@ class RunRequest(BaseModel):
 
 
 def _resolve_symbols(req: RunRequest) -> list[str]:
-    if req.universe == "custom":
-        syms = [s.strip().upper() for s in req.symbols if s.strip()]
-    else:
-        from advisor.data.universe import fetch_universe
-
-        syms = [s.symbol for s in fetch_universe(req.universe)]
-    # de-dup, preserve order, cap
-    seen: set[str] = set()
-    out: list[str] = []
-    for s in syms:
-        if s not in seen:
-            seen.add(s)
-            out.append(s)
-    return out[:_MAX_SYMBOLS]
+    return deps.resolve_symbols(req.universe, req.symbols, _MAX_SYMBOLS)
 
 
 @router.get("/strategies")

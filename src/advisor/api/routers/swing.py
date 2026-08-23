@@ -72,20 +72,8 @@ class ScanRequest(BaseModel):
 
 
 def _resolve_symbols(req: ScanRequest) -> list[str]:
-    if req.universe == "custom":
-        syms = [s.strip().upper() for s in req.symbols if s.strip()]
-    else:
-        from advisor.data.universe import fetch_universe
-
-        syms = [s.symbol for s in fetch_universe(req.universe)]
-    seen: set[str] = set()
-    out: list[str] = []
-    for s in syms:
-        if s not in seen:
-            seen.add(s)
-            out.append(s)
     cap = min(req.max_symbols, _MAX_SYMBOLS)
-    return out[:cap]
+    return deps.resolve_symbols(req.universe, req.symbols, cap)
 
 
 def _scan_symbol(sym: str, strategy: str, include_ml: bool) -> dict | None:

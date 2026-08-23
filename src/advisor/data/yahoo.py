@@ -83,3 +83,26 @@ class YahooDataProvider:
         """Get available option expiration dates."""
         ticker = yf.Ticker(symbol)
         return list(ticker.options)
+
+
+def fetch_earnings_dates(symbol: str) -> list[date]:
+    """Upcoming/recent earnings dates from yfinance's calendar, best-effort.
+
+    Returns an empty list on any lookup failure — callers treat "no earnings
+    data" as a normal, silent case rather than an error.
+    """
+    try:
+        cal = yf.Ticker(symbol.upper()).calendar
+        raw = cal.get("Earnings Date", []) if isinstance(cal, dict) else []
+        if not isinstance(raw, list):
+            raw = [raw]
+        dates: list[date] = []
+        for r in raw:
+            try:
+                dates.append(pd.Timestamp(r).date())
+            except Exception:  # noqa: BLE001
+                continue
+        return dates
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("fetch_earnings_dates failed for %s: %s", symbol, exc)
+        return []

@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Play, TrendingUp, AlertTriangle, MinusCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { api } from "@/lib/api";
+import { UNIVERSES } from "@/lib/constants";
 import type { SwingScanResult, SwingSignal, SwingStrategyInfo } from "@/lib/types";
 import { useJob } from "@/lib/useJob";
 import { cn, fmtNum, fmtPct } from "@/lib/utils";
@@ -11,12 +12,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Slider, Toggle } from "@/components/ui/slider";
-
-const UNIVERSES = [
-  { key: "semiconductors", label: "Semiconductors" },
-  { key: "sp500", label: "S&P 500" },
-  { key: "custom", label: "Custom" },
-] as const;
 
 type VerdictFilter = "ENTER" | "CAUTION" | "ALL";
 
