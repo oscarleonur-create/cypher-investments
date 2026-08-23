@@ -95,7 +95,10 @@ class TestFetchInsiderActivity:
             ]
         )
 
-        result = _fetch_insider_activity("AAPL")
+        with patch(f"{_P}.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 2, 20)
+            mock_dt.strptime = datetime.strptime
+            result = _fetch_insider_activity("AAPL")
 
         assert isinstance(result, InsiderScore)
         assert result.cluster_buys == 3
@@ -140,7 +143,10 @@ class TestFetchInsiderActivity:
             ]
         )
 
-        result = _fetch_insider_activity("AAPL")
+        with patch(f"{_P}.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 2, 20)
+            mock_dt.strptime = datetime.strptime
+            result = _fetch_insider_activity("AAPL")
 
         assert result.csuite_buys == 1
         assert result.large_buys == 1
@@ -186,7 +192,10 @@ class TestFetchInsiderActivity:
             ]
         )
 
-        result = _fetch_insider_activity("AAPL")
+        with patch(f"{_P}.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 2, 20)
+            mock_dt.strptime = datetime.strptime
+            result = _fetch_insider_activity("AAPL")
 
         assert result.cluster_sells == 5
         assert result.score < 0
