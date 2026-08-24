@@ -7,6 +7,7 @@ opening range).
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from advisor.ml.features import _compute_atr, _compute_rsi
@@ -35,7 +36,11 @@ def vwap(df: pd.DataFrame) -> pd.Series:
     vol = df["volume"].fillna(0.0)
     session = pd.Index(df.index).normalize()  # group by calendar day
     pv = (typical * vol).groupby(session).cumsum()
-    cum_vol = vol.groupby(session).cumsum().replace(0, pd.NA)
+    # np.nan, not pd.NA: dividing by a Series containing pd.NA yields an
+    # object-dtype result that .astype(float) can't convert ("float()
+    # argument must be a string or a real number, not 'NAType'"), whereas
+    # np.nan keeps the division in float64 throughout.
+    cum_vol = vol.groupby(session).cumsum().replace(0, np.nan)
     return (pv / cum_vol).astype(float)
 
 
