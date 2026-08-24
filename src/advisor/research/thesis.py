@@ -178,9 +178,19 @@ def _llm_enrich(
             system_prompt=(
                 "You are a portfolio manager writing an investment thesis. "
                 "Given the valuation context, write concise bull/base/bear scenarios. "
+                "Use ONLY the numbers given in the context below (growth rates, margins, "
+                "prices, WACC, risks, catalysts). Do NOT invent additional figures — no "
+                "made-up growth rates, margin deltas (e.g. 'expands 150bps'), FCF "
+                "conversion percentages, or other metrics that are not explicitly stated "
+                "or a direct restatement of what's given. If the context is sparse or "
+                "missing (e.g. no DCF numbers), write the scenario descriptions and "
+                "assumptions qualitatively instead of inventing figures to sound precise "
+                "— a fabricated number is worse than a qualitative statement, since this "
+                "feeds real position decisions. "
                 "Probabilities must sum to 1.0. "
                 "key_assumptions: 2-3 strings. what_proves_wrong: 2-3 strings. "
-                "conviction: HIGH | MEDIUM | LOW based on data quality and spread of scenarios."
+                "conviction: HIGH | MEDIUM | LOW based on data quality and spread of "
+                "scenarios — use LOW whenever the context is sparse."
             ),
             user_prompt=f"Company: {name} ({symbol})\n\n{context}",
             response_model=ThesisOut,
