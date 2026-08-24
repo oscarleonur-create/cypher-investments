@@ -94,6 +94,28 @@ async def chat(symbol: str, req: ChatRequest) -> StreamingResponse:
     )
 
 
+@router.post("/research/{symbol}/recommend")
+async def recommend(symbol: str) -> dict:
+    """Decision support only -- no order is ever placed here. Checks the
+    live position, pulls the cached research report if one exists, and
+    returns a BUY/SELL/INCREASE/DECREASE/HOLD recommendation with reasoning
+    grounded in that data."""
+    from advisor.research.recommendation import build_recommendation, fetch_position_context
+    from advisor.research.store import ResearchStore
+
+    sym = symbol.upper()
+    position = await fetch_position_context(sym)
+
+    store = ResearchStore(deps.db_path())
+    try:
+        report = store.load_latest_report(sym)
+    finally:
+        store.close()
+
+    result = build_recommendation(sym, report, position)
+    return result.model_dump(mode="json")
+
+
 @router.get("/research/{symbol}/conversations")
 async def list_conversations(symbol: str, limit: int = 50) -> dict:
     from advisor.research.store import ResearchStore

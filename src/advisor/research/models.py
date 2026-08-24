@@ -1089,6 +1089,41 @@ class DeepResearch(BaseModel):
     fetched_at: datetime = Field(default_factory=datetime.now)
 
 
+# ── Position recommendation (symbol-scoped, position-aware BUY/SELL advisory) ──
+
+
+class RecommendedAction(StrEnum):
+    BUY = "BUY"
+    SELL = "SELL"
+    INCREASE = "INCREASE"
+    DECREASE = "DECREASE"
+    HOLD = "HOLD"
+
+
+class PositionContext(BaseModel):
+    """Real, Python-computed position facts — never LLM-generated."""
+
+    has_position: bool = False
+    equity_quantity: float = 0.0
+    average_open_price: float = 0.0
+    mark: float = 0.0
+    unrealized_pnl_pct: float | None = None
+    option_legs: list[str] = Field(default_factory=list)
+    accounts: list[str] = Field(default_factory=list)
+    error: str = ""  # set on a best-effort account-data fetch failure
+
+
+class ActionRecommendation(BaseModel):
+    symbol: str
+    action: RecommendedAction = RecommendedAction.HOLD
+    conviction: str = "LOW"  # "HIGH" | "MEDIUM" | "LOW"
+    reasoning: str = ""
+    key_factors: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    position: PositionContext = Field(default_factory=PositionContext)
+    generated_at: datetime = Field(default_factory=datetime.now)
+
+
 # ── Research report (full Phase 1 + 2 + 3 model) ────────────────────────────
 
 
