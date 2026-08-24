@@ -228,6 +228,32 @@ export interface DeepResearch {
 // ResearchReport is large + deeply nested; the panels read it defensively.
 export type ResearchReport = Record<string, any>;
 
+// ── Position recommendation (symbol-scoped BUY/SELL/HOLD advisory) ────────────
+
+export type RecommendedAction = "BUY" | "SELL" | "INCREASE" | "DECREASE" | "HOLD";
+
+export interface PositionContext {
+  has_position: boolean;
+  equity_quantity: number;
+  average_open_price: number;
+  mark: number;
+  unrealized_pnl_pct: number | null;
+  option_legs: string[];
+  accounts: string[];
+  error: string;
+}
+
+export interface ActionRecommendation {
+  symbol: string;
+  action: RecommendedAction;
+  conviction: string; // "HIGH" | "MEDIUM" | "LOW"
+  reasoning: string;
+  key_factors: string[];
+  risks: string[];
+  position: PositionContext;
+  generated_at: string;
+}
+
 // ── Bayesian pricing (what-if posterior) ──────────────────────────────────────
 
 export interface PriorDriver {

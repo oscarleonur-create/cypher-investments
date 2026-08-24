@@ -24,6 +24,7 @@ import {
   OptionsFlowPanel,
   PriceChartPanel,
   RatiosPanel,
+  RecommendationPanel,
   SentimentPanel,
   ThesisPanel,
   TranscriptsPanel,
@@ -120,6 +121,9 @@ export default function Ticker({ quotes }: { quotes: QuotesState }) {
         <div className="space-y-4">
           {/* Headline white-paper brief — full width */}
           <DeepResearchPanel r={data} />
+          {/* On-demand BUY/SELL/INCREASE/DECREASE/HOLD recommendation, checks
+              the real position + cached research. Decision support only. */}
+          <RecommendationPanel symbol={sym} />
           {/* Portfolio-only Bayesian what-if; renders nothing for non-holdings. */}
           <BayesianPricingPanel symbol={sym} />
           <div className="grid gap-4 lg:grid-cols-2">

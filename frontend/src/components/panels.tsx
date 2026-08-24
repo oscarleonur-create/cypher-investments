@@ -1563,6 +1563,112 @@ export function BayesianPricingPanel({ symbol }: { symbol: string }) {
   );
 }
 
+// ── Position recommendation (BUY/SELL/INCREASE/DECREASE/HOLD) ─────────────────
+
+function actionBadgeVariant(action: string): "pos" | "neg" | "muted" {
+  if (action === "BUY" || action === "INCREASE") return "pos";
+  if (action === "SELL" || action === "DECREASE") return "neg";
+  return "muted";
+}
+
+export function RecommendationPanel({ symbol }: { symbol: string }) {
+  const recommend = useMutation({
+    mutationFn: () => api.recommend(symbol),
+  });
+
+  const r = recommend.data;
+
+  return (
+    <Section
+      title="Recommendation"
+      right={
+        <Button onClick={() => recommend.mutate()} disabled={recommend.isPending} size="sm">
+          {recommend.isPending ? "Analyzing…" : r ? "Refresh" : "Get Recommendation"}
+        </Button>
+      }
+    >
+      {recommend.isError && (
+        <div className="text-sm text-red-400">
+          {(recommend.error as Error).message}
+        </div>
+      )}
+
+      {!r && !recommend.isPending && !recommend.isError && (
+        <div className="text-sm text-muted">
+          Checks your current position, pulls cached research, and suggests an action.
+        </div>
+      )}
+
+      {r && (
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant={actionBadgeVariant(r.action)}>{r.action}</Badge>
+            <Badge variant="muted">Conviction: {r.conviction}</Badge>
+          </div>
+          <p className="text-xs text-muted">
+            Decision support only — you place any trade yourself.
+          </p>
+
+          {r.position.has_position ? (
+            <div>
+              {r.position.equity_quantity !== 0 && (
+                <>
+                  <KV
+                    k="Position"
+                    v={`${fmtNum(r.position.equity_quantity, 0)} sh @ avg ${fmtUsd(
+                      r.position.average_open_price
+                    )}`}
+                  />
+                  <KV k="Mark" v={fmtUsd(r.position.mark)} />
+                  {r.position.unrealized_pnl_pct != null && (
+                    <KV
+                      k="Unrealized"
+                      v={
+                        <span className={pnlColor(r.position.unrealized_pnl_pct)}>
+                          {fmtPct(r.position.unrealized_pnl_pct, { sign: true })}
+                        </span>
+                      }
+                    />
+                  )}
+                </>
+              )}
+              {r.position.option_legs.map((leg, i) => (
+                <KV key={i} k={`Option leg ${i + 1}`} v={leg} />
+              ))}
+            </div>
+          ) : (
+            <div className="text-sm text-muted">No existing position.</div>
+          )}
+
+          {r.reasoning && <p className="text-sm">{r.reasoning}</p>}
+
+          {r.key_factors.length > 0 && (
+            <div>
+              <div className="text-xs text-muted mb-1">Key factors</div>
+              <ul className="text-sm list-disc list-inside space-y-0.5">
+                {r.key_factors.map((f, i) => (
+                  <li key={i}>{f}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {r.risks.length > 0 && (
+            <div>
+              <div className="text-xs text-muted mb-1">Risks</div>
+              <ul className="text-sm list-disc list-inside space-y-0.5">
+                {r.risks.map((risk, i) => (
+                  <li key={i}>{risk}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </Section>
+  );
+}
+
 // ── Price chart with fundamentals overlay ─────────────────────────────────────
 
 const RANGES = { "1M": 30, "6M": 182, "1Y": 365, "5Y": 365 * 5 } as const;
