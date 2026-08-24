@@ -111,6 +111,18 @@ CREATE TABLE IF NOT EXISTS portfolio_cash_flows (
 
 CREATE INDEX IF NOT EXISTS idx_portfolio_cash_flows_date
     ON portfolio_cash_flows(flow_date DESC);
+
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id          TEXT NOT NULL PRIMARY KEY,
+    agent       TEXT NOT NULL,              -- 'signal' | 'risk'
+    objective   TEXT NOT NULL DEFAULT '',
+    trace_json  TEXT NOT NULL DEFAULT '[]',  -- tool-call transcript (no system prompt)
+    result_json TEXT NOT NULL DEFAULT '{}',
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_runs_agent
+    ON agent_runs(agent, created_at DESC);
 """
 
 
@@ -490,3 +502,51 @@ class ResearchStore:
     def load_latest_cash_flow_date(self) -> str | None:
         row = self._conn.execute("SELECT MAX(flow_date) AS d FROM portfolio_cash_flows").fetchone()
         return row["d"] if row else None
+
+    # ── Agent runs (audit trail for autonomous Signal/Risk agents) ──────────
+
+    def save_agent_run(self, agent: str, objective: str, trace: list[dict], result: dict) -> str:
+        import json
+        import uuid
+
+        run_id = uuid.uuid4().hex[:12]
+        self._conn.execute(
+            "INSERT INTO agent_runs (id, agent, objective, trace_json, result_json) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                run_id,
+                agent,
+                objective,
+                json.dumps(trace, default=str),
+                json.dumps(result, default=str),
+            ),
+        )
+        self._conn.commit()
+        return run_id
+
+    def load_agent_run(self, run_id: str) -> dict | None:
+        import json
+
+        row = self._conn.execute(
+            "SELECT id, agent, objective, trace_json, result_json, created_at "
+            "FROM agent_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "agent": row["agent"],
+            "objective": row["objective"],
+            "trace": json.loads(row["trace_json"]),
+            "result": json.loads(row["result_json"]),
+            "created_at": row["created_at"],
+        }
+
+    def list_agent_runs(self, agent: str, limit: int = 50) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT id, agent, objective, created_at FROM agent_runs "
+            "WHERE agent = ? ORDER BY created_at DESC LIMIT ?",
+            (agent, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]

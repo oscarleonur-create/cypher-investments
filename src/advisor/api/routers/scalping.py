@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from advisor.api import deps
-from advisor.risk.gate import gate_signals
+from advisor.risk.agent import review_signals
 from advisor.scalping.models import ScalpScanResult
 from advisor.scalping.scanner import ScalpScanner
 from advisor.scalping.strategies import SCALP_STRATEGIES, default_params
@@ -38,6 +38,7 @@ class RunRequest(BaseModel):
     strategies: list[str] = []  # empty → all
     min_rvol: float = 1.5  # RVOL gate: drop triggers below this relative volume
     enrich_llm: bool = False  # also LLM-score news sentiment on survivors (slower)
+    enrich_llm_risk: bool = False  # advisory LLM narrowing on top of the deterministic gate
 
 
 def _resolve_symbols(req: RunRequest) -> list[str]:
@@ -69,8 +70,8 @@ async def run_scan(req: RunRequest) -> dict:
     if bad:
         raise HTTPException(status_code=400, detail=f"Unknown strategies: {', '.join(bad)}")
 
-    session = await _try_session()
-    net_liq, open_notional = await _account_risk_state(session)
+    session = await deps.try_get_tt_session()
+    net_liq, open_notional = await deps.account_risk_state(session)
     job_id = deps.new_job("scalp", target=req.universe)
     deps.update_job(job_id, message=f"scanning {len(symbols)} symbols…")
 
@@ -85,8 +86,11 @@ async def run_scan(req: RunRequest) -> dict:
                 min_rvol=req.min_rvol,
                 use_llm=req.enrich_llm,
             )
-            result.signals = gate_signals(
-                result.signals, net_liq=net_liq, open_notional_by_symbol=open_notional
+            result.signals = review_signals(
+                result.signals,
+                net_liq=net_liq,
+                open_notional_by_symbol=open_notional,
+                use_llm=req.enrich_llm_risk,
             )
             global _latest_job
             _results[job_id] = result
@@ -126,7 +130,7 @@ async def preview(
     from advisor.scalping.scanner import _LOOKBACK_MIN_BY_INTERVAL
 
     sym = symbol.strip().upper()
-    session = await _try_session()
+    session = await deps.try_get_tt_session()
     lookback = _LOOKBACK_MIN_BY_INTERVAL.get(interval, 2880)
 
     def _work() -> dict:
@@ -157,37 +161,3 @@ async def preview(
         }
 
     return await asyncio.to_thread(_work)
-
-
-async def _try_session():
-    """Best-effort cached TastyTrade session; None if credentials are absent."""
-    try:
-        return await deps.get_tt_session()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("TastyTrade session unavailable, scalp scan will use yfinance: %s", exc)
-        return None
-
-
-async def _account_risk_state(session) -> tuple[float, dict[str, float]]:
-    """Net liq + open notional per underlying, for sizing the risk gate.
-
-    Best-effort: an unavailable session (or API hiccup) just means every
-    signal gets gated with net_liq=0, i.e. blocked rather than sized blind.
-    """
-    if session is None:
-        return 0.0, {}
-    try:
-        from advisor.market.tastytrade_client import get_balances, get_positions
-
-        balances, positions = await asyncio.gather(get_balances(session), get_positions(session))
-        open_notional: dict[str, float] = {}
-        for p in positions:
-            price = p["mark"] or p["close_price"] or p["average_open_price"]
-            notional = abs(p["quantity"]) * price * p["multiplier"]
-            open_notional[p["underlying_symbol"]] = (
-                open_notional.get(p["underlying_symbol"], 0.0) + notional
-            )
-        return balances["net_liq"], open_notional
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("risk gate: could not load account state: %s", exc)
-        return 0.0, {}

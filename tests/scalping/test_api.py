@@ -207,3 +207,65 @@ def test_run_falls_back_to_blocked_when_account_state_fails(client: TestClient, 
     for s in result["signals"]:
         assert s["risk_approved"] is False
         assert s["risk_note"] == "no account data"
+
+
+def test_run_with_enrich_llm_risk_narrows_via_the_advisory_layer(client: TestClient, monkeypatch):
+    """enrich_llm_risk=True must route through review_signals(use_llm=True)
+    rather than the plain deterministic gate -- proves the wiring, not the
+    Risk agent's own logic (that's covered by test_risk_agent.py)."""
+    frames = {"AAA": _df([100.0] * 29 + [95.0])}
+    monkeypatch.setattr(
+        "advisor.scalping.scanner.fetch_intraday_candles",
+        lambda symbols, **kw: ({s: frames[s] for s in symbols if s in frames}, "yfinance"),
+    )
+
+    async def _session():
+        return "FAKE_SESSION"
+
+    monkeypatch.setattr("advisor.api.deps.get_tt_session", _session)
+    monkeypatch.setattr("advisor.scalping.catalysts.earnings_context", lambda s: (False, None))
+    monkeypatch.setattr("advisor.scalping.catalysts.news_headlines", lambda s, **k: [])
+
+    async def _fake_get_balances(session):
+        return {"account": "TEST", "net_liq": 100_000.0, "cash": 50_000.0, "buying_power": 50_000.0}
+
+    async def _fake_get_positions(session):
+        return []
+
+    monkeypatch.setattr("advisor.market.tastytrade_client.get_balances", _fake_get_balances)
+    monkeypatch.setattr("advisor.market.tastytrade_client.get_positions", _fake_get_positions)
+
+    from advisor.agent.llm import AgentLLM
+    from advisor.risk.agent import RiskAgentVerdict
+
+    monkeypatch.setattr(AgentLLM, "configured", property(lambda self: True))
+    monkeypatch.setattr(
+        "advisor.risk.agent._narrow_with_llm",
+        lambda *a, **k: RiskAgentVerdict(narrow_quantity=7, reasoning="advisory narrow"),
+    )
+
+    resp = client.post(
+        "/api/scalping/run",
+        json={
+            "universe": "custom",
+            "symbols": ["AAA"],
+            "interval": "5m",
+            "min_rvol": 0,
+            "strategies": ["vwap_reversion"],
+            "enrich_llm_risk": True,
+        },
+    )
+    job_id = resp.json()["job_id"]
+
+    deadline = time.time() + 5
+    job = {}
+    while time.time() < deadline:
+        job = client.get(f"/api/jobs/{job_id}").json()
+        if job["status"] != "running":
+            break
+        time.sleep(0.05)
+    assert job["status"] == "done"
+
+    result = client.get("/api/scalping/signals", params={"job_id": job_id}).json()["result"]
+    assert result["signals"][0]["risk_quantity"] == 7
+    assert "advisory narrow" in result["signals"][0]["risk_note"]
