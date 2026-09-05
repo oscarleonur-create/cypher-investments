@@ -48,6 +48,14 @@ CREATE TABLE IF NOT EXISTS watermarks (
     updated_at       TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS book_snapshots (
+    as_of        TEXT NOT NULL PRIMARY KEY,
+    snapshot_json TEXT NOT NULL,
+    created_at   TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_book_snapshots_as_of ON book_snapshots(as_of DESC);
+
 CREATE TABLE IF NOT EXISTS daemon_heartbeat (
     job         TEXT NOT NULL PRIMARY KEY,
     last_run_at TEXT,
@@ -236,6 +244,42 @@ class DaemonStore:
         )
         self._conn.commit()
         return hb
+
+    # ── Book snapshots ────────────────────────────────────────────────────
+
+    def save_book(self, snapshot, *, keep: int = 500) -> None:
+        """Persist a book snapshot and prune the history.
+
+        A partial snapshot (an account failed to load) is never saved: diffing
+        against it would report every position in the missing account as
+        closed, and fire a wave of false alerts.
+        """
+        if getattr(snapshot, "partial", False):
+            return
+        self._conn.execute(
+            "INSERT OR REPLACE INTO book_snapshots (as_of, snapshot_json) VALUES (?, ?)",
+            (snapshot.as_of.isoformat(), snapshot.model_dump_json()),
+        )
+        self._conn.execute(
+            "DELETE FROM book_snapshots WHERE as_of NOT IN "
+            "(SELECT as_of FROM book_snapshots ORDER BY as_of DESC LIMIT ?)",
+            (keep,),
+        )
+        self._conn.commit()
+
+    def load_latest_book(self):
+        """Most recent stored snapshot, or None when the book has never run."""
+        from advisor.daemon.book import BookSnapshot
+
+        row = self._conn.execute(
+            "SELECT snapshot_json FROM book_snapshots ORDER BY as_of DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return BookSnapshot.model_validate_json(row["snapshot_json"])
+
+    def book_snapshot_count(self) -> int:
+        return self._conn.execute("SELECT COUNT(*) AS n FROM book_snapshots").fetchone()["n"]
 
     def all_heartbeats(self) -> list[Heartbeat]:
         rows = self._conn.execute("SELECT job FROM daemon_heartbeat ORDER BY job").fetchall()
