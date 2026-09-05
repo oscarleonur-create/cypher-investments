@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 
 from advisor.daemon import market_calendar as mc
+from advisor.daemon.ingest import ingest_book
 from advisor.daemon.jobs import JobContext
 from advisor.daemon.models import EventSource, JobResult
 
@@ -35,10 +36,12 @@ async def run_brief(ctx: JobContext) -> JobResult:
     if ctx.catch_up:
         detail += " (catch-up: fired late for a missed slot)"
 
-    # Phase 2: broker delta, EDGAR filings, overnight gaps, today's calendar,
-    # positions entering a roll window, thesis invalidations tripped overnight.
+    # Phase 2+: EDGAR filings, overnight gaps, today's calendar, positions
+    # entering a roll window, thesis invalidations tripped overnight.
+    result = await ingest_book(ctx.store, include_standing=True)
+    detail = f"{result.summary()}; {detail}"
     logger.info("brief: %s", detail)
-    return JobResult(job="brief", ok=True, detail=detail)
+    return JobResult(job="brief", ok=True, detail=detail, events_emitted=result.new)
 
 
 async def run_watch(ctx: JobContext) -> JobResult:
@@ -47,21 +50,23 @@ async def run_watch(ctx: JobContext) -> JobResult:
     Silence is the expected outcome. This job only speaks when an event clears
     the relevance gate at Tier A.
     """
-    # Phase 2: position mechanics (DTE, strike breach, assignment risk, stops),
-    # factor shocks against the book's exposure vector.
+    # Crossings only: standing conditions belong in the digests, not in a
+    # sweep that runs every 15 minutes.
+    result = await ingest_book(ctx.store, include_standing=False)
     session_close = mc.session_close(ctx.now.date())
-    detail = f"session sweep, close {session_close.strftime('%H:%M')} ET"
+    detail = f"{result.summary()}; close {session_close.strftime('%H:%M')} ET"
     logger.debug("watch: %s", detail)
-    return JobResult(job="watch", ok=True, detail=detail)
+    return JobResult(job="watch", ok=True, detail=detail, events_emitted=result.new)
 
 
 async def run_review(ctx: JobContext) -> JobResult:
     """Post-close: what moved, why, thesis status, tomorrow's calendar."""
     since = mc.previous_trading_day(ctx.now.date())
-    # Phase 2: P&L attribution, per-position thesis status, next-day calendar.
-    detail = f"post-close review, prior session {since.isoformat()}"
+    # Phase 2+: P&L attribution, per-position thesis status, next-day calendar.
+    result = await ingest_book(ctx.store, include_standing=True)
+    detail = f"{result.summary()}; prior session {since.isoformat()}"
     logger.info("review: %s", detail)
-    return JobResult(job="review", ok=True, detail=detail)
+    return JobResult(job="review", ok=True, detail=detail, events_emitted=result.new)
 
 
 async def run_heartbeat(ctx: JobContext) -> JobResult:
