@@ -59,6 +59,33 @@ advisor --help
 advisor -v  # verbose logging
 ```
 
+### Daemon
+
+The always-on watcher. Runs scheduled jobs, emits into the event stream, and
+records a durable heartbeat so you can tell "up and quiet" from "died at 11am".
+
+```bash
+advisor daemon run              # foreground, until Ctrl-C
+advisor daemon once             # run one scheduler tick and exit
+advisor daemon once --job brief # force a single job, ignoring its schedule
+advisor daemon status           # heartbeats, watermarks, event counts
+advisor daemon events --tier A  # recent events, filtered
+```
+
+**Schedule**
+
+| Job | When | Does |
+|---|---|---|
+| `brief` | 07:00 ET, trading days | backfills every source from its watermark, reports what you missed |
+| `watch` | every 15m during the session | cheap deterministic sweep — silent unless actionable |
+| `review` | 16:30 ET, trading days | post-close: what moved, thesis status, tomorrow's calendar |
+| `heartbeat` | every 5m, always | liveness tick |
+
+Scheduling is decided against wall-clock ET rather than elapsed time, because
+the host laptop sleeps. A `brief` owed at 07:00 while the lid was shut still
+fires when you open it at 09:12 (bounded by a 6-hour grace window); past days
+are never replayed.
+
 ### Research
 
 Deep fundamental research, cached to SQLite (`data/research.db`).
@@ -100,6 +127,7 @@ frontend first with `cd frontend && npm install && npm run build`.
 
 | Path | Purpose |
 |---|---|
+| `src/advisor/daemon/` | the always-on spine: scheduler, event stream, watermarks, heartbeats |
 | `src/advisor/research/` | fundamental research engine, portfolio review, theses, KPI tracking |
 | `src/advisor/macro/` | regime detection, sector/factor reference data |
 | `src/advisor/market/` | TastyTrade client, IV analysis, option chain search |
