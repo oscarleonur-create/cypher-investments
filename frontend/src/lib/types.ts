@@ -487,96 +487,6 @@ export interface Conversation {
   updated_at: string;
 }
 
-// ── Scalping scanner ──────────────────────────────────────────────────────────
-
-export interface ScalpStrategyInfo {
-  name: string;
-  label: string;
-  description: string;
-  defaults: Record<string, number>;
-}
-
-export interface ScalpSignal {
-  symbol: string;
-  strategy: string;
-  action: "LONG" | "SHORT" | "FLAT";
-  reason: string;
-  price: number;
-  entry: number;
-  stop: number;
-  target: number;
-  score: number;
-  technical_score: number | null;
-  bar_time: string;
-  // catalyst context
-  rvol: number | null;
-  gap_pct: number | null;
-  earnings_today: boolean;
-  days_to_earnings: number | null;
-  headlines: string[];
-  sentiment_score: number | null;
-  catalyst_note: string;
-  // risk gate verdict
-  risk_approved: boolean | null;
-  risk_quantity: number | null;
-  risk_note: string;
-}
-
-export interface ScalpScanResult {
-  scanned_at: string;
-  interval: string;
-  symbols_scanned: number;
-  source: string; // "tastytrade" | "yfinance"
-  min_rvol: number;
-  gated_out: number;
-  signals: ScalpSignal[];
-  errors: string[];
-}
-
-// ── Swing trade scanner ───────────────────────────────────────────────────────
-
-export interface SwingStrategyInfo {
-  name: string;
-  label: string;
-  description: string;
-  typical_hold_days: string;
-}
-
-export interface SwingSignal {
-  symbol: string;
-  strategy: string;
-  verdict: "ENTER" | "CAUTION" | "PASS";
-  reasoning: string;
-  suggested_hold_days: number;
-  // technical
-  technical_signal: string;
-  technical_price: number;
-  technical_bullish: boolean;
-  volume_ratio: number;
-  // sentiment
-  sentiment_bullish: boolean;
-  sentiment_pct: number;
-  sentiment_headlines: string[];
-  // fundamental
-  fundamental_clear: boolean;
-  earnings_within_7_days: boolean;
-  earnings_date: string | null;
-  insider_buying: boolean;
-  // ml
-  ml_available: boolean;
-  ml_signal: string;
-  ml_win_prob: number | null;
-  scanned_at: string;
-}
-
-export interface SwingScanResult {
-  scanned_at: string;
-  strategy: string;
-  symbols_scanned: number;
-  signals: SwingSignal[];
-  errors: string[];
-}
-
 // ── Portfolio performance (deposit-adjusted returns) ──────────────────────────
 
 export interface PeriodReturn {
@@ -601,22 +511,4 @@ export interface PerformanceResponse {
   equity_curve: EquityPoint[];
   snapshot_count: number;
   cash_flow_count: number;
-}
-
-export interface ScalpCandle {
-  t: number; // epoch ms
-  open: number | null;
-  high: number | null;
-  low: number | null;
-  close: number | null;
-  volume: number | null;
-  vwap: number | null;
-}
-
-export interface ScalpPreview {
-  symbol: string;
-  interval: string;
-  source: string;
-  candles: ScalpCandle[];
-  signal: ScalpSignal | null;
 }

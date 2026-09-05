@@ -18,9 +18,6 @@ def create_app() -> FastAPI:
         agent,
         portfolio,
         research,
-        scalping,
-        signal_agent,
-        swing,
         theses,
         watchlist,
     )
@@ -45,9 +42,6 @@ def create_app() -> FastAPI:
     app.include_router(agent.router)
     app.include_router(watchlist.router)
     app.include_router(theses.router)
-    app.include_router(scalping.router)
-    app.include_router(signal_agent.router)
-    app.include_router(swing.router)
     app.include_router(ws_router)
 
     _mount_spa(app)

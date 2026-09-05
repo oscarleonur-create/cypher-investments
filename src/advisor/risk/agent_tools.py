@@ -17,14 +17,14 @@ logger = logging.getLogger(__name__)
 
 
 def _tool_get_recent_news(symbol: str, limit: int = 5) -> dict:
-    from advisor.scalping.catalysts import news_headlines
+    from advisor.data.news import news_headlines
 
     headlines = news_headlines(symbol, limit=limit)
     return {"symbol": symbol, "headlines": headlines}
 
 
 def _tool_get_days_to_earnings(symbol: str) -> dict:
-    from advisor.scalping.catalysts import earnings_context
+    from advisor.data.news import earnings_context
 
     earnings_today, days_to = earnings_context(symbol)
     return {"symbol": symbol, "earnings_today": earnings_today, "days_to_earnings": days_to}

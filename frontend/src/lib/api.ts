@@ -13,11 +13,6 @@ import type {
   PriceHistoryResult,
   RotationResponse,
   ResearchReport,
-  ScalpPreview,
-  ScalpScanResult,
-  ScalpStrategyInfo,
-  SwingScanResult,
-  SwingStrategyInfo,
   Thesis,
   ThesisInput,
   ThesisSummary,
@@ -106,37 +101,6 @@ export const api = {
   updateThesis: (id: string, body: ThesisInput) => put<Thesis>(`/api/theses/${id}`, body),
   deleteThesis: (id: string) =>
     del<{ id: string; removed: boolean }>(`/api/theses/${id}`),
-  scalpStrategies: () =>
-    get<{ strategies: ScalpStrategyInfo[] }>("/api/scalping/strategies"),
-  scalpRun: (body: {
-    universe: string;
-    symbols?: string[];
-    interval: string;
-    strategies?: string[];
-    min_rvol?: number;
-    enrich_llm?: boolean;
-  }) => post<{ job_id: string; symbols: number }>("/api/scalping/run", body),
-  scalpSignals: (jobId?: string) =>
-    get<{ result: ScalpScanResult | null }>(
-      jobId ? `/api/scalping/signals?job_id=${jobId}` : "/api/scalping/signals"
-    ),
-  scalpPreview: (symbol: string, interval: string, strategy: string) =>
-    get<ScalpPreview>(
-      `/api/scalping/preview/${encodeURIComponent(symbol)}?interval=${interval}&strategy=${strategy}`
-    ),
-  swingStrategies: () =>
-    get<{ strategies: SwingStrategyInfo[] }>("/api/swing/strategies"),
-  swingRun: (body: {
-    universe: string;
-    symbols?: string[];
-    strategy: string;
-    max_symbols?: number;
-    include_ml?: boolean;
-  }) => post<{ job_id: string; symbols: number }>("/api/swing/scan", body),
-  swingSignals: (jobId?: string) =>
-    get<{ result: SwingScanResult | null }>(
-      jobId ? `/api/swing/signals?job_id=${jobId}` : "/api/swing/signals"
-    ),
   performance: (syncCashFlows = false) =>
     get<PerformanceResponse>(
       `/api/portfolio/performance${syncCashFlows ? "?sync_cash_flows=true" : ""}`

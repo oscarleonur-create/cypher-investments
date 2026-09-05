@@ -1,6 +1,6 @@
-"""Position sizing and go/no-go checks for scalp signals.
+"""Position sizing and go/no-go checks for trade candidates.
 
-A trader must never act on a raw signal — only on one that has passed
+A trader must never act on a raw candidate — only on one that has passed
 through `gate_signals` with `risk_approved=True`. This module has no
 execution path of its own; it only sizes and vetoes.
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from advisor.scalping.models import ScalpSignal
+from advisor.risk.models import TradeCandidate
 
 
 class RiskLimits(BaseModel):
@@ -22,12 +22,12 @@ class RiskLimits(BaseModel):
 
 
 def assess_signal(
-    signal: ScalpSignal,
+    signal: TradeCandidate,
     *,
     net_liq: float,
     existing_symbol_notional: float = 0.0,
     limits: RiskLimits | None = None,
-) -> ScalpSignal:
+) -> TradeCandidate:
     """Return a copy of `signal` annotated with a sizing/approval verdict."""
     limits = limits or RiskLimits()
 
@@ -73,12 +73,12 @@ def assess_signal(
 
 
 def gate_signals(
-    signals: list[ScalpSignal],
+    signals: list[TradeCandidate],
     *,
     net_liq: float,
     open_notional_by_symbol: dict[str, float] | None = None,
     limits: RiskLimits | None = None,
-) -> list[ScalpSignal]:
+) -> list[TradeCandidate]:
     """Gate a batch of signals; returns them approved-first."""
     exposure = open_notional_by_symbol or {}
     gated = [

@@ -23,7 +23,7 @@ from advisor.agent.llm import AgentLLM
 from advisor.agent.runner import run_tool_loop
 from advisor.risk.agent_tools import dispatch, tool_specs
 from advisor.risk.gate import RiskLimits, assess_signal, gate_signals
-from advisor.scalping.models import ScalpSignal
+from advisor.risk.models import TradeCandidate
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ def _parse_verdict(text: str) -> RiskAgentVerdict:
         return RiskAgentVerdict(reasoning=text[:300] if text else "parse failed")
 
 
-def _narrow_with_llm(signal: ScalpSignal, llm: AgentLLM) -> RiskAgentVerdict:
+def _narrow_with_llm(signal: TradeCandidate, llm: AgentLLM) -> RiskAgentVerdict:
     schema = json.dumps(RiskAgentVerdict.model_json_schema(), indent=2)
     system_prompt = _SYSTEM_PROMPT.format(schema=schema)
     user_prompt = (
@@ -72,7 +72,7 @@ def _narrow_with_llm(signal: ScalpSignal, llm: AgentLLM) -> RiskAgentVerdict:
         f"Deterministic verdict: approved, quantity={signal.risk_quantity}, "
         f"entry={signal.entry}, stop={signal.stop}, target={signal.target}, "
         f"risk_reward={signal.risk_reward}, score={signal.score}\n"
-        f"Strategy: {signal.strategy}"
+        f"Source: {signal.source}"
     )
     loop_result = run_tool_loop(
         llm, system_prompt, user_prompt, tool_specs(), dispatch, max_iterations=_MAX_ITERATIONS
@@ -83,13 +83,13 @@ def _narrow_with_llm(signal: ScalpSignal, llm: AgentLLM) -> RiskAgentVerdict:
 
 
 def review_signal(
-    signal: ScalpSignal,
+    signal: TradeCandidate,
     *,
     net_liq: float,
     existing_symbol_notional: float = 0.0,
     limits: RiskLimits | None = None,
     llm: AgentLLM | None = None,
-) -> ScalpSignal:
+) -> TradeCandidate:
     """Deterministic ceiling first, then an optional LLM narrowing pass.
 
     The LLM can only move the outcome toward more conservative: lower
@@ -142,13 +142,13 @@ def review_signal(
 
 
 def review_signals(
-    signals: list[ScalpSignal],
+    signals: list[TradeCandidate],
     *,
     net_liq: float,
     open_notional_by_symbol: dict[str, float] | None = None,
     limits: RiskLimits | None = None,
     use_llm: bool = False,
-) -> list[ScalpSignal]:
+) -> list[TradeCandidate]:
     """Same deterministic gate as gate_signals(); optionally narrows each
     approved signal further with the LLM advisory layer."""
     gated = gate_signals(
