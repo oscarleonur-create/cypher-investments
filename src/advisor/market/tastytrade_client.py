@@ -90,6 +90,59 @@ async def get_positions(session=None, account_number: str | None = None):
     ]
 
 
+async def get_transactions(
+    session, account_number: str, start_date: date | None = None
+) -> list[dict]:
+    """Fetch money-movement transactions (deposits/withdrawals) from TastyTrade."""
+    account = await get_account(session, account_number)
+    try:
+        txns = await account.get_history(
+            session,
+            sort="Asc",
+            type="Money Movement",
+            start_date=start_date,
+        )
+    except Exception:
+        # Older SDK versions may use a different signature; fall back to no filter
+        txns = await account.get_history(session)
+        txns = [t for t in txns if getattr(t, "transaction_type", "") == "Money Movement"]
+        if start_date:
+            txns = [
+                t
+                for t in txns
+                if getattr(t, "transaction_date", None) and t.transaction_date >= start_date
+            ]
+    return [
+        {
+            "id": getattr(t, "id", None),
+            "account": account_number,
+            "date": t.transaction_date.isoformat()
+            if hasattr(t.transaction_date, "isoformat")
+            else str(t.transaction_date)[:10],
+            "amount": float(t.net_value) if hasattr(t, "net_value") else 0.0,
+            "description": getattr(t, "description", ""),
+        }
+        for t in txns
+    ]
+
+
+async def get_nlv_history(session, account_number: str, time_back: str = "all") -> list[dict]:
+    """Fetch historical net-liquidating-value OHLC for NLV backfill."""
+    account = await get_account(session, account_number)
+    items = await account.get_net_liquidating_value_history(session, time_back=time_back)
+    results = []
+    for item in items:
+        raw_date = getattr(item, "time", None) or getattr(item, "date", None)
+        if raw_date is None:
+            continue
+        date_str = str(raw_date)[:10]
+        close = getattr(item, "close", None)
+        if close is None:
+            continue
+        results.append({"account": account_number, "date": date_str, "net_liq": float(close)})
+    return results
+
+
 async def get_option_chain(session, symbol: str, min_dte: int = 25, max_dte: int = 45):
     """Get option chain for symbol filtered by DTE."""
     data = await session._get(f"/option-chains/{symbol}/nested")

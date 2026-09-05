@@ -1,4 +1,5 @@
 import type {
+  ActionRecommendation,
   BayesianOverrides,
   BayesianPriceResult,
   ChatEvent,
@@ -7,6 +8,7 @@ import type {
   HoldingsResponse,
   Job,
   MarketContext,
+  PerformanceResponse,
   PortfolioReview,
   PriceHistoryResult,
   RotationResponse,
@@ -75,6 +77,8 @@ export const api = {
       `/api/research/${symbol}/price-history`
     ),
   refreshResearch: (symbol: string) => post<{ job_id: string }>(`/api/research/${symbol}/refresh`),
+  recommend: (symbol: string) =>
+    post<ActionRecommendation>(`/api/research/${symbol}/recommend`),
   job: (id: string) => get<Job>(`/api/jobs/${id}`),
   bayesian: (symbol: string) =>
     get<{ result: BayesianPriceResult; fetched_at: string }>(`/api/portfolio/bayesian/${symbol}`),
@@ -97,6 +101,11 @@ export const api = {
   updateThesis: (id: string, body: ThesisInput) => put<Thesis>(`/api/theses/${id}`, body),
   deleteThesis: (id: string) =>
     del<{ id: string; removed: boolean }>(`/api/theses/${id}`),
+  performance: (syncCashFlows = false) =>
+    get<PerformanceResponse>(
+      `/api/portfolio/performance${syncCashFlows ? "?sync_cash_flows=true" : ""}`
+    ),
+  backfillNlv: () => post<{ inserted: number }>("/api/portfolio/performance/backfill"),
 };
 
 /**

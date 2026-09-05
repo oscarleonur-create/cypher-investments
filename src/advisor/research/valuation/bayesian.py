@@ -27,6 +27,7 @@ import numpy as np
 from advisor.research.models import (
     BayesianOverrides,
     BayesianPriceResult,
+    CatalystScenario,
     DcfAssumptions,
     DcfResult,
     EcosystemFactor,
@@ -271,6 +272,38 @@ def build_evidence(report: ResearchReport) -> list[EvidenceSignal]:
                     weight=0.4,
                     note=f"management guidance {direction}"
                     + (f" · trend: {tr.tone_trend}" if tr.tone_trend else ""),
+                )
+            )
+
+    # Catalyst signals — near-term catalysts with probability estimates become
+    # evidence that nudges the growth prior proportional to their likelihood and
+    # expected price impact. These show up as adjustable sliders via evidence_weight.
+    cr = report.catalyst_risk
+    if cr:
+        base_g = float(dcf.base.assumptions.revenue_growth_yr1_3)
+        lo, hi = _DRIVER_BOUNDS["revenue_growth_yr1_3"][:2]
+        for i, cat in enumerate(cr.catalysts):
+            if cat.probability is None or cat.price_impact_pct is None:
+                continue
+            p = float(cat.probability)
+            impact = float(cat.price_impact_pct) / 100.0
+            # Map price-impact to an implied growth delta: 10% price ≈ 2pp growth
+            delta_g = impact * 0.20
+            sign = -1.0 if cat.direction == "bearish" else 1.0
+            observed_g = _clamp(base_g + sign * p * delta_g, lo, hi)
+            # Precision peaks when probability is near 0 or 1 (certain signal);
+            # lowest at p=0.5 (maximum uncertainty about whether it fires).
+            precision = 0.3 + abs(p - 0.5) * 1.4
+            key = f"catalyst_{i}_{cat.catalyst_type}"
+            signals.append(
+                EvidenceSignal(
+                    key=key,
+                    label=f"{cat.description[:60]} (p={p:.0%})",
+                    target_driver="revenue_growth_yr1_3",
+                    observed=observed_g,
+                    precision=precision,
+                    weight=0.4,
+                    note=f"{cat.direction} · {cat.price_impact_pct:+.0f}% if fires",
                 )
             )
 
@@ -708,6 +741,60 @@ def _assess_meaningfulness(inputs, median: float) -> tuple[bool, str]:
     return True, ""
 
 
+def _build_catalyst_scenarios(report: ResearchReport) -> list[CatalystScenario]:
+    """Map thesis bull/base/bear scenarios to CatalystScenario with catalyst attribution."""
+    thesis = report.thesis
+    if thesis is None:
+        return []
+
+    cr = report.catalyst_risk
+    current = float(thesis.current_price or 0.0)
+    scenarios: list[CatalystScenario] = []
+
+    for ts in [thesis.bull, thesis.base, thesis.bear]:
+        if ts is None or ts.target_price is None or ts.probability is None:
+            continue
+
+        # Attribute catalysts: bullish catalysts support bull scenario; bearish support bear.
+        supporting: list[str] = []
+        invalidating: list[str] = []
+        if cr:
+            for cat in cr.catalysts:
+                if cat.probability is None:
+                    continue
+                s = ts.scenario.lower()
+                d = cat.direction.lower()
+                is_bull = d == "bullish"
+                is_bear = d == "bearish"
+                if (s == "bull" and is_bull) or (s == "bear" and is_bear):
+                    supporting.append(cat.description)
+                elif (s == "bull" and is_bear) or (s == "bear" and is_bull):
+                    invalidating.append(cat.description)
+
+        upside = (ts.target_price / current - 1.0) if current > 0 else (ts.upside_pct or 0.0)
+        label = (
+            f"{ts.scenario.capitalize()} — {ts.description[:60]}"
+            if ts.description
+            else ts.scenario.capitalize()
+        )
+        scenarios.append(
+            CatalystScenario(
+                label=label,
+                probability=float(ts.probability),
+                target_price=float(ts.target_price),
+                upside_pct=upside,
+                supporting_catalysts=supporting[:5],
+                invalidating_catalysts=invalidating[:5],
+            )
+        )
+
+    # Sort by probability descending.
+    scenarios.sort(key=lambda s: s.probability, reverse=True)
+    return scenarios
+
+
 def build_bayesian_pricing(report: ResearchReport) -> BayesianPriceResult:
     """Baseline posterior (default weights/toggles) — persisted during review."""
-    return recompute_bayesian(report, BayesianOverrides())
+    result = recompute_bayesian(report, BayesianOverrides())
+    result.catalyst_scenarios = _build_catalyst_scenarios(report)
+    return result

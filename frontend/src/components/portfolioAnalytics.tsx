@@ -1,5 +1,5 @@
-import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Area,
   AreaChart,
@@ -16,9 +16,10 @@ import {
   YAxis,
 } from "recharts";
 import { api } from "@/lib/api";
-import type { MarketContext, ResearchSummary, RotationResponse } from "@/lib/types";
-import { fmtNum, fmtPct, fmtUpside } from "@/lib/utils";
+import type { MarketContext, PerformanceResponse, ResearchSummary, RotationResponse } from "@/lib/types";
+import { cn, fmtNum, fmtPct, fmtUpside, fmtUsd, pnlColor } from "@/lib/utils";
 import { Badge } from "./ui/badge";
+import { Button } from "./ui/button";
 import { Section, Stat, Td, Th } from "./common";
 
 const chartAxis = { stroke: "#8b97ad", fontSize: 11 };
@@ -477,6 +478,192 @@ export function MarketPanel() {
           )}
         </>
       ) : null}
+    </Section>
+  );
+}
+
+// ── Portfolio performance ─────────────────────────────────────────────────────
+
+const PERIOD_ORDER = ["1D", "1W", "1M", "3M", "6M", "YTD", "1Y", "All"];
+
+export function PerformancePanel() {
+  const queryClient = useQueryClient();
+  const [syncing, setSyncing] = useState(false);
+  const [backfilling, setBackfilling] = useState(false);
+
+  const { data, isLoading } = useQuery<PerformanceResponse>({
+    queryKey: ["portfolio-performance"],
+    queryFn: () => api.performance(false),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  async function handleSync() {
+    setSyncing(true);
+    try {
+      await api.performance(true);
+      queryClient.invalidateQueries({ queryKey: ["portfolio-performance"] });
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  async function handleBackfill() {
+    setBackfilling(true);
+    try {
+      await api.backfillNlv();
+      queryClient.invalidateQueries({ queryKey: ["portfolio-performance"] });
+    } finally {
+      setBackfilling(false);
+    }
+  }
+
+  const periods = useMemo(() => {
+    if (!data?.periods) return [];
+    const map = new Map(data.periods.map((p) => [p.label, p]));
+    return PERIOD_ORDER.map((l) => map.get(l)).filter(Boolean) as PerformanceResponse["periods"];
+  }, [data]);
+
+  const curve = data?.equity_curve ?? [];
+  const hasEnoughData = (data?.snapshot_count ?? 0) >= 2;
+
+  // Format equity curve value as percent change from 1.0
+  const curveData = curve.map((p) => ({
+    ...p,
+    pct: (p.value - 1) * 100,
+  }));
+
+  const depositDates = curve.filter((p) => p.is_deposit);
+
+  return (
+    <Section
+      title="Performance"
+      empty={!isLoading && (data?.snapshot_count ?? 0) === 0}
+      right={
+        <div className="flex gap-2">
+          {(data?.snapshot_count ?? 0) < 10 && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleBackfill}
+              disabled={backfilling}
+            >
+              {backfilling ? "Backfilling…" : "Backfill history"}
+            </Button>
+          )}
+          <Button size="sm" variant="outline" onClick={handleSync} disabled={syncing}>
+            {syncing ? "Syncing…" : "Sync deposits"}
+          </Button>
+        </div>
+      }
+    >
+      {isLoading ? (
+        <div className="text-sm text-muted">Loading performance…</div>
+      ) : !hasEnoughData ? (
+        <div className="text-sm text-muted">
+          Not enough history yet — visit this page again tomorrow to see returns. Use{" "}
+          <span className="font-medium">Backfill history</span> to load past NLV data from
+          TastyTrade.
+        </div>
+      ) : (
+        <>
+          {/* Period return table */}
+          <div className="mb-5 overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr>
+                  {periods.map((p) => (
+                    <Th key={p.label} className="text-center">
+                      {p.label}
+                    </Th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  {periods.map((p) => (
+                    <Td
+                      key={p.label}
+                      className={cn("text-center font-semibold tnum", pnlColor(p.return_pct))}
+                    >
+                      {p.return_pct == null
+                        ? "—"
+                        : fmtPct(p.return_pct, { sign: true, scale: true })}
+                    </Td>
+                  ))}
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          {/* Equity curve */}
+          {curveData.length >= 2 && (
+            <>
+              <ResponsiveContainer width="100%" height={200}>
+                <AreaChart
+                  data={curveData}
+                  margin={{ top: 8, right: 8, left: 8, bottom: 0 }}
+                >
+                  <defs>
+                    <linearGradient id="perfFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#19c37d" stopOpacity={0.35} />
+                      <stop offset="100%" stopColor="#19c37d" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke={grid} vertical={false} />
+                  <XAxis
+                    dataKey="date"
+                    {...chartAxis}
+                    tickLine={false}
+                    minTickGap={48}
+                  />
+                  <YAxis
+                    {...chartAxis}
+                    tickLine={false}
+                    width={44}
+                    tickFormatter={(v) => `${v.toFixed(1)}%`}
+                  />
+                  <Tooltip
+                    contentStyle={tooltipStyle}
+                    labelStyle={tooltipText}
+                    itemStyle={tooltipText}
+                    formatter={(v: any) => [`${(v as number).toFixed(2)}%`, "Return"]}
+                  />
+                  <ReferenceLine y={0} stroke="#8b97ad" strokeDasharray="4 4" />
+                  {depositDates.map((p) => (
+                    <ReferenceLine
+                      key={p.date}
+                      x={p.date}
+                      stroke="#60a5fa"
+                      strokeDasharray="3 3"
+                      label={{
+                        value: p.deposit_amount != null ? fmtUsd(p.deposit_amount) : "",
+                        fill: "#60a5fa",
+                        fontSize: 9,
+                        position: "top",
+                      }}
+                    />
+                  ))}
+                  <Area
+                    type="monotone"
+                    dataKey="pct"
+                    stroke="#19c37d"
+                    strokeWidth={1.5}
+                    fill="url(#perfFill)"
+                    dot={false}
+                    isAnimationActive={false}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+              <div className="mt-2 text-xs text-muted">
+                Returns calculated using{" "}
+                <span className="font-medium">Modified Dietz</span> — deposits and withdrawals
+                are excluded from the return so only investment performance is shown. Blue dashed
+                lines mark cash inflows.
+              </div>
+            </>
+          )}
+        </>
+      )}
     </Section>
   );
 }

@@ -150,7 +150,7 @@ def get_adaptive_delta(iv_percentile: float) -> float:
 def get_regime_name() -> str:
     """Try to detect market regime via fitted HMM, fallback to VIX heuristic."""
     try:
-        from advisor.ml.regime import RegimeDetector
+        from advisor.macro.regime import RegimeDetector
 
         if RegimeDetector.model_exists():
             detector = RegimeDetector.load()

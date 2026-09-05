@@ -228,6 +228,32 @@ export interface DeepResearch {
 // ResearchReport is large + deeply nested; the panels read it defensively.
 export type ResearchReport = Record<string, any>;
 
+// ── Position recommendation (symbol-scoped BUY/SELL/HOLD advisory) ────────────
+
+export type RecommendedAction = "BUY" | "SELL" | "INCREASE" | "DECREASE" | "HOLD";
+
+export interface PositionContext {
+  has_position: boolean;
+  equity_quantity: number;
+  average_open_price: number;
+  mark: number;
+  unrealized_pnl_pct: number | null;
+  option_legs: string[];
+  accounts: string[];
+  error: string;
+}
+
+export interface ActionRecommendation {
+  symbol: string;
+  action: RecommendedAction;
+  conviction: string; // "HIGH" | "MEDIUM" | "LOW"
+  reasoning: string;
+  key_factors: string[];
+  risks: string[];
+  position: PositionContext;
+  generated_at: string;
+}
+
 // ── Bayesian pricing (what-if posterior) ──────────────────────────────────────
 
 export interface PriorDriver {
@@ -266,6 +292,15 @@ export interface HistogramBin {
   count: number;
 }
 
+export interface CatalystScenario {
+  label: string;
+  probability: number;
+  target_price: number;
+  upside_pct: number;
+  supporting_catalysts: string[];
+  invalidating_catalysts: string[];
+}
+
 export interface BayesianPriceResult {
   symbol: string;
   current_price: number;
@@ -284,6 +319,7 @@ export interface BayesianPriceResult {
   histogram: HistogramBin[];
   meaningful: boolean;
   note: string;
+  catalyst_scenarios: CatalystScenario[];
   as_of: string;
 }
 
@@ -449,4 +485,30 @@ export interface Conversation {
   messages: ChatMessage[];
   created_at: string;
   updated_at: string;
+}
+
+// ── Portfolio performance (deposit-adjusted returns) ──────────────────────────
+
+export interface PeriodReturn {
+  label: string;
+  start_date: string | null;
+  end_date: string;
+  return_pct: number | null;
+  v_start: number | null;
+  v_end: number | null;
+  cf_net: number | null;
+}
+
+export interface EquityPoint {
+  date: string;
+  value: number;
+  is_deposit: boolean;
+  deposit_amount: number | null;
+}
+
+export interface PerformanceResponse {
+  periods: PeriodReturn[];
+  equity_curve: EquityPoint[];
+  snapshot_count: number;
+  cash_flow_count: number;
 }

@@ -21,7 +21,7 @@ class ResearchConfig(BaseSettings):
     # --- OpenRouter LLM ---
     openrouter_api_key: str = ""
     llm_base_url: str = "https://openrouter.ai/api/v1"
-    llm_model: str = "anthropic/claude-sonnet-4"
+    llm_model: str = "z-ai/glm-5.2"
     llm_timeout_seconds: int = 60
     llm_max_tokens: int = 4096
     llm_temperature: float = 0.1

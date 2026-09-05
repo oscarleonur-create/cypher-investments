@@ -1,8 +1,0 @@
-[server]
-# Reload on file changes — ensures new .py files are always picked up
-fileWatcherType = "auto"
-
-[runner]
-# Don't cache module imports between reruns — avoids stale ImportError when
-# new classes are added to models.py while Streamlit is already running
-fastReruns = true

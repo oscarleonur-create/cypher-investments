@@ -81,6 +81,9 @@ async def holdings() -> dict:
     cash = sum(b.get("cash", 0) for b in balances)
     buying_power = sum(b.get("buying_power", 0) for b in balances)
 
+    # Snapshot today's NLV once per day (INSERT OR IGNORE deduplicates intra-day).
+    _snapshot_balances(balances)
+
     return {
         "holdings": sorted(rows.values(), key=lambda r: r["symbol"]),
         "balances": {
@@ -91,6 +94,23 @@ async def holdings() -> dict:
         },
         "symbols": sorted(rows),
     }
+
+
+def _snapshot_balances(balances: list[dict]) -> None:
+    from datetime import date as _date
+
+    from advisor.research.store import ResearchStore
+
+    today = _date.today().isoformat()
+    store = ResearchStore(deps.db_path())
+    try:
+        for b in balances:
+            if b.get("net_liq", 0) > 0:
+                store.upsert_snapshot(today, b["account"], b["net_liq"], b.get("cash", 0))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("NLV snapshot write failed: %s", exc)
+    finally:
+        store.close()
 
 
 def _merge_research_summary(rows: dict[str, dict]) -> None:
@@ -261,3 +281,91 @@ async def recompute_bayesian_endpoint(symbol: str, overrides: BayesianOverrides)
 
     result = recompute_bayesian(report, overrides)
     return {"result": result.model_dump(mode="json")}
+
+
+# ── Portfolio performance (deposit-adjusted returns) ──────────────────────────
+
+
+@router.get("/performance")
+async def performance(sync_cash_flows: bool = False) -> dict:
+    """Return deposit-adjusted portfolio returns and equity curve.
+
+    Pass ?sync_cash_flows=true to fetch new money-movement transactions from
+    TastyTrade before computing (adds ~1-2s per account).
+    """
+    from advisor.research.performance import get_equity_curve, standard_period_returns
+    from advisor.research.store import ResearchStore
+
+    store = ResearchStore(deps.db_path())
+    try:
+        if sync_cash_flows:
+            await _sync_cash_flows(store)
+        snapshots = store.load_combined_snapshots()
+        cash_flows = store.load_cash_flows()
+    finally:
+        store.close()
+
+    periods = standard_period_returns(snapshots, cash_flows)
+    curve = get_equity_curve(snapshots, cash_flows)
+    return {
+        "periods": periods,
+        "equity_curve": curve,
+        "snapshot_count": len(snapshots),
+        "cash_flow_count": len(cash_flows),
+    }
+
+
+@router.post("/performance/backfill")
+async def backfill_nlv() -> dict:
+    """One-time backfill of historical NLV from TastyTrade.
+
+    Call once after first deploy; thereafter /holdings auto-snapshots daily.
+    """
+    from advisor.market.tastytrade_client import get_nlv_history
+    from advisor.research.portfolio_review import DEFAULT_ACCOUNTS
+    from advisor.research.store import ResearchStore
+
+    session = await deps.get_tt_session()
+    store = ResearchStore(deps.db_path())
+    inserted = 0
+    try:
+        for acct in DEFAULT_ACCOUNTS:
+            try:
+                items = await get_nlv_history(session, acct, time_back="all")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("NLV history fetch failed for %s: %s", acct, exc)
+                continue
+            for item in items:
+                store.upsert_snapshot(item["date"], item["account"], item["net_liq"], cash=0.0)
+                inserted += 1
+    finally:
+        store.close()
+    return {"inserted": inserted}
+
+
+async def _sync_cash_flows(store) -> None:
+    from datetime import date
+
+    from advisor.market.tastytrade_client import get_transactions
+    from advisor.research.portfolio_review import DEFAULT_ACCOUNTS
+
+    session = await deps.get_tt_session()
+    latest = store.load_latest_cash_flow_date()
+    start = date.fromisoformat(latest) if latest else None
+
+    for acct in DEFAULT_ACCOUNTS:
+        try:
+            txns = await get_transactions(session, acct, start_date=start)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cash flow sync failed for %s: %s", acct, exc)
+            continue
+        for t in txns:
+            if not t.get("amount"):
+                continue
+            store.upsert_cash_flow(
+                flow_date=t["date"],
+                account=t["account"],
+                amount=t["amount"],
+                description=t.get("description", ""),
+                tastytrade_id=t.get("id"),
+            )

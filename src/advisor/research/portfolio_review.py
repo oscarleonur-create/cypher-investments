@@ -331,9 +331,9 @@ def _lookup_sector(symbol: str, report=None) -> str | None:  # type: ignore[no-u
 
     if not sector:
         try:
-            from advisor.ml.features import _get_sector_etf
+            from advisor.macro.sector_map import get_sector_etf
 
-            etf = _get_sector_etf(sym)
+            etf = get_sector_etf(sym)
             sector = _ETF_TO_SECTOR.get(etf) if etf else None
         except Exception:  # noqa: BLE001
             sector = None

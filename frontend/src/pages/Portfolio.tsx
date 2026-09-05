@@ -11,6 +11,7 @@ import { AttentionDot, Stat, Th, ThesisBadge } from "@/components/common";
 import {
   ConcentrationPanel,
   MarketPanel,
+  PerformancePanel,
   SectorRotationPanel,
   ValuationRiskPanel,
 } from "@/components/portfolioAnalytics";
@@ -175,6 +176,7 @@ export default function Portfolio({ quotes }: { quotes: QuotesState }) {
       {/* Portfolio analytics */}
       {rows.length > 0 && (
         <>
+          <PerformancePanel />
           <ConcentrationPanel rows={rows} />
           <ValuationRiskPanel rows={rows} />
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">

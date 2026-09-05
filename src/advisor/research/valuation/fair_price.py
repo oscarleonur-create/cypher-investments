@@ -23,21 +23,43 @@ logger = logging.getLogger(__name__)
 
 # Default weights by method; renormalized over whichever methods are present.
 _WEIGHTS = {
-    "dcf_base": 0.30,
-    "multiples": 0.25,
-    "bayesian_median": 0.25,
-    "analyst_target": 0.20,
+    "dcf_base": 0.27,
+    "multiples": 0.22,
+    "bayesian_median": 0.21,
+    "analyst_target": 0.15,
+    "thesis_ev": 0.15,
 }
 _LABELS = {
     "dcf_base": "DCF (base case)",
     "multiples": "Peer multiples",
     "bayesian_median": "Bayesian median",
     "analyst_target": "Analyst target",
+    "thesis_ev": "Scenario EV",
 }
 
 
 def _positive(x: float | None) -> float | None:
     return x if isinstance(x, (int, float)) and x > 0 else None
+
+
+def _thesis_scenario_ev(report: ResearchReport) -> float | None:
+    """Expected value from thesis scenario probabilities × target prices."""
+    thesis = report.thesis
+    if thesis is None:
+        return None
+    weighted, total_w = 0.0, 0.0
+    for ts in [thesis.bull, thesis.base, thesis.bear]:
+        if ts is None or ts.probability is None or ts.target_price is None:
+            continue
+        p = float(ts.probability)
+        tp = _positive(ts.target_price)
+        if tp is None or p <= 0:
+            continue
+        weighted += p * tp
+        total_w += p
+    if total_w <= 0 or weighted <= 0:
+        return None
+    return weighted / total_w
 
 
 def _multiples_implied_price(report: ResearchReport) -> float | None:
@@ -107,6 +129,10 @@ def _gather_methods(report: ResearchReport) -> dict[str, float]:
 
     if report.consensus and _positive(report.consensus.target_price_mean):
         out["analyst_target"] = report.consensus.target_price_mean
+
+    thesis_ev = _thesis_scenario_ev(report)
+    if thesis_ev:
+        out["thesis_ev"] = thesis_ev
 
     return out
 

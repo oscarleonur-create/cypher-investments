@@ -61,3 +61,39 @@ def test_artifact_round_trip(tmp_path):
     assert payload == '{"hello": "world"}'
     assert fetched_at is not None
     store.close()
+
+
+def test_agent_run_round_trip(tmp_path):
+    store = ResearchStore(tmp_path / "research.db")
+    trace = [{"role": "assistant", "tool_calls": []}]
+    result = {"rationale": "test", "signals": []}
+
+    run_id = store.save_agent_run("signal", "find scalp setups", trace, result)
+    assert run_id
+
+    loaded = store.load_agent_run(run_id)
+    assert loaded is not None
+    assert loaded["agent"] == "signal"
+    assert loaded["objective"] == "find scalp setups"
+    assert loaded["trace"] == trace
+    assert loaded["result"] == result
+    store.close()
+
+
+def test_load_agent_run_missing_returns_none(tmp_path):
+    store = ResearchStore(tmp_path / "research.db")
+    assert store.load_agent_run("nope") is None
+    store.close()
+
+
+def test_list_agent_runs_filters_by_agent(tmp_path):
+    store = ResearchStore(tmp_path / "research.db")
+    store.save_agent_run("signal", "objective 1", [], {})
+    store.save_agent_run("risk", "objective 2", [], {})
+    store.save_agent_run("signal", "objective 3", [], {})
+
+    rows = store.list_agent_runs("signal")
+    assert len(rows) == 2
+    assert all(r["agent"] == "signal" for r in rows)
+    assert {r["objective"] for r in rows} == {"objective 1", "objective 3"}
+    store.close()

@@ -1,7 +1,7 @@
 """Broad-market context — VIX snapshot + (optional) HMM volatility regime.
 
 The VIX snapshot is always available (a direct ``^VIX`` download). The regime
-read reuses the trained HMM in :mod:`advisor.ml.regime` when a model exists on
+read reuses the trained HMM in :mod:`advisor.macro.regime` when a model exists on
 disk, and is simply omitted otherwise — no auto-training here, so the dashboard
 panel is fast and never blocks on a 5-year fit.
 """
@@ -67,7 +67,7 @@ def get_vix_snapshot() -> dict | None:
 def get_regime() -> dict | None:
     """Latest HMM regime read, or ``None`` if no trained model is on disk."""
     try:
-        from advisor.ml.regime import RegimeDetector
+        from advisor.macro.regime import RegimeDetector
 
         if not RegimeDetector.model_exists():
             return None
