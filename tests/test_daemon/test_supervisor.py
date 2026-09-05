@@ -101,3 +101,34 @@ class TestTick:
         result = await sup.run_job(Job("ok", EveryMinutes(1, False), ok_handler))
         assert result.duration_ms >= 0
         assert store.get_heartbeat("ok").run_count == 1
+
+
+async def soft_fail_handler(ctx: JobContext) -> JobResult:
+    """Fails by returning ok=False rather than raising."""
+    return JobResult(job="soft", ok=False, detail="upstream returned nothing")
+
+
+class TestFailureModes:
+    async def test_soft_failure_is_recorded_like_a_raise(self, store):
+        """A handler that returns ok=False must count as an error, not a run."""
+        sup = Supervisor(store, JobRegistry())
+        result = await sup.run_job(Job("soft", EveryMinutes(1, False), soft_fail_handler))
+
+        assert result.ok is False
+        hb = store.get_heartbeat("soft")
+        assert hb.error_count == 1
+        assert hb.last_ok_at is None
+        assert "upstream returned nothing" in hb.last_error
+
+    async def test_a_recovering_job_clears_its_error(self, store):
+        sup = Supervisor(store, JobRegistry())
+        await sup.run_job(Job("flaky", EveryMinutes(1, False), boom_handler))
+        await sup.run_job(Job("flaky", EveryMinutes(1, False), ok_handler))
+
+        hb = store.get_heartbeat("flaky")
+        assert hb.last_error == ""
+        assert hb.last_ok_at is not None
+        assert hb.error_count == 1  # history preserved
+
+    async def test_empty_registry_ticks_without_error(self, store):
+        assert await Supervisor(store, JobRegistry()).tick() == []

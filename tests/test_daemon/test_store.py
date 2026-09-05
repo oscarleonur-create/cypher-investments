@@ -161,3 +161,31 @@ class TestTimezoneCorrectness:
 
     def test_event_default_timestamp_is_aware(self):
         assert make_event().ts.tzinfo is not None
+
+
+class TestStoreRobustness:
+    def test_creates_a_missing_parent_directory(self, tmp_path: Path):
+        """First run on a fresh machine has no data/ directory yet."""
+        s = DaemonStore(tmp_path / "nested" / "deeper" / "research.db")
+        s.record_run("brief", ok=True)
+        assert s.get_heartbeat("brief").run_count == 1
+        s.close()
+
+    def test_reopening_preserves_state(self, tmp_path: Path):
+        """The daemon restarts; heartbeats and watermarks must survive."""
+        path = tmp_path / "research.db"
+        first = DaemonStore(path)
+        first.emit(make_event())
+        first.record_run("brief", ok=True)
+        first.close()
+
+        second = DaemonStore(path)
+        assert second.get_heartbeat("brief").run_count == 1
+        assert len(second.recent_events()) == 1
+        # And the dedup index still rejects the same fact after a restart.
+        assert second.emit(make_event()) is False
+        second.close()
+
+    def test_recent_events_on_an_empty_stream(self, store):
+        assert store.recent_events() == []
+        assert store.event_counts_by_tier() == {}

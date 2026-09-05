@@ -42,3 +42,51 @@ def test_early_close_shortens_the_session():
 def test_previous_trading_day_skips_weekend_and_holiday():
     # Tuesday after Labor Day -> back to the preceding Friday.
     assert mc.previous_trading_day(date(2026, 9, 8)) == date(2026, 9, 4)
+
+
+class TestDaylightSaving:
+    """DST is the highest-risk edge for a wall-clock scheduler.
+
+    The daemon reasons in local market time, so the UTC offset shifts twice a
+    year underneath it. A slot must stay pinned to 09:30 *local* through both
+    transitions, not drift by an hour.
+    """
+
+    def test_offset_flips_between_est_and_edt(self):
+        est = datetime(2026, 3, 7, 9, 30, tzinfo=mc.MARKET_TZ)
+        edt = datetime(2026, 3, 9, 9, 30, tzinfo=mc.MARKET_TZ)
+        assert est.utcoffset() != edt.utcoffset()
+
+    def test_opening_bell_holds_across_spring_forward(self):
+        # Friday before, Monday after the 2026-03-08 transition.
+        assert mc.is_market_open(datetime(2026, 3, 6, 9, 30))
+        assert mc.is_market_open(datetime(2026, 3, 9, 9, 30))
+        assert not mc.is_market_open(datetime(2026, 3, 9, 9, 29))
+
+    def test_opening_bell_holds_across_fall_back(self):
+        # Friday before, Monday after the 2026-11-01 transition.
+        assert mc.is_market_open(datetime(2026, 10, 30, 9, 30))
+        assert mc.is_market_open(datetime(2026, 11, 2, 9, 30))
+        assert not mc.is_market_open(datetime(2026, 11, 2, 16, 0))
+
+
+class TestConversion:
+    def test_utc_input_is_converted_not_reinterpreted(self):
+        """An aware UTC timestamp must shift, not be relabelled as ET."""
+        from datetime import timezone
+
+        utc_noon = datetime(2026, 9, 4, 16, 0, tzinfo=timezone.utc)
+        assert mc.to_et(utc_noon).hour == 12  # 16:00 UTC = 12:00 EDT
+
+    def test_naive_input_is_assumed_to_be_market_time(self):
+        assert mc.to_et(datetime(2026, 9, 4, 12, 0)).hour == 12
+
+
+class TestYearBoundary:
+    def test_previous_trading_day_crosses_the_new_year(self):
+        # 2027-01-01 is a Friday holiday, 01-02/03 weekend.
+        assert mc.previous_trading_day(date(2027, 1, 4)) == date(2026, 12, 31)
+
+    def test_previous_trading_day_crosses_a_long_holiday_stretch(self):
+        # Friday after Thanksgiving 2026 is a (short) session, not a closure.
+        assert mc.previous_trading_day(date(2026, 11, 30)) == date(2026, 11, 27)

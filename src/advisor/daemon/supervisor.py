@@ -75,7 +75,9 @@ class Supervisor:
         tick_seconds: int = TICK_SECONDS,
     ) -> None:
         self.store = store
-        self.registry = registry or build_registry()
+        # `is None`, not `or`: JobRegistry defines __len__, so an empty one is
+        # falsy and `or` would silently swap it for the production schedule.
+        self.registry = build_registry() if registry is None else registry
         self.tick_seconds = tick_seconds
         self._stop = asyncio.Event()
 
