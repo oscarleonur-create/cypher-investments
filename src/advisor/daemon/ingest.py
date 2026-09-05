@@ -74,6 +74,12 @@ async def ingest_book(
         events.extend(crossing_events(previous, book, limits=limits))
     if include_standing:
         events.extend(state_events(book, limits=limits))
+        # Macro runs with the digests, not on the intraday sweep: factor data
+        # is daily, so checking it every 15 minutes would re-derive the same
+        # numbers.
+        from advisor.daemon.macro_ingest import daily_macro_events
+
+        events.extend(await daily_macro_events(store, book))
 
     new = store.emit_many(events)
     store.save_book(book)

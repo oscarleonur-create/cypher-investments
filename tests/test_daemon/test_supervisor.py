@@ -6,7 +6,14 @@ from datetime import time
 from pathlib import Path
 
 import pytest
-from advisor.daemon.jobs import DailyAt, EveryMinutes, Job, JobContext, JobRegistry
+from advisor.daemon.jobs import (
+    AtLeastEvery,
+    DailyAt,
+    EveryMinutes,
+    Job,
+    JobContext,
+    JobRegistry,
+)
 from advisor.daemon.models import JobResult
 from advisor.daemon.store import DaemonStore
 from advisor.daemon.supervisor import Supervisor, build_registry
@@ -36,7 +43,13 @@ class TestRegistry:
 
     def test_default_registry_has_the_designed_schedule(self):
         reg = build_registry()
-        assert {j.name for j in reg} == {"brief", "watch", "review", "heartbeat"}
+        assert {j.name for j in reg} == {
+            "brief",
+            "watch",
+            "review",
+            "macro_refresh",
+            "heartbeat",
+        }
 
     def test_brief_and_review_are_daily_watch_is_intraday(self):
         by_name = {j.name: j.trigger for j in build_registry()}
@@ -46,6 +59,12 @@ class TestRegistry:
         assert by_name["review"].at == time(16, 30)
         assert isinstance(by_name["watch"], EveryMinutes)
         assert by_name["watch"].minutes == 15
+
+    def test_sensitivities_refresh_weekly_not_daily(self):
+        """Loadings barely move in five sessions; a daily refit is wasted work."""
+        trigger = {j.name: j.trigger for j in build_registry()}["macro_refresh"]
+        assert isinstance(trigger, AtLeastEvery)
+        assert trigger.days == 7
 
 
 class TestCrashIsolation:

@@ -56,6 +56,23 @@ CREATE TABLE IF NOT EXISTS book_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_book_snapshots_as_of ON book_snapshots(as_of DESC);
 
+CREATE TABLE IF NOT EXISTS macro_sensitivity (
+    symbol      TEXT NOT NULL,
+    asof        TEXT NOT NULL,
+    payload_json TEXT NOT NULL,      -- SymbolSensitivity
+    created_at  TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (symbol, asof)
+);
+
+CREATE INDEX IF NOT EXISTS idx_macro_sensitivity_symbol
+    ON macro_sensitivity(symbol, asof DESC);
+
+CREATE TABLE IF NOT EXISTS book_exposure (
+    asof        TEXT NOT NULL PRIMARY KEY,
+    payload_json TEXT NOT NULL,      -- BookExposure
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS daemon_heartbeat (
     job         TEXT NOT NULL PRIMARY KEY,
     last_run_at TEXT,
@@ -280,6 +297,64 @@ class DaemonStore:
 
     def book_snapshot_count(self) -> int:
         return self._conn.execute("SELECT COUNT(*) AS n FROM book_snapshots").fetchone()["n"]
+
+    # ── Macro sensitivities and book exposure ────────────────────────────
+
+    def save_sensitivity(self, sensitivity) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO macro_sensitivity (symbol, asof, payload_json) "
+            "VALUES (?, ?, ?)",
+            (
+                sensitivity.symbol.upper(),
+                sensitivity.asof.isoformat(),
+                sensitivity.model_dump_json(),
+            ),
+        )
+        self._conn.commit()
+
+    def load_sensitivity(self, symbol: str):
+        """Most recent estimate for ``symbol``, or None if never estimated."""
+        from advisor.macro.sensitivity import SymbolSensitivity
+
+        row = self._conn.execute(
+            "SELECT payload_json FROM macro_sensitivity WHERE symbol = ? "
+            "ORDER BY asof DESC LIMIT 1",
+            (symbol.upper(),),
+        ).fetchone()
+        if row is None:
+            return None
+        return SymbolSensitivity.model_validate_json(row["payload_json"])
+
+    def load_sensitivities(self, symbols: list[str] | None = None) -> dict:
+        """Latest estimate per symbol, keyed by symbol."""
+        out = {}
+        rows = self._conn.execute("SELECT DISTINCT symbol FROM macro_sensitivity").fetchall()
+        wanted = {s.upper() for s in symbols} if symbols else None
+        for row in rows:
+            symbol = row["symbol"]
+            if wanted is not None and symbol not in wanted:
+                continue
+            estimate = self.load_sensitivity(symbol)
+            if estimate is not None:
+                out[symbol] = estimate
+        return out
+
+    def save_exposure(self, exposure) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO book_exposure (asof, payload_json) VALUES (?, ?)",
+            (exposure.asof.isoformat(), exposure.model_dump_json()),
+        )
+        self._conn.commit()
+
+    def load_latest_exposure(self):
+        from advisor.macro.exposure import BookExposure
+
+        row = self._conn.execute(
+            "SELECT payload_json FROM book_exposure ORDER BY asof DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return BookExposure.model_validate_json(row["payload_json"])
 
     def all_heartbeats(self) -> list[Heartbeat]:
         rows = self._conn.execute("SELECT job FROM daemon_heartbeat ORDER BY job").fetchall()

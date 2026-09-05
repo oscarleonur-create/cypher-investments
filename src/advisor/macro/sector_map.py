@@ -31,3 +31,29 @@ def get_sector_etf(symbol: str) -> str | None:
     if _SYMBOL_TO_SECTOR is None:
         _SYMBOL_TO_SECTOR = {s: etf for etf, members in SECTOR_ETFS.items() for s in members}
     return _SYMBOL_TO_SECTOR.get(symbol.upper())
+
+
+# yfinance reports a sector *name*; this maps those onto the sector ETF used as
+# the per-symbol sector leg of the factor panel. The membership lists above only
+# cover large caps, so this name-based path is what resolves most holdings.
+SECTOR_NAME_TO_ETF: dict[str, str] = {
+    "technology": "XLK",
+    "financial services": "XLF",
+    "financial": "XLF",
+    "energy": "XLE",
+    "healthcare": "XLV",
+    "consumer cyclical": "XLY",
+    "consumer defensive": "XLP",
+    "industrials": "XLI",
+    "utilities": "XLU",
+    "real estate": "XLRE",
+    "communication services": "XLC",
+    "basic materials": "XLB",
+}
+
+
+def sector_etf_for_name(sector_name: str | None) -> str | None:
+    """Map a yfinance sector name onto its ETF, or None if unrecognised."""
+    if not sector_name:
+        return None
+    return SECTOR_NAME_TO_ETF.get(sector_name.strip().lower())
