@@ -8,10 +8,10 @@ real positions tripped at once.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from advisor.daemon.book import EQUITY, EQUITY_OPTION, BookSnapshot, Position
-from advisor.daemon.market_calendar import now_et
+from advisor.daemon.market_calendar import MARKET_TZ, now_et
 from advisor.daemon.mechanics import (
     MechanicsLimits,
     crossing_events,
@@ -106,8 +106,13 @@ class TestStandingConditions:
         assert "DEEP_DRAWDOWN" in kinds(events)
 
     def test_deep_drawdown_dedups_by_week_not_by_day(self):
-        """36% underwater deserves a weekly reminder, not a daily one."""
-        monday = now_et()
+        """36% underwater deserves a weekly reminder, not a daily one.
+
+        The dates are pinned. Anchoring on ``now_et()`` made this test pass
+        Monday through Saturday and fail every Sunday, when "tomorrow" lands
+        in the next ISO week.
+        """
+        monday = datetime(2026, 9, 7, 9, 45, tzinfo=MARKET_TZ)
         tuesday = monday + timedelta(days=1)
         a = state_events(book(pos(price=70.0), at=monday))[0]
         b = state_events(book(pos(price=70.0), at=tuesday))[0]
