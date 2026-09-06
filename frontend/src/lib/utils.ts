@@ -53,3 +53,32 @@ export function fmtPriceSafe(v: number | null | undefined): string {
   if (!Number.isFinite(v) || v <= 0 || Math.abs(v) > 1_000_000) return "n/m";
   return fmtNum(v);
 }
+
+/** Format an instant in US market time, always labelled.
+ *
+ * The daemon reasons entirely in America/New_York, and this project has
+ * already shipped two timezone bugs — a scheduler that mis-read every
+ * heartbeat by an hour, and a filing timeline that rendered a 16:09 filing as
+ * 15:09 and so appeared to precede the close it actually followed. Showing an
+ * unlabelled browser-local time invites the same misreading, so market times
+ * are formatted in ET and say so.
+ */
+export function fmtEt(
+  iso: string | null | undefined,
+  opts: { withYear?: boolean } = {}
+): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return (
+    d.toLocaleString("en-US", {
+      timeZone: "America/New_York",
+      month: "short",
+      day: "2-digit",
+      year: opts.withYear ? "numeric" : undefined,
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }) + " ET"
+  );
+}

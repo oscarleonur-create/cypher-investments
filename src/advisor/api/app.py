@@ -16,6 +16,7 @@ _FRONTEND_DIST = _REPO_ROOT / "frontend" / "dist"
 def create_app() -> FastAPI:
     from advisor.api.routers import (
         agent,
+        daemon,
         portfolio,
         research,
         theses,
@@ -37,6 +38,7 @@ def create_app() -> FastAPI:
     async def health() -> dict:
         return {"status": "ok", "spa_built": _FRONTEND_DIST.exists()}
 
+    app.include_router(daemon.router)
     app.include_router(portfolio.router)
     app.include_router(research.router)
     app.include_router(agent.router)
