@@ -15,7 +15,14 @@ from datetime import time
 
 from advisor.daemon import handlers
 from advisor.daemon import market_calendar as mc
-from advisor.daemon.jobs import DailyAt, EveryMinutes, Job, JobContext, JobRegistry
+from advisor.daemon.jobs import (
+    AtLeastEvery,
+    DailyAt,
+    EveryMinutes,
+    Job,
+    JobContext,
+    JobRegistry,
+)
 from advisor.daemon.models import JobResult
 from advisor.daemon.store import DaemonStore
 
@@ -51,6 +58,14 @@ def build_registry() -> JobRegistry:
             trigger=DailyAt(time(16, 30), grace_hours=6.0),
             handler=handlers.run_review,
             description="post-close review",
+        )
+    )
+    reg.register(
+        Job(
+            name="macro_refresh",
+            trigger=AtLeastEvery(days=7, after=time(6, 0)),
+            handler=handlers.run_macro_refresh,
+            description="weekly factor sensitivity and book exposure refresh",
         )
     )
     reg.register(

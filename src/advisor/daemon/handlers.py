@@ -69,6 +69,34 @@ async def run_review(ctx: JobContext) -> JobResult:
     return JobResult(job="review", ok=True, detail=detail, events_emitted=result.new)
 
 
+async def run_macro_refresh(ctx: JobContext) -> JobResult:
+    """Weekly: re-estimate factor loadings and rebuild the book exposure.
+
+    Slow-moving by construction — a 250-day window barely shifts in five
+    sessions — so this pays a batch download and a regression per symbol once a
+    week rather than every morning.
+    """
+    from advisor.daemon.book import fetch_book
+    from advisor.daemon.macro_ingest import refresh_sensitivities
+
+    try:
+        book = await fetch_book()
+    except Exception as exc:  # noqa: BLE001
+        return JobResult(job="macro_refresh", ok=False, detail=f"book unavailable: {exc}")
+
+    exposure, skipped = refresh_sensitivities(ctx.store, book)
+    if exposure is None:
+        return JobResult(job="macro_refresh", ok=True, detail="nothing held to estimate")
+
+    top = exposure.ranked()[:3]
+    profile = ", ".join(f"{f.factor} {f.net_loading:+.2f}" for f in top)
+    detail = f"{exposure.covered_weight:.0%} of notional covered; {profile}"
+    if skipped:
+        detail += f"; no estimate for {', '.join(skipped)}"
+    logger.info("macro_refresh: %s", detail)
+    return JobResult(job="macro_refresh", ok=True, detail=detail)
+
+
 async def run_heartbeat(ctx: JobContext) -> JobResult:
     """Liveness tick — proves the supervisor loop is running between jobs.
 

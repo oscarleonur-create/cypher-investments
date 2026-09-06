@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, time
 
 from advisor.daemon import market_calendar as mc
-from advisor.daemon.jobs import DailyAt, EveryMinutes
+from advisor.daemon.jobs import AtLeastEvery, DailyAt, EveryMinutes
 
 
 def et(y, m, d, hh, mm):
@@ -113,3 +113,32 @@ class TestTriggerBoundaries:
         trigger = EveryMinutes(15, during_session_only=True)
         assert not trigger.is_due(et(2026, 12, 24, 14, 0), None)
         assert trigger.is_due(et(2026, 12, 24, 12, 0), None)
+
+
+class TestAtLeastEvery:
+    """Elapsed-time trigger for the weekly refresh.
+
+    A fixed weekday would be fragile on a laptop that sleeps: miss Sunday and
+    the estimate goes stale for a fortnight.
+    """
+
+    trigger = AtLeastEvery(days=7, after=time(6, 0))
+
+    def test_due_when_never_run(self):
+        assert self.trigger.is_due(et(2026, 9, 4, 7, 0), None)
+
+    def test_not_due_before_the_daily_cutoff(self):
+        assert not self.trigger.is_due(et(2026, 9, 4, 5, 0), None)
+
+    def test_not_due_within_the_window(self):
+        assert not self.trigger.is_due(et(2026, 9, 4, 7, 0), et(2026, 9, 1, 7, 0))
+
+    def test_due_once_the_window_elapses(self):
+        assert self.trigger.is_due(et(2026, 9, 8, 7, 0), et(2026, 9, 1, 7, 0))
+
+    def test_catches_up_after_a_long_gap(self):
+        """Machine off for three weeks: the refresh still fires on return."""
+        assert self.trigger.is_due(et(2026, 9, 22, 7, 0), et(2026, 9, 1, 7, 0))
+
+    def test_runs_on_non_trading_days(self):
+        assert self.trigger.is_due(et(2026, 9, 5, 7, 0), et(2026, 8, 20, 7, 0))

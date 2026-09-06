@@ -83,6 +83,30 @@ class EveryMinutes:
         return f"every {self.minutes}m ({scope})"
 
 
+@dataclass(frozen=True)
+class AtLeastEvery:
+    """Fire when this much time has passed, not on a fixed weekday.
+
+    Used for the weekly sensitivity refresh. A calendar weekday would be
+    fragile on a laptop that sleeps — miss Sunday and the estimate goes stale
+    for a fortnight. "At least every 7 days, after 06:00" always catches up on
+    the next day the machine is awake.
+    """
+
+    days: int
+    after: time = time(6, 0)
+
+    def is_due(self, now: datetime, last_run: datetime | None) -> bool:
+        if now.time() < self.after:
+            return False
+        if last_run is None:
+            return True
+        return now - mc.to_et(last_run) >= timedelta(days=self.days)
+
+    def describe(self) -> str:
+        return f"every {self.days}d after {self.after.strftime('%H:%M')} ET"
+
+
 Handler = Callable[[JobContext], Awaitable[JobResult]]
 
 

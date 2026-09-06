@@ -198,3 +198,51 @@ def daemon_events(
         console.print(table)
     finally:
         store.close()
+
+
+@app.command("exposure")
+def daemon_exposure(
+    output: Annotated[Optional[str], typer.Option("--output", help="Output format")] = None,
+) -> None:
+    """Show the book's macro factor exposure and who carries it."""
+    from rich.table import Table
+
+    store = _store()
+    try:
+        exposure = store.load_latest_exposure()
+        if exposure is None:
+            console.print(
+                "[dim]No exposure yet — run [/dim]advisor daemon once --job macro_refresh"
+            )
+            return
+
+        if output == "json":
+            output_json(exposure.model_dump(mode="json"))
+            return
+
+        console.print(
+            f"\nBook exposure as of {exposure.asof} — net liq "
+            f"${exposure.net_liq:,.0f}, {exposure.covered_weight:.0%} of notional covered"
+        )
+        if exposure.uncovered:
+            console.print(
+                f"[yellow]No estimate for {', '.join(exposure.uncovered)}[/yellow] "
+                "(too little price history)"
+            )
+
+        table = Table(title="Factor exposure — largest bets first")
+        table.add_column("factor")
+        table.add_column("net loading", justify="right")
+        table.add_column("top contributors")
+        for entry in exposure.ranked():
+            tops = "  ".join(f"{s} {v:+.2f}" for s, v in entry.top_contributors)
+            colour = "red" if entry.net_loading < 0 else "green"
+            table.add_row(entry.factor, f"[{colour}]{entry.net_loading:+.2f}[/{colour}]", tops)
+        console.print(table)
+        console.print(
+            "\n[dim]Loadings are ridge estimates over correlated factors: read them "
+            "as relative bets and use expected moves for prediction, not as "
+            "standalone causal betas.[/dim]"
+        )
+    finally:
+        store.close()
