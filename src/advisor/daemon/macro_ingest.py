@@ -6,8 +6,12 @@ Two cadences, because the two things move at different speeds:
   construction (a 250-day window barely shifts in five sessions), and the
   estimate costs a batch download plus a regression per symbol. Recomputing
   daily would burn bandwidth to produce the same numbers.
-- **Factor moves are checked daily**, against the stored exposure. That is the
-  cheap half, and it is where the events come from.
+- **Factor moves are checked daily**, against the current book re-weighted
+  with those stored loadings. That is the cheap half — a multiplication, no
+  network — and it is where the events come from. Re-weighting daily rather
+  than reusing the stored exposure row matters: the row describes the book as
+  it stood at the last refresh, and firing an interrupt that names a position
+  sold three days ago is worse than staying silent.
 """
 
 from __future__ import annotations
@@ -49,6 +53,12 @@ MIN_EXPECTED_BOOK_MOVE = 0.010  # 1.0% of net liq
 
 # How far off model a single name must move to be worth surfacing.
 RESIDUAL_DIVERGENCE_Z = 2.0
+
+# Loadings are refreshed weekly. Past this age the estimate is no longer a
+# description of anything current — the market regime has moved, and firing an
+# interrupt off it is worse than staying silent. The weekly refresh (an
+# elapsed-time trigger, so a sleeping laptop cannot skip it) rebuilds them.
+MAX_SENSITIVITY_AGE_DAYS = 14
 
 
 def estimate_universe(
@@ -115,12 +125,16 @@ def factor_shock_events(
         return []
 
     events: list[Event] = []
-    recent = factors.iloc[-lookback:]
+    # The baseline excludes the observation being scored. Including it lets a
+    # shock inflate its own denominator — measured, a true 8-sigma day scores
+    # 7.2 — so the larger the event, the more it damps itself. Exactly
+    # backwards for something whose job is to notice large events.
+    baseline = factors.iloc[-lookback - 1 : -1]
     latest = factors.iloc[-1]
     session = factors.index[-1].date().isoformat()
 
     for factor in factors.columns:
-        history = recent[factor].dropna()
+        history = baseline[factor].dropna()
         if len(history) < 60:
             continue
         sigma = float(history.std())
@@ -173,7 +187,12 @@ def residual_divergence_events(
     if factors.empty or symbol_returns.empty:
         return []
 
-    session = symbol_returns.index[-1].date().isoformat()
+    # Both sides must describe the *same* session. A halted or thinly traded
+    # name whose last bar is two days old, compared against today's factor
+    # moves, manufactures a residual out of a calendar gap. Anchoring on the
+    # factor panel also keeps dedup keys consistent with the shock events.
+    session_ts = factors.index[-1]
+    session = session_ts.date().isoformat()
     moves = {f: float(factors[f].iloc[-1]) for f in factors.columns}
     events: list[Event] = []
 
@@ -181,9 +200,11 @@ def residual_divergence_events(
         estimate = sensitivities.get(symbol)
         if estimate is None or symbol not in symbol_returns.columns:
             continue
-        actual = symbol_returns[symbol].iloc[-1]
-        if pd.isna(actual):
+        column = symbol_returns[symbol].dropna()
+        if column.empty or column.index[-1] != session_ts:
+            logger.debug("macro: %s has no bar for %s, skipping residual", symbol, session)
             continue
+        actual = column.iloc[-1]
         z = residual_z(estimate, float(actual), moves)
         if abs(z) < RESIDUAL_DIVERGENCE_Z:
             continue
@@ -207,6 +228,25 @@ def residual_divergence_events(
     return events
 
 
+def fresh_sensitivities(
+    store: DaemonStore, book: BookSnapshot, *, asof: date | None = None
+) -> dict[str, SymbolSensitivity]:
+    """Stored loadings for the current book, with stale estimates dropped.
+
+    A dropped symbol becomes *uncovered* rather than zero-weighted, keeping
+    the distinction the exposure model rests on: "unknown" is not "neutral".
+    """
+    today = asof or date.today()
+    out: dict[str, SymbolSensitivity] = {}
+    for symbol, estimate in store.load_sensitivities(book.symbols).items():
+        age = (today - estimate.asof).days
+        if age > MAX_SENSITIVITY_AGE_DAYS:
+            logger.info("macro: %s sensitivity is %d days old, ignoring", symbol, age)
+            continue
+        out[symbol] = estimate
+    return out
+
+
 async def daily_macro_events(store: DaemonStore, book: BookSnapshot) -> list[Event]:
     """Check today's factor moves against the stored exposure.
 
@@ -215,10 +255,17 @@ async def daily_macro_events(store: DaemonStore, book: BookSnapshot) -> list[Eve
     than raising if the exposure has never been built or the panel is
     unreachable — a macro outage must not stop the position mechanics.
     """
-    exposure = store.load_latest_exposure()
-    if exposure is None:
-        logger.debug("macro: no exposure yet, run macro_refresh first")
+    sensitivities = fresh_sensitivities(store, book)
+    if not sensitivities:
+        logger.debug("macro: no usable sensitivities, run macro_refresh first")
         return []
+
+    # Re-weight against *today's* book rather than reusing the stored exposure
+    # row. The expensive half (the regressions) is weekly; the weights are a
+    # multiplication and cost nothing. Reusing last week's weights would fire
+    # interrupts naming positions already sold, and would leave a position
+    # opened yesterday invisible until the next refresh.
+    exposure = build_book_exposure(book, sensitivities)
 
     try:
         factors = build_factor_returns()
@@ -232,6 +279,5 @@ async def daily_macro_events(store: DaemonStore, book: BookSnapshot) -> list[Eve
 
     events = factor_shock_events(factors, exposure)
     if not prices.empty:
-        sensitivities = store.load_sensitivities(book.symbols)
         events.extend(residual_divergence_events(book, sensitivities, log_returns(prices), factors))
     return events
