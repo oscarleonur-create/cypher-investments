@@ -70,6 +70,14 @@ def build_registry() -> JobRegistry:
     )
     reg.register(
         Job(
+            name="reconcile",
+            trigger=DailyAt(time(6, 45), grace_hours=6.0),
+            handler=handlers.run_reconcile,
+            description="cross-source data quality checks, before the brief reads anything",
+        )
+    )
+    reg.register(
+        Job(
             name="heartbeat",
             trigger=EveryMinutes(5, during_session_only=False),
             handler=handlers.run_heartbeat,
