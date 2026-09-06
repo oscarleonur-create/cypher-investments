@@ -25,7 +25,7 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from advisor.news.classify import classify_filing
+from advisor.news.classify import classify_delisting, classify_filing
 from advisor.news.models import EntityMatch, MatchMethod, SourceItem, SourceTier
 
 logger = logging.getLogger(__name__)
@@ -95,6 +95,27 @@ def _acceptance(filing: Any) -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _security_class(filing: Any) -> str | None:
+    """The class of securities a Form 25-NSE removes, or None.
+
+    Read for 25-NSE only. The form names the class in prose, and the
+    difference between "common stock" and "warrants, each whole warrant
+    exercisable to purchase one Common Stock at $11.50" is the difference
+    between an interrupt and a footnote.
+    """
+    if str(getattr(filing, "form", "")).upper() != "25-NSE":
+        return None
+    try:
+        text = " ".join(filing.text().split())
+    except Exception as exc:  # noqa: BLE001
+        logger.info("edgar: could not read 25-NSE %s: %s", filing.accession_no, exc)
+        return None
+    marker = text.lower().find("description of class")
+    if marker < 0:
+        return text[:1500]
+    return text[max(0, marker - 400) : marker + 100]
+
+
 def _item_codes(filing: Any) -> list[str]:
     """8-K item numbers, empty for other forms or when parsing fails."""
     if not str(getattr(filing, "form", "")).startswith("8-K"):
@@ -149,7 +170,12 @@ def recent_filings(
                 continue
             form = str(filing.form)
             codes = _item_codes(filing)
-            classification = classify_filing(form, codes)
+            security_class = _security_class(filing)
+            classification = (
+                classify_delisting(security_class)
+                if security_class is not None
+                else classify_filing(form, codes)
+            )
             out.append(
                 SourceItem(
                     tier=SourceTier.PRIMARY,
@@ -161,6 +187,7 @@ def recent_filings(
                     doc_type=form,
                     item_codes=codes,
                     accession=str(filing.accession_no),
+                    summary=security_class,
                 )
             )
         except Exception as exc:  # noqa: BLE001

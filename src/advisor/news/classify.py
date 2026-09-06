@@ -15,6 +15,7 @@ with the thesis in hand.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -136,7 +137,9 @@ FORM_MAP: dict[str, Classification] = {
     "NT 10-Q": Classification(
         FilingKind.LATE_FILING, Materiality.HIGH, "quarterly report will be late"
     ),
-    "25-NSE": Classification(FilingKind.DELISTING, Materiality.HIGH, "exchange delisting notice"),
+    # A bare 25-NSE is not assumed to threaten the common stock — see
+    # `classify_delisting`, which reads the class of securities being removed.
+    "25-NSE": Classification(FilingKind.DELISTING, Materiality.MEDIUM, "exchange delisting notice"),
 }
 
 _MATERIALITY_ORDER = {Materiality.HIGH: 0, Materiality.MEDIUM: 1, Materiality.LOW: 2}
@@ -170,3 +173,53 @@ def classify_filing(form: str, item_codes: list[str] | None = None) -> Classific
     if not candidates:
         return UNKNOWN
     return sorted(candidates, key=lambda c: _MATERIALITY_ORDER[c.materiality])[0]
+
+
+# Classes of security whose removal does not touch a common-stock position.
+# T1 Energy's 25-NSE struck its $11.50 warrants while the common kept trading;
+# reporting that as a Tier A DELISTING would have been a false alarm on a
+# position that was never at risk.
+_NON_EQUITY_CLASSES = ("warrant", "unit", "right", "preferred", "debenture")
+
+# A derivative names the common stock it settles into, so simply looking for
+# "common stock" says yes to a warrant. T1 Energy's delisted class reads
+# "Warrants, each whole warrant exercisable to purchase one Common Stock at an
+# exercise price of $11.50" — the common stock appears only as the thing the
+# warrant converts *into*. These subordinate clauses are removed before the
+# text is asked whether the common stock is itself being struck.
+_DERIVATIVE_CLAUSE = re.compile(
+    r"(to purchase|exercisable (for|to purchase)|convertible into|underlying|"
+    r"issuable upon (exercise|conversion)|in exchange for)\s+[^.;]{0,80}?"
+    r"common (stock|share)s?",
+    re.IGNORECASE,
+)
+
+
+def classify_delisting(class_description: str | None) -> Classification:
+    """Grade a 25-NSE by what is actually being removed from the exchange.
+
+    Fails *safe* rather than closed: an unreadable or ambiguous class
+    description keeps the filing at MEDIUM, because "something was delisted
+    and I could not tell what" deserves a look but not an interrupt.
+    """
+    if not class_description:
+        return FORM_MAP["25-NSE"]
+
+    text = class_description.lower()
+    mentions_other = any(word in text for word in _NON_EQUITY_CLASSES)
+    # Strip the "...to purchase one common stock..." style references first.
+    standalone = _DERIVATIVE_CLAUSE.sub(" ", text)
+    mentions_common = "common stock" in standalone or "common share" in standalone
+
+    if mentions_common and not mentions_other:
+        return Classification(
+            FilingKind.DELISTING, Materiality.HIGH, "the common stock is being delisted"
+        )
+    if mentions_other and not mentions_common:
+        return Classification(
+            FilingKind.OTHER,
+            Materiality.LOW,
+            "a non-equity class was delisted; the common stock is unaffected",
+        )
+    # Both, or neither — do not guess at a Tier A interrupt.
+    return FORM_MAP["25-NSE"]

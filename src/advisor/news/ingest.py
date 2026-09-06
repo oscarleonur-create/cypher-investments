@@ -24,7 +24,12 @@ from advisor.daemon.book import BookSnapshot
 from advisor.daemon.market_calendar import now_et
 from advisor.daemon.models import Event, EventSource, EventTier
 from advisor.daemon.store import DaemonStore
-from advisor.news.classify import FilingKind, Materiality, classify_filing
+from advisor.news.classify import (
+    FilingKind,
+    Materiality,
+    classify_delisting,
+    classify_filing,
+)
 from advisor.news.enrich import offering_size_for
 from advisor.news.models import SourceItem, SourceTier, capped_tier
 
@@ -61,7 +66,12 @@ class NewsIngestResult:
 
 def _event_for_filing(item: SourceItem, *, market_caps: dict[str, float]) -> Event | None:
     """One filing to at most one event, with the tier its source permits."""
-    classification = classify_filing(item.doc_type or "", item.item_codes)
+    # A 25-NSE is graded by the class it removes, which the EDGAR adapter
+    # captured into `summary`. Everything else is graded by form and items.
+    if (item.doc_type or "").upper() == "25-NSE":
+        classification = classify_delisting(item.summary)
+    else:
+        classification = classify_filing(item.doc_type or "", item.item_codes)
     proposed = _TIER_FOR_MATERIALITY[classification.materiality]
     payload: dict = {
         "form": item.doc_type,

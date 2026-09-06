@@ -31,14 +31,21 @@ _SCALE = {"billion": 1e9, "bn": 1e9, "million": 1e6, "mm": 1e6, None: 1.0}
 # the parser away from every other dollar figure in a prospectus.
 _CONTEXT = re.compile(
     r"(aggregate offering price|aggregate amount|aggregate gross sales price|"
-    r"having an aggregate|up to \$|offering price of up to)",
+    r"aggregate principal amount|having an aggregate|up to \$|"
+    r"offering price of up to|principal amount of)",
     re.IGNORECASE,
 )
 
 
 @dataclass(frozen=True)
 class OfferingSize:
-    """An extracted offering amount and the sentence that proves it."""
+    """An extracted offering amount and the sentence that proves it.
+
+    "Offering" covers equity and the debt that becomes equity. T1 Energy sold
+    $120m of *convertible notes* — 8.9% of its market cap if converted — and
+    an extractor that only understood "aggregate offering price" reported that
+    Tier A event with no size at all.
+    """
 
     amount_usd: float
     quote: str

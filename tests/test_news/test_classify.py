@@ -8,6 +8,7 @@ from advisor.news.classify import (
     ITEM_MAP,
     FilingKind,
     Materiality,
+    classify_delisting,
     classify_filing,
     classify_items,
 )
@@ -98,3 +99,51 @@ class TestTaxonomyIntegrity:
     def test_insider_transactions_are_low_by_default(self):
         """A single Form 4 is noise; a pattern is signal, and that is Phase 4."""
         assert classify_filing("4").materiality is Materiality.LOW
+
+
+class TestDelistingClass:
+    """A 25-NSE removes a *class*, and it is usually not the common stock.
+
+    T1 Energy filed one on 2026-07-10 striking its $11.50 warrants while the
+    common stock kept trading. Graded on the form alone it was a Tier A
+    DELISTING interrupt on a position that was never at risk.
+    """
+
+    TE_WARRANTS = (
+        "Warrants, each whole warrant exercisable to purchase one Common Stock "
+        "at an exercise price of $11.50 per share (Description of class of securities)"
+    )
+
+    def test_the_real_warrant_delisting_does_not_interrupt(self):
+        result = classify_delisting(self.TE_WARRANTS)
+        assert result.kind is not FilingKind.DELISTING
+        assert result.materiality is Materiality.LOW
+
+    def test_a_genuine_common_stock_delisting_is_high(self):
+        result = classify_delisting("Common Stock, par value $0.0001 per share")
+        assert result.kind is FilingKind.DELISTING
+        assert result.materiality is Materiality.HIGH
+
+    @pytest.mark.parametrize(
+        "description",
+        [
+            "Warrants exercisable for Common Stock",
+            "Rights convertible into Common Stock",
+            "Units, each consisting of one Common Stock and one-half warrant",
+            "Warrants issuable upon exercise of Common Stock purchase rights",
+        ],
+    )
+    def test_derivative_classes_that_mention_common_stock_still_do_not_interrupt(self, description):
+        """The common stock is what the derivative settles into, not what is struck."""
+        assert classify_delisting(description).materiality is not Materiality.HIGH
+
+    def test_an_unreadable_description_stays_medium_rather_than_guessing(self):
+        assert classify_delisting(None).materiality is Materiality.MEDIUM
+        assert classify_delisting("").materiality is Materiality.MEDIUM
+
+    def test_an_ambiguous_description_does_not_reach_tier_a(self):
+        """Both classes named: worth a look, not worth an interrupt."""
+        assert classify_delisting("Common Stock and Warrants").materiality is Materiality.MEDIUM
+
+    def test_a_bare_25nse_form_lookup_is_no_longer_high(self):
+        assert classify_filing("25-NSE").materiality is Materiality.MEDIUM

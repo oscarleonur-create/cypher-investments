@@ -102,3 +102,30 @@ class TestSelection:
         size = extract_offering_size(AAOI_TEXT)
         assert size.dilution_pct(0) is None
         assert size.dilution_pct(-1) is None
+
+
+class TestConvertibleDebt:
+    """Dilution is not only equity — T1 Energy sold $120m of convertible notes.
+
+    An extractor that only understood "aggregate offering price" reported that
+    Tier A event with no size at all, on a company worth $1.35bn.
+    """
+
+    TE_TEXT = (
+        "Item 3.02. Unregistered Sale of Securities. On July 29, 2026, the Company "
+        "entered into the Note Purchase Agreements pursuant to which it agreed to sell "
+        "$120.0 million aggregate principal amount of the Convertible Notes to the "
+        "Purchasers in a private placement."
+    )
+
+    def test_extracts_a_convertible_note_principal(self):
+        size = extract_offering_size(self.TE_TEXT)
+        assert size is not None
+        assert size.amount_usd == 120_000_000
+
+    def test_sizes_it_against_market_cap(self):
+        size = extract_offering_size(self.TE_TEXT)
+        assert size.dilution_pct(1_354_592_015) == pytest.approx(0.089, abs=0.001)
+
+    def test_the_quote_names_the_instrument(self):
+        assert "Convertible Notes" in extract_offering_size(self.TE_TEXT).quote
