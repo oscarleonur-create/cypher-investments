@@ -1,5 +1,12 @@
 import type {
   ActionRecommendation,
+  BookExposure,
+  DaemonEvent,
+  DaemonStatus,
+  JobRunResult,
+  ReconcileReport,
+  SourceItem,
+  SymbolDaemonDetail,
   BayesianOverrides,
   BayesianPriceResult,
   ChatEvent,
@@ -65,6 +72,36 @@ async function del<T>(url: string): Promise<T> {
 
 export const api = {
   holdings: () => get<HoldingsResponse>("/api/portfolio/holdings"),
+
+  // ── Daemon ────────────────────────────────────────────────────────────────
+  daemonStatus: () => get<DaemonStatus>("/api/daemon/status"),
+  daemonEvents: (params: { limit?: number; tier?: string; symbol?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.limit) q.set("limit", String(params.limit));
+    if (params.tier) q.set("tier", params.tier);
+    if (params.symbol) q.set("symbol", params.symbol);
+    return get<{ events: DaemonEvent[] }>(`/api/daemon/events?${q}`);
+  },
+  daemonExposure: () =>
+    get<{ exposure: BookExposure | null; caveat?: string }>("/api/daemon/exposure"),
+  daemonSources: (symbol?: string, limit = 40) => {
+    const q = new URLSearchParams({ limit: String(limit) });
+    if (symbol) q.set("symbol", symbol);
+    return get<{ items: SourceItem[] }>(`/api/daemon/sources?${q}`);
+  },
+  daemonSymbol: (symbol: string) =>
+    get<SymbolDaemonDetail>(`/api/daemon/symbol/${symbol}`),
+  daemonReconcile: () => post<ReconcileReport>("/api/daemon/reconcile"),
+  daemonRun: (job: string) => post<JobRunResult>(`/api/daemon/run/${job}`),
+  daemonCoverage: () =>
+    get<{
+      window_days: number;
+      divergences: number;
+      explained: number;
+      rate: number;
+      by_symbol: { symbol: string; divergences: number; explained: number }[];
+    }>("/api/daemon/coverage"),
+
   review: () =>
     get<{ review: PortfolioReview | null; fetched_at: string | null }>("/api/portfolio/review"),
   refreshReview: (rebuild = false) =>

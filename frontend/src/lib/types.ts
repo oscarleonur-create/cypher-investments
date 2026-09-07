@@ -512,3 +512,130 @@ export interface PerformanceResponse {
   snapshot_count: number;
   cash_flow_count: number;
 }
+
+// ── Daemon: the always-on advisor's own state ─────────────────────────────────
+
+export type EventTier = "A" | "B" | "C";
+export type SourceTier = "PRIMARY" | "BROKER" | "AGGREGATOR" | "UNTAGGED";
+
+export interface DaemonJob {
+  name: string;
+  description: string;
+  last_run_at: string | null;
+  last_ok_at: string | null;
+  run_count: number;
+  error_count: number;
+  last_error: string;
+}
+
+export interface DaemonWatermark {
+  source: string;
+  last_seen_ts: string | null;
+  updated_at: string | null;
+}
+
+export interface DaemonStatus {
+  now: string;
+  market_open: boolean;
+  trading_day: boolean;
+  jobs: DaemonJob[];
+  watermarks: DaemonWatermark[];
+  event_counts: Record<string, number>;
+}
+
+export interface DaemonEvent {
+  id: string;
+  ts: string;
+  source: string;
+  kind: string;
+  tier: EventTier;
+  symbol: string | null;
+  payload: Record<string, unknown>;
+}
+
+export interface FactorExposureRow {
+  factor: string;
+  net_loading: number;
+  concentration: number;
+  contributors: { symbol: string; share: number }[];
+}
+
+export interface BookExposure {
+  asof: string;
+  net_liq: number;
+  covered_weight: number;
+  uncovered: string[];
+  factors: FactorExposureRow[];
+}
+
+export interface SourceItem {
+  tier: SourceTier;
+  provider: string;
+  url: string;
+  title: string;
+  published_at: string;
+  symbol: string;
+  doc_type: string | null;
+  item_codes: string[];
+  accession: string | null;
+  match: string;
+  confidence: number;
+}
+
+export interface ReconcileFinding {
+  check: string;
+  severity: "OK" | "WARN" | "FAIL";
+  symbol: string | null;
+  detail: string;
+}
+
+export interface ReconcileReport {
+  asof: string;
+  ok: boolean;
+  summary: string;
+  findings: ReconcileFinding[];
+}
+
+export interface FactorLoadingRow {
+  factor: string;
+  loading: number;
+  tstat: number;
+  material: boolean;
+}
+
+export interface SymbolDaemonDetail {
+  symbol: string;
+  sensitivity: {
+    asof: string;
+    n_obs: number;
+    r2: number;
+    resid_vol: number;
+    loadings: FactorLoadingRow[];
+  } | null;
+  contribution: {
+    factor: string;
+    loading: number;
+    contribution: number;
+    book_total: number;
+  }[];
+  timeline: {
+    published_at: string;
+    tier: SourceTier;
+    provider: string;
+    title: string;
+    url: string;
+    doc_type: string | null;
+    item_codes: string[];
+    match: string;
+  }[];
+  events: DaemonEvent[];
+}
+
+export interface JobRunResult {
+  job: string;
+  ok: boolean;
+  detail: string;
+  events_emitted: number;
+  duration_ms: number;
+  ran_at: string;
+}
