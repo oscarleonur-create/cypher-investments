@@ -68,7 +68,11 @@ advice. The unit of monitoring is the **thesis**, not the ticker.
 | Dimension | Choice |
 |---|---|
 | Cadence | daily digests + rare event-driven interrupts |
-| Data sources | free tier only — TastyTrade, SEC EDGAR, yfinance, hand-maintained macro calendar |
+| Data sources | free tier only — TastyTrade, SEC EDGAR, yfinance, Tavily (news mode), hand-maintained macro calendar |
+| Source trust | tier caps what an item may do: PRIMARY/BROKER may interrupt, AGGREGATOR reaches the digest, UNTAGGED is context and can never trigger |
+| Entity matching | a match must be earned — CIK, provider tag, registered company name, cashtag, then a bare ticker; short and common-word tickers (the book holds **TE** = T1 Energy) match on name only |
+| News retrieval | pulled to explain something a free detector already found, never polled. Keywords, never sentences — measured, a full-sentence query scored 0.393 against 0.924 for keywords |
+| Sentiment | not scored. Classification comes from the SEC's own taxonomy (8-K items, form types); direction and thesis relevance wait for the thesis layer |
 | Host | the user's Mac, market hours, with watermark catch-up on wake |
 | Delivery | Telegram bot (two-way) |
 | Universe | open positions (accounts 5WI30382, 5WI47366) + the `watchlist` table |
@@ -79,16 +83,69 @@ advice. The unit of monitoring is the **thesis**, not the ticker.
 ### Build phases
 
 1. Daemon spine — scheduler, event stream, watermarks, heartbeats ✅
-2. Ingest → position mechanics **and** the factor/exposure model
-3. Relevance gate over both pillars
+2. Ingest, in three parts, all shipped:
+   - 2a position mechanics — edge-triggered crossings, concentration, drawdown ✅
+   - 2b macro — nine-factor panel, ridge sensitivities, book exposure ✅
+   - 2c external sources — tiered ingest, entity resolution, SEC classification,
+     sized dilution, cross-source reconciliation ✅ (frontend ✅)
+3. **Story assembler (deterministic)** — one anchor event plus position, price
+   reaction, macro attribution and corroborating sources, assembled into the
+   narrative for a ticker. No LLM.
 4. Structured theses (drivers, invalidations, KPIs, macro drivers)
-5. Action Cards (LLM)
-6. Telegram delivery + suppression
-7. Outcome scoring per event type
-8. Autonomy ladder
+5. Relevance gate over both pillars, weighted by book impact **and** thesis
+   relevance
+6. Narration (LLM over the assembled story slots)
+7. Telegram delivery + suppression
+8. Outcome scoring per event type
+9. Autonomy ladder
 
 Both pillars — position mechanics and macro exposure — are first-class. This is
 not an options tool with macro bolted on.
+
+#### Why this order
+
+The relevance gate moved after theses, and a deterministic story assembler
+moved in front of both. The reasons are specific, and each came from live data
+rather than from planning:
+
+- **The story assembler needs nothing new.** Every slot but two is already in
+  the store. Building it first makes the value of phases 4–6 concrete instead
+  of theoretical, and it is the artefact Telegram will eventually send, so
+  there is no separate message format to design later.
+- **Building the gate before theses means building it twice.** Relevance is
+  relative to something. Without a thesis the gate can only weight by book
+  impact; with one it can ask whether an event touches a stated driver. TE
+  (T1 Energy, 3% of net liq) generated more Tier A events in two months than
+  AAOI and CRDO combined, because interrupt rate tracks corporate distress,
+  not position size — book impact alone would still let a small distressed
+  holding dominate attention.
+- **Narration comes last because the skeleton must stand alone.** The
+  assembled story is complete without a model; the LLM writes connective
+  prose over filled slots and may use no number that is not already in one.
+  `verification/grounding.py` is the gate. If the model is unavailable you
+  still get the story, in tables.
+
+#### Known gaps carried into phase 3
+
+- **Position at event time.** The story currently reports the *current*
+  position against a past event. `book_snapshots` only start 2026-09-04, so
+  for older events there is nothing to read. The assembler must use the
+  nearest snapshot at or before the event and say which date it used — never
+  substitute today's silently.
+- **Do not overstate the model.** A first prototype labelled AAOI's -13.77%
+  session "idiosyncratic" from a residual z of -1.12, when the firing
+  threshold is 2.0 and AAOI's residual vol (7.53%/day) makes that a routine
+  day for it. Narrative confidence must not exceed what the statistic
+  supports.
+
+### Open decisions, unanswered
+
+- **Threshold recalibration.** `-8%` stop and `-20%` drawdown do not
+  discriminate on this book: 9 of 11 positions already exceed both. Proposed
+  fix is per-position volatility-scaled thresholds. Awaiting the user.
+- **A real market-session run.** Every run so far has been outside session
+  hours, so the marked-price path has never executed live.
+- **Options mechanics.** Unbuilt and unverifiable while the book holds none.
 
 ### Conventions
 
