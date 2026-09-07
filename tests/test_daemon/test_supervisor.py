@@ -48,8 +48,14 @@ class TestRegistry:
             "watch",
             "review",
             "macro_refresh",
+            "reconcile",
             "heartbeat",
         }
+
+    def test_reconcile_runs_before_the_brief_reads_anything(self):
+        """Checking the inputs after advising on them would be pointless."""
+        by_name = {j.name: j.trigger for j in build_registry()}
+        assert by_name["reconcile"].at < by_name["brief"].at
 
     def test_brief_and_review_are_daily_watch_is_intraday(self):
         by_name = {j.name: j.trigger for j in build_registry()}

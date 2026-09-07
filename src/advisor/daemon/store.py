@@ -73,6 +73,20 @@ CREATE TABLE IF NOT EXISTS book_exposure (
     created_at  TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS source_items (
+    dedup_key   TEXT NOT NULL PRIMARY KEY,   -- SEC accession, or a hash of the URL
+    symbol      TEXT NOT NULL,
+    tier        TEXT NOT NULL,
+    provider    TEXT NOT NULL,
+    published_at TEXT NOT NULL,
+    retrieved_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL,              -- SourceItem
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_items_symbol
+    ON source_items(symbol, published_at DESC);
+
 CREATE TABLE IF NOT EXISTS daemon_heartbeat (
     job         TEXT NOT NULL PRIMARY KEY,
     last_run_at TEXT,
@@ -297,6 +311,63 @@ class DaemonStore:
 
     def book_snapshot_count(self) -> int:
         return self._conn.execute("SELECT COUNT(*) AS n FROM book_snapshots").fetchone()["n"]
+
+    # ── Source items (filings, news) ──────────────────────────────────────
+
+    def save_source_item(self, item) -> bool:
+        """Archive one item. False when it was already stored.
+
+        The primary key is the item's own dedup key — an SEC accession number
+        when there is one — so two pollers racing on the same filing cannot
+        both insert, and a re-run after a crash is a no-op rather than a
+        duplicate.
+        """
+        try:
+            self._conn.execute(
+                "INSERT INTO source_items (dedup_key, symbol, tier, provider, published_at, "
+                "retrieved_at, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    item.dedup_key(),
+                    item.entity.symbol.upper(),
+                    item.tier.value,
+                    item.provider,
+                    item.published_at.isoformat(),
+                    item.retrieved_at.isoformat(),
+                    item.model_dump_json(),
+                ),
+            )
+        except sqlite3.IntegrityError:
+            return False
+        self._conn.commit()
+        return True
+
+    def recent_source_items(self, symbol: str | None = None, limit: int = 50) -> list:
+        """Archived items, newest published first."""
+        from advisor.news.models import SourceItem
+
+        if symbol:
+            rows = self._conn.execute(
+                "SELECT payload_json FROM source_items WHERE symbol = ? "
+                "ORDER BY published_at DESC LIMIT ?",
+                (symbol.upper(), limit),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT payload_json FROM source_items ORDER BY published_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [SourceItem.model_validate_json(r["payload_json"]) for r in rows]
+
+    def source_items_between(self, symbol: str, start, end) -> list:
+        """Items for ``symbol`` published in [start, end] — used by coverage scoring."""
+        from advisor.news.models import SourceItem
+
+        rows = self._conn.execute(
+            "SELECT payload_json FROM source_items WHERE symbol = ? "
+            "AND published_at >= ? AND published_at <= ? ORDER BY published_at",
+            (symbol.upper(), start.isoformat(), end.isoformat()),
+        ).fetchall()
+        return [SourceItem.model_validate_json(r["payload_json"]) for r in rows]
 
     # ── Macro sensitivities and book exposure ────────────────────────────
 

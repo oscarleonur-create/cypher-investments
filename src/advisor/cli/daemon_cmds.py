@@ -246,3 +246,100 @@ def daemon_exposure(
         )
     finally:
         store.close()
+
+
+@app.command("sources")
+def sources_cmd(
+    symbol: Annotated[
+        Optional[str], typer.Option("--symbol", "-s", help="Filter to one symbol")
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", "-n")] = 20,
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Archived source items — what the advisor has read, and where it came from."""
+    from rich.table import Table
+
+    store = _store()
+    try:
+        items = store.recent_source_items(symbol, limit=limit)
+        if output == "json":
+            output_json([i.model_dump(mode="json") for i in items])
+            return
+        if not items:
+            console.print("[dim]No source items yet — run[/dim] advisor daemon once --job brief")
+            return
+
+        table = Table(title=f"Source items{f' — {symbol.upper()}' if symbol else ''}")
+        table.add_column("published (UTC)")
+        table.add_column("sym")
+        table.add_column("tier")
+        table.add_column("type")
+        table.add_column("match")
+        table.add_column("title", overflow="fold")
+        tier_colour = {
+            "PRIMARY": "green",
+            "BROKER": "green",
+            "AGGREGATOR": "yellow",
+            "UNTAGGED": "dim",
+        }
+        for item in items:
+            colour = tier_colour.get(item.tier.value, "white")
+            table.add_row(
+                item.published_at.strftime("%Y-%m-%d %H:%M"),
+                item.entity.symbol,
+                f"[{colour}]{item.tier.value}[/{colour}]",
+                item.doc_type or "-",
+                f"{item.entity.method.value} {item.entity.confidence:.1f}",
+                item.title[:70],
+            )
+        console.print(table)
+        console.print(
+            "\n[dim]Tier caps what an item may do: PRIMARY/BROKER can interrupt, "
+            "AGGREGATOR reaches the digest, UNTAGGED is context only.[/dim]"
+        )
+    finally:
+        store.close()
+
+
+@app.command("reconcile")
+def reconcile_cmd(
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Check every data input against an independent source."""
+    import asyncio
+
+    from rich.table import Table
+
+    from advisor.daemon.book import fetch_book
+    from advisor.daemon.reconcile import run_reconciliation
+
+    async def _run():
+        book = await fetch_book()
+        return await run_reconciliation(book)
+
+    report = asyncio.run(_run())
+    if output == "json":
+        output_json(
+            {
+                "asof": report.asof.isoformat(),
+                "ok": report.ok,
+                "findings": [f.__dict__ for f in report.findings],
+            }
+        )
+        return
+
+    table = Table(title=f"Data quality — {report.asof}")
+    table.add_column("check")
+    table.add_column("symbol")
+    table.add_column("result")
+    table.add_column("detail", overflow="fold")
+    colour = {"OK": "green", "WARN": "yellow", "FAIL": "red"}
+    for finding in report.findings:
+        table.add_row(
+            finding.check,
+            finding.symbol or "-",
+            f"[{colour[finding.severity]}]{finding.severity}[/{colour[finding.severity]}]",
+            finding.detail[:80],
+        )
+    console.print(table)
+    console.print(f"\n{report.summary()}")
