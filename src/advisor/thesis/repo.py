@@ -7,6 +7,7 @@ import logging
 from advisor.daemon.store import DaemonStore
 from advisor.thesis.detect import completeness, is_substantive, original_prose
 from advisor.thesis.models import StructuredThesis
+from advisor.thesis.reachability import audit
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,12 @@ def load_thesis(store: DaemonStore, symbol: str) -> StructuredThesis | None:
             f"({share:.0%} filled in) — nothing to test events against"
         )
 
+    blocked = {
+        r.claim_id: r.reason
+        for r in audit(store, symbol, claims)
+        if r.blocked and r.claim_id is not None
+    }
+
     return StructuredThesis(
         symbol=symbol,
         title=(row["title"] if row else f"{symbol} claims"),
@@ -70,4 +77,5 @@ def load_thesis(store: DaemonStore, symbol: str) -> StructuredThesis | None:
         substantive=written or bool(claims),
         claims=claims,
         prose_note=note or (original_prose(content)[:400] if written else ""),
+        blocked=blocked,
     )

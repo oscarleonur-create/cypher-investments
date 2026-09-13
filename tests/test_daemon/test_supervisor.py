@@ -49,6 +49,7 @@ class TestRegistry:
             "review",
             "macro_refresh",
             "reconcile",
+            "valuation",
             "heartbeat",
         }
 
@@ -65,6 +66,13 @@ class TestRegistry:
         assert by_name["review"].at == time(16, 30)
         assert isinstance(by_name["watch"], EveryMinutes)
         assert by_name["watch"].minutes == 15
+
+    def test_valuation_refreshes_weekly_not_daily(self):
+        """Its inputs are a quarterly filing and a price; a daily refit would
+        burn an XBRL parse per symbol to produce the same answer."""
+        trigger = {j.name: j.trigger for j in build_registry()}["valuation"]
+        assert isinstance(trigger, AtLeastEvery)
+        assert trigger.days == 7
 
     def test_sensitivities_refresh_weekly_not_daily(self):
         """Loadings barely move in five sessions; a daily refit is wasted work."""

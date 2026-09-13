@@ -106,10 +106,20 @@ def list_claims(
             if thesis is None:
                 continue
             for claim in thesis.claims:
-                rows.append((sym, claim))
+                rows.append((sym, claim, thesis.blocked.get(claim.id or "") or ""))
 
         if output == "json":
-            output_json([{"symbol": s, **c.model_dump(mode="json")} for s, c in rows])
+            output_json(
+                [
+                    {
+                        "symbol": sym,
+                        **claim.model_dump(mode="json"),
+                        "reachable": not blocked,
+                        "blocked_reason": blocked,
+                    }
+                    for sym, claim, blocked in rows
+                ]
+            )
             return
 
         table = Table(title="Thesis claims")
@@ -118,17 +128,14 @@ def list_claims(
         table.add_column("kind")
         table.add_column("claim", overflow="fold")
         table.add_column("checked by", overflow="fold")
-        for sym, claim in rows:
-            monitored = claim.monitored
-            table.add_row(
-                sym,
-                claim.id or "—",
-                claim.kind.value,
-                claim.text[:60],
-                f"[green]{claim.trigger.describe()}[/green]"
-                if monitored
-                else "[yellow]not machine-testable[/yellow]",
-            )
+        for sym, claim, blocked in rows:
+            if blocked:
+                checked = f"[red]{blocked}[/red]"
+            elif claim.monitored:
+                checked = f"[green]{claim.trigger.describe()}[/green]"
+            else:
+                checked = "[yellow]not machine-testable[/yellow]"
+            table.add_row(sym, claim.id or "—", claim.kind.value, claim.text[:60], checked)
         console.print(table)
     finally:
         store.close()

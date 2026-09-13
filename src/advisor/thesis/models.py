@@ -119,13 +119,23 @@ class StructuredThesis(BaseModel):
     substantive: bool = False
     claims: list[Claim] = Field(default_factory=list)
     prose_note: str = ""
+    # claim id -> why its trigger can never fire for this symbol. Empty when
+    # everything testable is also reachable.
+    blocked: dict[str, str] = Field(default_factory=dict)
 
     def of_kind(self, kind: ClaimKind) -> list[Claim]:
         return [c for c in self.claims if c.kind is kind]
 
     @property
     def monitored_claims(self) -> list[Claim]:
-        return [c for c in self.claims if c.monitored]
+        """Claims that are testable *and* reachable for this symbol.
+
+        A claim with a trigger no event can produce here is not monitored,
+        however well-formed it looks. SPCX's residual-divergence claim is the
+        case that forced the distinction: valid trigger, no factor estimate,
+        never fires.
+        """
+        return [c for c in self.claims if c.monitored and c.id not in self.blocked]
 
     @property
     def coverage(self) -> float:

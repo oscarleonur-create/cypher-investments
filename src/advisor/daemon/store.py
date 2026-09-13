@@ -98,6 +98,17 @@ CREATE TABLE IF NOT EXISTS thesis_claims (
 
 CREATE INDEX IF NOT EXISTS idx_thesis_claims_symbol ON thesis_claims(symbol);
 
+CREATE TABLE IF NOT EXISTS valuation_snapshots (
+    symbol      TEXT NOT NULL,
+    asof        TEXT NOT NULL,
+    payload_json TEXT NOT NULL,          -- ValuationSnapshot
+    created_at  TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (symbol, asof)
+);
+
+CREATE INDEX IF NOT EXISTS idx_valuation_symbol
+    ON valuation_snapshots(symbol, asof DESC);
+
 CREATE TABLE IF NOT EXISTS daemon_heartbeat (
     job         TEXT NOT NULL PRIMARY KEY,
     last_run_at TEXT,
@@ -353,6 +364,44 @@ class DaemonStore:
 
     def book_snapshot_count(self) -> int:
         return self._conn.execute("SELECT COUNT(*) AS n FROM book_snapshots").fetchone()["n"]
+
+    # ── Valuation snapshots ───────────────────────────────────────────────
+
+    def save_valuation(self, snapshot) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO valuation_snapshots (symbol, asof, payload_json) "
+            "VALUES (?, ?, ?)",
+            (snapshot.symbol.upper(), snapshot.asof.isoformat(), snapshot.model_dump_json()),
+        )
+        self._conn.commit()
+
+    def load_latest_valuation(self, symbol: str, *, before=None):
+        """Newest snapshot for ``symbol``, optionally strictly before a date."""
+        from advisor.valuation.models import ValuationSnapshot
+
+        if before is None:
+            row = self._conn.execute(
+                "SELECT payload_json FROM valuation_snapshots WHERE symbol = ? "
+                "ORDER BY asof DESC LIMIT 1",
+                (symbol.upper(),),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT payload_json FROM valuation_snapshots WHERE symbol = ? AND asof < ? "
+                "ORDER BY asof DESC LIMIT 1",
+                (symbol.upper(), before.isoformat()),
+            ).fetchone()
+        return ValuationSnapshot.model_validate_json(row["payload_json"]) if row else None
+
+    def valuation_history(self, symbol: str, limit: int = 60) -> list:
+        from advisor.valuation.models import ValuationSnapshot
+
+        rows = self._conn.execute(
+            "SELECT payload_json FROM valuation_snapshots WHERE symbol = ? "
+            "ORDER BY asof DESC LIMIT ?",
+            (symbol.upper(), limit),
+        ).fetchall()
+        return [ValuationSnapshot.model_validate_json(r["payload_json"]) for r in rows]
 
     # ── Thesis claims ─────────────────────────────────────────────────────
 

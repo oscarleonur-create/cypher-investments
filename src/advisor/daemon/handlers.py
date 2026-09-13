@@ -118,6 +118,36 @@ async def _explain_todays_movers(ctx: JobContext) -> list[str]:
     return explained
 
 
+async def run_valuation(ctx: JobContext) -> JobResult:
+    """Recompute what each holding's price requires the business to deliver.
+
+    Weekly rather than daily: the inputs are a quarterly filing and a price,
+    and the filing only moves four times a year. A daily refit would burn an
+    XBRL parse per symbol to produce the same answer, and the shift detector
+    is edge-triggered anyway.
+    """
+    from advisor.daemon.book import fetch_book
+    from advisor.valuation.ingest import refresh_valuations
+
+    try:
+        book = await fetch_book()
+    except Exception as exc:  # noqa: BLE001
+        return JobResult(job="valuation", ok=False, detail=f"book unavailable: {exc}")
+
+    prices = {p.underlying.upper(): p.price for p in book.positions if p.price}
+    result = await refresh_valuations(ctx.store, book.symbols, prices)
+
+    detail = result.summary()
+    if result.events:
+        moves = ", ".join(
+            f"{e.symbol} {e.payload['previous_implied_cagr']:.1%}->{e.payload['implied_cagr']:.1%}"
+            for e in result.events[:3]
+        )
+        detail += f" — {moves}"
+    logger.info("valuation: %s", detail)
+    return JobResult(job="valuation", ok=True, detail=detail, events_emitted=len(result.events))
+
+
 def _company_name(symbol: str) -> str | None:
     """Registered name for a symbol, cached per process. None when unresolved."""
     if symbol not in _NAME_CACHE:

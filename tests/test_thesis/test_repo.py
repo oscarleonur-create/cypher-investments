@@ -168,3 +168,52 @@ class TestStoryIntegration:
             assert _thesis(s, "AAOI", event).confidence is Confidence.UNAVAILABLE
         finally:
             s.close()
+
+
+class TestCliContract:
+    """The JSON branch is what other tools consume; it must stay in step.
+
+    It did not: adding reachability changed the row shape and the table branch
+    was updated while the JSON branch still unpacked two values. Nothing
+    caught it because nothing exercised `--output json`.
+    """
+
+    def _capture(self, monkeypatch, store):
+        """Grab the payload handed to output_json, not its rendering."""
+        from advisor.cli import thesis_cmds
+
+        captured: list = []
+        monkeypatch.setattr(thesis_cmds, "_store", lambda: store)
+        monkeypatch.setattr(thesis_cmds, "output_json", captured.append)
+        return thesis_cmds, captured
+
+    def test_json_output_includes_reachability(self, store, monkeypatch):
+        thesis_cmds, captured = self._capture(monkeypatch, store)
+        store.save_claim("AAOI", claim())
+        thesis_cmds.list_claims("AAOI", output="json")
+        rows = captured[0]
+        assert rows[0]["symbol"] == "AAOI"
+        assert rows[0]["reachable"] is True
+        assert rows[0]["blocked_reason"] == ""
+
+    def test_json_output_reports_a_blocked_claim(self, store, monkeypatch):
+        from advisor.thesis.models import Claim, ClaimKind, Comparator, Trigger
+
+        thesis_cmds, captured = self._capture(monkeypatch, store)
+        store.save_claim(
+            "AAOI",
+            Claim(
+                kind=ClaimKind.KPI,
+                text="unexplained move",
+                trigger=Trigger(
+                    event_kinds=["RESIDUAL_DIVERGENCE"],
+                    field="residual_z",
+                    comparator=Comparator.ABOVE,
+                    threshold=2.0,
+                ),
+            ),
+        )
+        thesis_cmds.list_claims("AAOI", output="json")
+        rows = captured[0]
+        assert rows[0]["reachable"] is False
+        assert "no factor estimate" in rows[0]["blocked_reason"]

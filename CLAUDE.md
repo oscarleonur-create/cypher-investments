@@ -88,16 +88,17 @@ advice. The unit of monitoring is the **thesis**, not the ticker.
    - 2b macro — nine-factor panel, ridge sensitivities, book exposure ✅
    - 2c external sources — tiered ingest, entity resolution, SEC classification,
      sized dilution, cross-source reconciliation ✅ (frontend ✅)
-3. **Story assembler (deterministic)** — one anchor event plus position, price
-   reaction, macro attribution and corroborating sources, assembled into the
-   narrative for a ticker. No LLM.
-4. Structured theses (drivers, invalidations, KPIs, macro drivers)
-5. Relevance gate over both pillars, weighted by book impact **and** thesis
+3. Story assembler (deterministic) — one anchor event plus position, price
+   reaction, macro attribution and corroborating sources ✅
+4. Structured theses — claims with triggers the event stream can test ✅
+5. **Implied expectations** — what a price requires the business to deliver,
+   recomputed from filings and price, monitored as a claim ✅
+6. Relevance gate over both pillars, weighted by book impact **and** thesis
    relevance
-6. Narration (LLM over the assembled story slots)
-7. Telegram delivery + suppression
-8. Outcome scoring per event type
-9. Autonomy ladder
+7. Narration (LLM over the assembled story slots)
+8. Telegram delivery + suppression
+9. Outcome scoring per event type
+10. Autonomy ladder
 
 Both pillars — position mechanics and macro exposure — are first-class. This is
 not an options tool with macro bolted on.
@@ -125,6 +126,26 @@ rather than from planning:
   `verification/grounding.py` is the gate. If the model is unavailable you
   still get the story, in tables.
 
+#### Why implied expectations came before the gate
+
+Writing a real thesis for the book's largest position showed what was
+missing. SPCX is 21% of net liq; its claims could say "the AI segment must
+keep growing" but nothing could check the number, and "is the price fair" had
+no home at all.
+
+A discounted cash flow answers "what is this worth" with whatever assumptions
+the author chose, and two analysts produce two numbers neither of which is
+falsifiable. Running it backwards — *what growth would justify the price we
+are being charged* — produces a number that is arithmetic rather than
+judgement, and that becomes true or false quarter by quarter. That is exactly
+the shape a thesis claim needs.
+
+It also produced the fix for a bug phase 4 could not see: a claim triggered on
+`RESIDUAL_DIVERGENCE` for SPCX was reported as machine-checked and can never
+fire, because residual divergence needs a factor estimate and SPCX has 59
+sessions against a 120-session floor. "Monitored" now means checkable *for
+this symbol*.
+
 #### Known gaps carried into phase 3
 
 - **Position at event time.** The story currently reports the *current*
@@ -137,6 +158,25 @@ rather than from planning:
   threshold is 2.0 and AAOI's residual vol (7.53%/day) makes that a routine
   day for it. Narrative confidence must not exceed what the statistic
   supports.
+
+#### Valuation rules
+
+- **Never publish a fair value.** This project reports what a price requires,
+  never what a business is worth. The first is arithmetic and falsifiable; the
+  second is an opinion wearing a number.
+- **XBRL is read undimensioned.** The same concept is tagged once per segment,
+  instrument and class — SPCX's quarterly revenue appears sixteen times — so
+  every extraction filters on the undimensioned fact. The one deliberate
+  exception is share count, where the classes *are* the dimension and must be
+  summed.
+- **Balance figures are dated, never guessed.** A first version took the
+  largest `LongTermDebt` value and read "Proceeds from debt and other
+  financing obligations" ($51.8bn, a cash-flow line) as total debt ($39.4bn).
+  Facts carry `period_key` of the form `instant_<date>`; use it.
+- **Debt absent is not debt unparseable.** A filing that never mentions debt
+  describes a debt-free company and zero is correct; one that mentions it but
+  cannot be parsed must report the gap, because assuming zero overstates
+  enterprise value in the flattering direction.
 
 ### Open decisions, unanswered
 

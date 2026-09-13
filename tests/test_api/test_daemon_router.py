@@ -74,7 +74,15 @@ class TestStatus:
     def test_reports_every_scheduled_job(self, client):
         body = client.get("/api/daemon/status").json()
         names = {j["name"] for j in body["jobs"]}
-        assert {"brief", "watch", "review", "macro_refresh", "reconcile", "heartbeat"} == names
+        assert {
+            "brief",
+            "watch",
+            "review",
+            "macro_refresh",
+            "reconcile",
+            "valuation",
+            "heartbeat",
+        } == names
 
     def test_works_on_a_cold_store(self, client):
         """First run: no heartbeats, no watermarks, no events — not an error."""
