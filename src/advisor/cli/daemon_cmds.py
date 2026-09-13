@@ -372,3 +372,90 @@ def story_cmd(
             console.print()
     finally:
         store.close()
+
+
+@app.command("valuation")
+def valuation_cmd(
+    symbol: Annotated[str, typer.Argument(help="Ticker to value")],
+    price: Annotated[
+        Optional[float], typer.Option("--price", help="Override the last price")
+    ] = None,
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """What the current price requires the business to deliver. Not a fair value."""
+    import asyncio
+
+    from rich.table import Table
+
+    from advisor.daemon.book import fetch_book
+    from advisor.valuation.fundamentals import latest_fundamentals
+    from advisor.valuation.implied import build_snapshot
+
+    sym = symbol.upper()
+    if price is None:
+        book = asyncio.run(fetch_book())
+        held = next((p for p in book.positions if p.underlying.upper() == sym), None)
+        if held is None or not held.price:
+            console.print(f"[red]No price for {sym} — pass --price[/red]")
+            raise typer.Exit(1)
+        price = held.price
+
+    fundamentals = latest_fundamentals(sym)
+    if fundamentals is None:
+        console.print(f"[red]No usable filing for {sym}[/red]")
+        raise typer.Exit(1)
+
+    snapshot = build_snapshot(fundamentals, price)
+    if snapshot is None:
+        console.print(f"[red]Cannot value {sym} — missing {', '.join(fundamentals.missing)}[/red]")
+        raise typer.Exit(1)
+
+    if output == "json":
+        output_json(snapshot.model_dump(mode="json"))
+        return
+
+    console.print(
+        f"\n[bold]{sym}[/bold] at ${snapshot.price:,.2f} — "
+        f"filing {snapshot.source_accession}, period to {snapshot.period_end}"
+    )
+    if snapshot.is_stale():
+        console.print(
+            f"  [yellow]⚠ the figures are {snapshot.period_age_days()} days old — "
+            f"the run-rate may describe a different business[/yellow]"
+        )
+    console.print(
+        f"  market cap ${snapshot.market_cap / 1e9:,.0f}bn  "
+        f"net cash ${(snapshot.net_cash or 0) / 1e9:,.0f}bn  "
+        f"[bold]EV ${snapshot.enterprise_value / 1e9:,.0f}bn[/bold]"
+    )
+    if snapshot.ev_to_revenue:
+        console.print(
+            f"  EV / revenue {snapshot.ev_to_revenue:,.1f}x on "
+            f"${(snapshot.revenue_runrate or 0) / 1e9:,.1f}bn run-rate"
+        )
+
+    table = Table(title="What the price requires, over 10 years")
+    table.add_column("terminal EV/FCF", justify="right")
+    table.add_column("FCF margin", justify="right")
+    table.add_column("revenue needed", justify="right")
+    table.add_column("implied CAGR", justify="right")
+    for scenario in snapshot.scenarios:
+        colour = (
+            "red"
+            if scenario.implied_cagr > 0.25
+            else "yellow"
+            if scenario.implied_cagr > 0.15
+            else "green"
+        )
+        table.add_row(
+            f"{scenario.terminal_multiple:g}x",
+            f"{scenario.fcf_margin:.0%}",
+            f"${scenario.required_revenue / 1e9:,.0f}bn",
+            f"[{colour}]{scenario.implied_cagr:.1%}[/{colour}]",
+        )
+    console.print(table)
+    console.print(
+        "\n[dim]This is arithmetic, not advice: it says what would have to happen, "
+        "not whether it will. No business above $100bn of revenue has sustained "
+        "25% growth for a decade.[/dim]"
+    )

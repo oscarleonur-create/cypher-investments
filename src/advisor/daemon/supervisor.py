@@ -70,6 +70,14 @@ def build_registry() -> JobRegistry:
     )
     reg.register(
         Job(
+            name="valuation",
+            trigger=AtLeastEvery(days=7, after=time(6, 15)),
+            handler=handlers.run_valuation,
+            description="weekly implied-expectations refresh from filings and price",
+        )
+    )
+    reg.register(
+        Job(
             name="reconcile",
             trigger=DailyAt(time(6, 45), grace_hours=6.0),
             handler=handlers.run_reconcile,

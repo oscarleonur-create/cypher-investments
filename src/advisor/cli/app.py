@@ -9,6 +9,7 @@ import typer
 from advisor.cli.daemon_cmds import app as daemon_app
 from advisor.cli.data_cmds import app as data_app
 from advisor.cli.research_cmds import app as research_app
+from advisor.cli.thesis_cmds import app as thesis_app
 from advisor.cli.web_cmds import app as web_app
 
 app = typer.Typer(
@@ -20,6 +21,7 @@ app = typer.Typer(
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(data_app, name="data")
 app.add_typer(research_app, name="research")
+app.add_typer(thesis_app, name="thesis")
 app.add_typer(web_app, name="web")
 
 

@@ -12,6 +12,7 @@ import logging
 from datetime import timedelta
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/daemon", tags=["daemon"])
@@ -262,6 +263,137 @@ async def story(symbol: str, limit: int = Query(1, ge=1, le=5)) -> dict:
                 for s in stories
             ],
         }
+    finally:
+        store.close()
+
+
+@router.get("/thesis/{symbol}")
+async def thesis_detail(symbol: str) -> dict:
+    """The structured thesis for a symbol, with its claims and coverage."""
+    from advisor.thesis.repo import ThesisReadError, load_thesis
+
+    store = _store()
+    try:
+        try:
+            thesis = load_thesis(store, symbol)
+        except ThesisReadError as exc:
+            raise HTTPException(status_code=503, detail=f"thesis store unreadable: {exc}") from exc
+        if thesis is None:
+            return {"symbol": symbol.upper(), "thesis": None}
+        return {
+            "symbol": thesis.symbol,
+            "thesis": {
+                "title": thesis.title,
+                "conviction": thesis.conviction,
+                "status": thesis.status,
+                "substantive": thesis.substantive,
+                "prose_note": thesis.prose_note,
+                "coverage": thesis.coverage,
+                "claims": [
+                    {
+                        **c.model_dump(mode="json"),
+                        "monitored": c.monitored,
+                        "trigger_description": c.trigger.describe(),
+                    }
+                    for c in thesis.claims
+                ],
+            },
+        }
+    finally:
+        store.close()
+
+
+@router.get("/thesis-coverage")
+async def thesis_coverage() -> dict:
+    """Which holdings have a written thesis, weighted by their place in the book.
+
+    The number that matters is the share of capital with no stated view, not
+    the count of symbols — a missing thesis on 21% of the book is a different
+    problem from one on 3%.
+    """
+    from advisor.daemon.book import fetch_book
+    from advisor.thesis.repo import load_thesis
+
+    store = _store()
+    try:
+        book = await fetch_book()
+        rows = []
+        for sym in book.symbols:
+            try:
+                thesis = load_thesis(store, sym)
+            except Exception:  # noqa: BLE001
+                thesis = None
+            position = next((p for p in book.positions if p.underlying.upper() == sym), None)
+            weight = (position.signed_notional / book.net_liq) if position and book.net_liq else 0.0
+            rows.append(
+                {
+                    "symbol": sym,
+                    "weight": weight,
+                    "written": bool(thesis and thesis.substantive),
+                    "claims": len(thesis.claims) if thesis else 0,
+                    "monitored": len(thesis.monitored_claims) if thesis else 0,
+                }
+            )
+        rows.sort(key=lambda r: -abs(r["weight"]))
+        uncovered = [r for r in rows if not r["written"]]
+        return {
+            "rows": rows,
+            "uncovered_count": len(uncovered),
+            "uncovered_weight": sum(abs(r["weight"]) for r in uncovered),
+        }
+    finally:
+        store.close()
+
+
+class ClaimInput(BaseModel):
+    kind: str
+    text: str
+    event_kinds: list[str] = Field(default_factory=list)
+    field: str | None = None
+    comparator: str = "HAPPENS"
+    threshold: float | None = None
+    factor: str | None = None
+
+
+@router.post("/thesis/{symbol}/claims")
+async def add_claim(symbol: str, body: ClaimInput) -> dict:
+    """Record one claim for a symbol."""
+    from advisor.thesis.models import Claim, ClaimKind, Comparator, Trigger
+
+    try:
+        claim = Claim(
+            kind=ClaimKind(body.kind.upper()),
+            text=body.text,
+            trigger=Trigger(
+                event_kinds=[k.upper() for k in body.event_kinds],
+                field=body.field,
+                comparator=Comparator(body.comparator.upper()),
+                threshold=body.threshold,
+                factor=body.factor.upper() if body.factor else None,
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    store = _store()
+    try:
+        claim_id = store.save_claim(symbol, claim)
+        return {
+            "id": claim_id,
+            "monitored": claim.monitored,
+            "trigger_description": claim.trigger.describe(),
+        }
+    finally:
+        store.close()
+
+
+@router.delete("/thesis/claims/{claim_id}")
+async def delete_claim(claim_id: str) -> dict:
+    store = _store()
+    try:
+        if not store.delete_claim(claim_id):
+            raise HTTPException(status_code=404, detail=f"no claim {claim_id}")
+        return {"deleted": claim_id}
     finally:
         store.close()
 

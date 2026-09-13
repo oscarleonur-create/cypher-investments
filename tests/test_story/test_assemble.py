@@ -316,8 +316,8 @@ class TestThesis:
 
     def _create_table(self, store):
         store._conn.execute(
-            "CREATE TABLE theses (symbol TEXT, title TEXT, conviction TEXT, "
-            "status TEXT, updated_at TEXT)"
+            "CREATE TABLE theses (symbol TEXT, title TEXT, content TEXT, "
+            "conviction TEXT, status TEXT, updated_at TEXT)"
         )
 
     def test_a_database_with_no_theses_table_is_not_reported_as_broken(self, store):
@@ -325,7 +325,7 @@ class TestThesis:
         story = build_story(store, dilution_event(), prices=price_frame(), factors=factor_frame())
         assert story.thesis.confidence is Confidence.MEASURED
         assert story.thesis.exists is False
-        assert "no theses recorded" in story.thesis.note
+        assert "no stated thesis" in story.thesis.note
 
     def test_a_symbol_with_no_thesis_says_there_is_nothing_to_test_against(self, store):
         self._create_table(store)
@@ -336,7 +336,13 @@ class TestThesis:
     def test_an_existing_thesis_is_attached(self, store):
         self._create_table(store)
         store._conn.execute(
-            "INSERT INTO theses VALUES ('AAOI', 'Optics capacity', 'LOW', 'active', '2026-09-01')"
+            "INSERT INTO theses VALUES ('AAOI', 'Optics capacity', ?, 'LOW', 'active', "
+            "'2026-09-01')",
+            (
+                "AAOI makes optical transceivers; the AI datacentre build-out drives 800G "
+                "demand faster than capacity can be added, and in-house laser fabrication "
+                "is the constraint competitors cannot buy their way around this cycle.",
+            ),
         )
         story = build_story(store, dilution_event(), prices=price_frame(), factors=factor_frame())
         assert story.thesis.exists is True

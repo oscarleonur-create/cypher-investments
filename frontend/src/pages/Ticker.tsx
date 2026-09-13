@@ -12,6 +12,7 @@ import { Stat } from "@/components/common";
 import { AgentPanel } from "@/components/AgentPanel";
 import { TickerDaemonPanels } from "@/components/tickerDaemon";
 import { StoryCard } from "@/components/StoryCard";
+import { ClaimsPanel } from "@/components/ClaimsPanel";
 import {
   BayesianPricingPanel,
   CatalystsPanel,
@@ -142,6 +143,7 @@ export default function Ticker({ quotes }: { quotes: QuotesState }) {
             <TranscriptsPanel r={data} />
           </div>
           <div className="space-y-4">
+            <ClaimsPanel symbol={sym} />
             <TickerDaemonPanels symbol={sym} />
             <KpiPanel r={data} />
             <CatalystsPanel r={data} />
