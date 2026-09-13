@@ -32,7 +32,10 @@ _SCALE = {"billion": 1e9, "bn": 1e9, "million": 1e6, "mm": 1e6, None: 1.0}
 _CONTEXT = re.compile(
     r"(aggregate offering price|aggregate amount|aggregate gross sales price|"
     r"aggregate principal amount|having an aggregate|up to \$|"
-    r"offering price of up to|principal amount of)",
+    r"offering price of up to|principal amount of|"
+    # Foreign issuers announce a closed deal in a press release, not a
+    # prospectus: "aggregate gross proceeds of approximately $5.75 billion".
+    r"aggregate gross proceeds|gross proceeds of|offering of \$)",
     re.IGNORECASE,
 )
 

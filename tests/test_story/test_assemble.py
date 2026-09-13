@@ -394,3 +394,135 @@ class TestStoryShape:
         story = build_story(store, dilution_event(), prices=price_frame(), factors=factor_frame())
         assert story.assembled_at.tzinfo is not None
         assert story.anchor.occurred_at.tzinfo is not None
+
+
+class TestArchiveFallback:
+    """Every holding with a filing history deserves a story.
+
+    Found end to end on AMD: eight filings since July, none of them evented
+    (all older than the five-day event window when first seen), and so no
+    story at all. The event stream carries what was worth reporting; the
+    archive carries what happened. A story needs the second.
+    """
+
+    def source(self, **kw) -> SourceItem:
+        base = dict(
+            tier=SourceTier.PRIMARY,
+            provider="SEC EDGAR",
+            url="https://www.sec.gov/amd.htm",
+            title="8-K: ADVANCED MICRO DEVICES INC",
+            published_at=FILED,
+            entity=EntityMatch(symbol="AMD", cik=2488, method=MatchMethod.CIK),
+            doc_type="8-K",
+            item_codes=["5.02", "9.01"],
+            accession="0000002488-26-000163",
+        )
+        return SourceItem(**{**base, **kw})
+
+    def test_a_symbol_with_filings_but_no_events_still_gets_a_story(self, store):
+        from advisor.story.assemble import _anchor_from_archive
+
+        store.save_source_item(self.source())
+        anchors = _anchor_from_archive(store, "AMD", 3)
+        assert len(anchors) == 1
+        assert anchors[0].kind == "FILING_MANAGEMENT_CHANGE"
+
+    def test_archive_anchors_are_tier_c(self, store):
+        """They were never judged worth interrupting for; that does not change."""
+        from advisor.story.assemble import _anchor_from_archive
+
+        store.save_source_item(self.source())
+        assert _anchor_from_archive(store, "AMD", 3)[0].tier is EventTier.C
+
+    def test_the_anchor_keeps_the_filing_timestamp_not_todays(self, store):
+        from advisor.story.assemble import _anchor_from_archive
+
+        store.save_source_item(self.source())
+        anchor = _anchor_from_archive(store, "AMD", 3)[0]
+        assert anchor.payload["accepted_at"].startswith("2026-08-21")
+        assert anchor.payload["from_archive"] is True
+
+    def test_news_items_are_not_used_as_anchors(self, store):
+        """A headline is context, not an event a story can be built around."""
+        from advisor.story.assemble import _anchor_from_archive
+
+        store.save_source_item(
+            self.source(
+                tier=SourceTier.UNTAGGED,
+                doc_type="NEWS",
+                accession=None,
+                url="https://news/x",
+            )
+        )
+        assert _anchor_from_archive(store, "AMD", 3) == []
+
+    def test_a_symbol_with_nothing_archived_yields_nothing(self, store):
+        from advisor.story.assemble import _anchor_from_archive
+
+        assert _anchor_from_archive(store, "ZZZZ", 3) == []
+
+
+class TestNaNSafety:
+    """A NaN residual produced a confident, false verdict.
+
+    Found on NBIS: one factor had no observation for the session, every
+    downstream number became NaN, and `abs(nan) >= threshold` is False at
+    every rung of the ladder — so the story fell through to CONSISTENT and
+    stated that macro explained a move nobody could measure.
+    """
+
+    def test_a_nan_residual_is_unknown_not_consistent(self):
+        assert verdict_for(float("nan")) is Verdict.UNKNOWN
+
+    def test_an_infinite_residual_is_unknown(self):
+        assert verdict_for(float("inf")) is Verdict.UNKNOWN
+        assert verdict_for(float("-inf")) is Verdict.UNKNOWN
+
+    def test_a_nan_never_reaches_a_confident_reading(self):
+        for value in (float("nan"), float("inf"), float("-inf")):
+            assert verdict_for(value) not in (
+                Verdict.CONSISTENT,
+                Verdict.PARTLY_SPECIFIC,
+                Verdict.UNEXPLAINED,
+                Verdict.NOT_MARKET,
+            )
+
+    def test_a_factor_with_no_observation_is_dropped_not_propagated(self, store):
+        """The model narrows rather than breaking."""
+        store.save_sensitivity(sensitivity())
+        factors = factor_frame()
+        factors.loc[factors.index[-2], Factor.VOL.value] = float("nan")
+        story = build_story(store, dilution_event(), prices=price_frame(), factors=factors)
+        assert story.attribution.confidence is Confidence.ESTIMATED
+        assert not np.isnan(story.attribution.residual_z)
+
+    def test_a_session_with_no_factor_observations_at_all_is_unavailable(self, store):
+        store.save_sensitivity(sensitivity())
+        factors = factor_frame()
+        factors.loc[factors.index[-2], :] = float("nan")
+        story = build_story(store, dilution_event(), prices=price_frame(), factors=factors)
+        assert story.attribution.confidence is Confidence.UNAVAILABLE
+        assert story.attribution.verdict is Verdict.UNKNOWN
+
+
+class TestForeignAnchors:
+    def test_an_archived_6k_is_classified_from_its_headline(self, store):
+        """Classifying by form alone made every foreign disclosure generic."""
+        from advisor.story.assemble import _anchor_from_archive
+
+        store.save_source_item(
+            SourceItem(
+                tier=SourceTier.PRIMARY,
+                provider="SEC EDGAR",
+                url="https://www.sec.gov/nbis.htm",
+                title="6-K: Nebius Group N.V.",
+                published_at=FILED,
+                entity=EntityMatch(symbol="NBIS", cik=1513845, method=MatchMethod.CIK),
+                doc_type="6-K",
+                accession="0001104659-26-105749",
+                summary="Exhibit 99.1 Palantir and Nebius partner to deliver a sovereign AI stack",
+            )
+        )
+        anchor = _anchor_from_archive(store, "NBIS", 3)[0]
+        assert anchor.kind == "FILING_MATERIAL_AGREEMENT"
+        assert anchor.payload["label"] == "partnership announced"

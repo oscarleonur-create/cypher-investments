@@ -30,6 +30,7 @@ class Materiality(StrEnum):
 
 class FilingKind(StrEnum):
     DILUTION = "DILUTION"  # new shares offered
+    DEBT_ISSUANCE = "DEBT_ISSUANCE"  # notes or bonds — leverage, not dilution
     SHELF = "SHELF"  # capacity registered, not yet used
     RESULTS = "RESULTS"  # earnings / operating results
     GUIDANCE = "GUIDANCE"
@@ -131,6 +132,11 @@ FORM_MAP: dict[str, Classification] = {
     "4": Classification(FilingKind.INSIDER_TRADE, Materiality.LOW, "insider transaction"),
     "10-K": Classification(FilingKind.PERIODIC_REPORT, Materiality.MEDIUM, "annual report"),
     "10-Q": Classification(FilingKind.PERIODIC_REPORT, Materiality.MEDIUM, "quarterly report"),
+    "20-F": Classification(FilingKind.PERIODIC_REPORT, Materiality.MEDIUM, "annual report"),
+    "40-F": Classification(FilingKind.PERIODIC_REPORT, Materiality.MEDIUM, "annual report"),
+    # A 6-K carries whatever a foreign issuer would otherwise have filed on an
+    # 8-K, without item codes to say which. Worth reading, never an interrupt.
+    "6-K": Classification(FilingKind.OTHER, Materiality.LOW, "foreign issuer report"),
     "NT 10-K": Classification(
         FilingKind.LATE_FILING, Materiality.HIGH, "annual report will be late"
     ),

@@ -26,6 +26,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from advisor.news.classify import classify_delisting, classify_filing
+from advisor.news.foreign import classify_headline
 from advisor.news.models import EntityMatch, MatchMethod, SourceItem, SourceTier
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,12 @@ WATCHED_FORMS: tuple[str, ...] = (
     "NT 10-K",
     "NT 10-Q",
     "25-NSE",
+    # Foreign private issuers never file a 10-Q or an 8-K. Nebius is a Dutch
+    # N.V.: everything it discloses arrives as a 6-K, and its periodic report
+    # is an annual 20-F. Without these it had nothing archived at all.
+    "20-F",
+    "40-F",
+    "6-K",
 )
 
 # Form 4 (insider transactions) is separated because a single company can file
@@ -116,6 +123,15 @@ def _security_class(filing: Any) -> str | None:
     return text[max(0, marker - 400) : marker + 100]
 
 
+def _headline(filing: Any, form: str) -> str:
+    """A 6-K's press-release opening, or empty for every other form."""
+    if not form.upper().startswith("6-K"):
+        return ""
+    from advisor.news.foreign import exhibit_text
+
+    return exhibit_text(filing)
+
+
 def _item_codes(filing: Any) -> list[str]:
     """8-K item numbers, empty for other forms or when parsing fails."""
     if not str(getattr(filing, "form", "")).startswith("8-K"):
@@ -171,11 +187,15 @@ def recent_filings(
             form = str(filing.form)
             codes = _item_codes(filing)
             security_class = _security_class(filing)
-            classification = (
-                classify_delisting(security_class)
-                if security_class is not None
-                else classify_filing(form, codes)
-            )
+            headline = _headline(filing, form)
+            if security_class is not None:
+                classification = classify_delisting(security_class)
+            elif headline:
+                # A 6-K has no item codes and a boilerplate body; its
+                # press-release headline is the closest thing it has to one.
+                classification = classify_headline(headline)
+            else:
+                classification = classify_filing(form, codes)
             out.append(
                 SourceItem(
                     tier=SourceTier.PRIMARY,
@@ -187,7 +207,7 @@ def recent_filings(
                     doc_type=form,
                     item_codes=codes,
                     accession=str(filing.accession_no),
-                    summary=security_class,
+                    summary=security_class or (headline[:900] or None),
                 )
             )
         except Exception as exc:  # noqa: BLE001
