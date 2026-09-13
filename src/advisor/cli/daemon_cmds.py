@@ -343,3 +343,32 @@ def reconcile_cmd(
         )
     console.print(table)
     console.print(f"\n{report.summary()}")
+
+
+@app.command("story")
+def story_cmd(
+    symbol: Annotated[str, typer.Argument(help="Ticker to assemble stories for")],
+    limit: Annotated[int, typer.Option("--limit", "-n", help="How many events back")] = 1,
+    output: Annotated[str, typer.Option("--output", "-o")] = "text",
+) -> None:
+    """Assemble the story behind a ticker's recent events. No LLM."""
+    from advisor.story.assemble import stories_for_symbol
+    from advisor.story.render import render
+
+    store = _store()
+    try:
+        stories = stories_for_symbol(store, symbol, limit=limit)
+        if output == "json":
+            output_json([s.model_dump(mode="json") for s in stories])
+            return
+        if not stories:
+            console.print(
+                f"[dim]No events for {symbol.upper()} yet — run[/dim] "
+                "advisor daemon once --job brief"
+            )
+            return
+        for story in stories:
+            console.print(render(story))
+            console.print()
+    finally:
+        store.close()

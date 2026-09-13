@@ -240,3 +240,19 @@ class TestCoverage:
         body = client.get("/api/daemon/coverage").json()
         assert body["divergences"] == 0
         assert body["rate"] == 0.0
+
+
+class TestStoryEndpoint:
+    def test_a_symbol_with_no_events_returns_an_empty_list(self, client):
+        body = client.get("/api/daemon/story/ZZZZ").json()
+        assert body["symbol"] == "ZZZZ"
+        assert body["stories"] == []
+
+    def test_the_limit_is_bounded(self, client):
+        assert client.get("/api/daemon/story/AAOI?limit=0").status_code == 422
+        assert client.get("/api/daemon/story/AAOI?limit=99").status_code == 422
+
+    def test_context_events_do_not_become_stories(self, client):
+        """Tier C is logged context; it does not merit a narrative."""
+        client.store.emit(filing_event(dedup_key="c", tier=EventTier.C))
+        assert client.get("/api/daemon/story/AAOI").json()["stories"] == []

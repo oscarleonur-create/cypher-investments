@@ -639,3 +639,79 @@ export interface JobRunResult {
   duration_ms: number;
   ran_at: string;
 }
+
+// ── Story: one event, assembled ───────────────────────────────────────────────
+
+export type Confidence = "MEASURED" | "ESTIMATED" | "UNAVAILABLE";
+export type Verdict =
+  | "NOT_MARKET"
+  | "UNEXPLAINED"
+  | "PARTLY_SPECIFIC"
+  | "CONSISTENT"
+  | "UNKNOWN";
+
+export interface Story {
+  symbol: string;
+  headline: string;
+  unavailable: string[];
+  assembled_at: string;
+  anchor: {
+    event_id: string;
+    kind: string;
+    tier: EventTier;
+    symbol: string;
+    occurred_at: string;
+    ingested_at: string;
+    headline: string;
+    source: string;
+    url: string | null;
+    quote: string | null;
+    facts: Record<string, number | string | string[]>;
+  };
+  position: {
+    confidence: Confidence;
+    quantity: number | null;
+    avg_open_price: number | null;
+    weight_of_net_liq: number | null;
+    net_liq: number | null;
+    snapshot_asof: string | null;
+    covers_event: boolean;
+    note: string;
+  };
+  reaction: {
+    confidence: Confidence;
+    session: string | null;
+    before: number | null;
+    after: number | null;
+    pct_move: number | null;
+    dollars: number | null;
+    pct_of_book: number | null;
+    priced_next_session: boolean;
+    note: string;
+  };
+  attribution: {
+    confidence: Confidence;
+    verdict: Verdict;
+    actual_return: number | null;
+    expected_return: number | null;
+    residual_z: number | null;
+    resid_vol: number | null;
+    r2: number | null;
+    note: string;
+  };
+  corroboration: {
+    window_days: number;
+    items: { tier: SourceTier; title: string; url: string; published_at: string }[];
+    primary_count: number;
+    aggregator_count: number;
+    untagged_count: number;
+  };
+  thesis: {
+    confidence: Confidence;
+    exists: boolean;
+    title: string | null;
+    conviction: string | null;
+    status: string | null;
+    note: string;
+  };
+}

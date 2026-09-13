@@ -238,6 +238,34 @@ async def symbol_detail(symbol: str, days: int = Query(45, ge=7, le=365)) -> dic
         store.close()
 
 
+@router.get("/story/{symbol}")
+async def story(symbol: str, limit: int = Query(1, ge=1, le=5)) -> dict:
+    """Assembled stories for a symbol's recent events.
+
+    Unlike the other read endpoints this one fetches a price history, so it is
+    not free. The frontend requests it per ticker page rather than polling.
+    """
+    from advisor.story.assemble import stories_for_symbol
+    from advisor.story.render import headline
+
+    store = _store()
+    try:
+        stories = stories_for_symbol(store, symbol, limit=limit)
+        return {
+            "symbol": symbol.upper(),
+            "stories": [
+                {
+                    **s.model_dump(mode="json"),
+                    "headline": headline(s),
+                    "unavailable": s.unavailable_slots,
+                }
+                for s in stories
+            ],
+        }
+    finally:
+        store.close()
+
+
 @router.post("/reconcile")
 async def reconcile() -> dict:
     """Run every data-quality check live. Slow — reaches the broker and network."""

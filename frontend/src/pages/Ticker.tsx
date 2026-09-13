@@ -11,6 +11,7 @@ import { Card } from "@/components/ui/card";
 import { Stat } from "@/components/common";
 import { AgentPanel } from "@/components/AgentPanel";
 import { TickerDaemonPanels } from "@/components/tickerDaemon";
+import { StoryCard } from "@/components/StoryCard";
 import {
   BayesianPricingPanel,
   CatalystsPanel,
@@ -120,6 +121,9 @@ export default function Ticker({ quotes }: { quotes: QuotesState }) {
         </Card>
       ) : data ? (
         <div className="space-y-4">
+          {/* What the daemon last saw happen to this name, assembled from
+              stored rows. Renders nothing when there is no event yet. */}
+          <StoryCard symbol={sym} />
           {/* Headline white-paper brief — full width */}
           <DeepResearchPanel r={data} />
           {/* On-demand BUY/SELL/INCREASE/DECREASE/HOLD recommendation, checks

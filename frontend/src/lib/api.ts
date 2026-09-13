@@ -6,6 +6,7 @@ import type {
   JobRunResult,
   ReconcileReport,
   SourceItem,
+  Story,
   SymbolDaemonDetail,
   BayesianOverrides,
   BayesianPriceResult,
@@ -89,6 +90,10 @@ export const api = {
     if (symbol) q.set("symbol", symbol);
     return get<{ items: SourceItem[] }>(`/api/daemon/sources?${q}`);
   },
+  daemonStory: (symbol: string, limit = 1) =>
+    get<{ symbol: string; stories: Story[] }>(
+      `/api/daemon/story/${symbol}?limit=${limit}`
+    ),
   daemonSymbol: (symbol: string) =>
     get<SymbolDaemonDetail>(`/api/daemon/symbol/${symbol}`),
   daemonReconcile: () => post<ReconcileReport>("/api/daemon/reconcile"),
