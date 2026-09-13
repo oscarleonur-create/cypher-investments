@@ -17,7 +17,7 @@ against a watermark.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 
 from advisor.daemon.book import BookSnapshot
@@ -31,9 +31,10 @@ from advisor.news.classify import (
     classify_delisting,
     classify_filing,
 )
-from advisor.news.enrich import offering_size_for
+from advisor.news.enrich import extract_offering_size, offering_size_for
+from advisor.news.foreign import classify_headline, is_proposal
 from advisor.news.models import SourceItem, SourceTier, capped_tier
-from advisor.news.offering import offering_shape_for
+from advisor.news.offering import classify_offering, offering_shape_for
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +77,13 @@ def _event_for_filing(item: SourceItem, *, market_caps: dict[str, float]) -> Eve
     """One filing to at most one event, with the tier its source permits."""
     # A 25-NSE is graded by the class it removes, which the EDGAR adapter
     # captured into `summary`. Everything else is graded by form and items.
-    if (item.doc_type or "").upper() == "25-NSE":
+    doc_type = (item.doc_type or "").upper()
+    if doc_type == "25-NSE":
         classification = classify_delisting(item.summary)
+    elif doc_type.startswith("6-K") and item.summary:
+        classification = classify_headline(item.summary)
     else:
-        classification = classify_filing(item.doc_type or "", item.item_codes)
+        classification = classify_filing(doc_type, item.item_codes)
     proposed = _TIER_FOR_MATERIALITY[classification.materiality]
     payload: dict = {
         "form": item.doc_type,
@@ -97,7 +101,15 @@ def _event_for_filing(item: SourceItem, *, market_caps: dict[str, float]) -> Eve
     # August supplement sold $4.75bn of senior notes — leverage, with not one
     # share issued — and calling that dilution reported the wrong fact.
     if classification.kind is FilingKind.DILUTION and item.accession:
-        shape = offering_shape_for(item.accession)
+        # For a 6-K the filing body is a cover page; the offering is described
+        # in the exhibit, which the EDGAR adapter stored in `summary`. Reading
+        # the body instead found no equity language and demoted Nebius's
+        # $5.75bn convertible offering to a debt issuance.
+        shape = (
+            classify_offering(item.summary)
+            if doc_type.startswith("6-K") and item.summary
+            else offering_shape_for(item.accession)
+        )
         if shape is not None:
             payload["security_type"] = shape.security.value
             payload["preliminary"] = shape.preliminary
@@ -110,6 +122,9 @@ def _event_for_filing(item: SourceItem, *, market_caps: dict[str, float]) -> Eve
                 payload["kind"] = classification.kind.value
                 payload["label"] = classification.label
                 proposed = EventTier.B
+            if doc_type.startswith("6-K") and item.summary and is_proposal(item.summary):
+                # Same rule as a preliminary prospectus, in press-release form.
+                shape = replace(shape, preliminary=True)
             if shape.preliminary:
                 # An unpriced preliminary is an intention, not a completed
                 # deal; the pricing supplement that follows is the event.
@@ -120,7 +135,11 @@ def _event_for_filing(item: SourceItem, *, market_caps: dict[str, float]) -> Eve
     # information about leverage even though it dilutes nobody. Only the
     # *dilution* percentage is reserved for offerings that issue shares.
     if classification.kind in (FilingKind.DILUTION, FilingKind.DEBT_ISSUANCE) and item.accession:
-        size = offering_size_for(item.accession)
+        size = (
+            extract_offering_size(item.summary)
+            if doc_type.startswith("6-K") and item.summary
+            else offering_size_for(item.accession)
+        )
         if size is not None:
             payload["offering_usd"] = size.amount_usd
             payload["quote"] = size.quote

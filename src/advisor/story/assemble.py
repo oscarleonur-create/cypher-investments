@@ -16,6 +16,7 @@ which is exactly the mistake a hand-written timeline made before this existed.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date, datetime, timedelta
 
 from advisor.daemon import market_calendar as mc
@@ -49,8 +50,15 @@ VERDICT_LADDER: tuple[tuple[float, Verdict], ...] = (
 
 
 def verdict_for(residual_z: float | None) -> Verdict:
-    """Map a residual to language that does not outrun it."""
-    if residual_z is None:
+    """Map a residual to language that does not outrun it.
+
+    A NaN falls through every threshold comparison — `abs(nan) >= 3.0` is
+    False, and so is every other — and lands on CONSISTENT, which states
+    confidently that macro explains a move nobody could measure. NBIS produced
+    exactly that: "consistent with what macro did that day" from a residual of
+    nan. Unknown is the only honest reading of an unmeasurable residual.
+    """
+    if residual_z is None or math.isnan(residual_z) or math.isinf(residual_z):
         return Verdict.UNKNOWN
     magnitude = abs(residual_z)
     for threshold, verdict in VERDICT_LADDER:
@@ -266,9 +274,39 @@ def _attribution(store: DaemonStore, symbol: str, session: date | None, factors,
             note=f"{symbol} has no bar for {session}",
         )
 
-    moves = {c: float(factors.loc[day, c]) for c in factors.columns}
+    moves = {
+        c: float(factors.loc[day, c])
+        for c in factors.columns
+        if not math.isnan(float(factors.loc[day, c]))
+    }
+    if len(moves) < len(factors.columns):
+        # A factor with no observation that day would poison every downstream
+        # number with NaN. Dropping it narrows the model rather than breaking
+        # it, and the caller is told how much was dropped.
+        logger.info(
+            "story: %s on %s — %d of %d factors had no observation",
+            symbol,
+            session,
+            len(factors.columns) - len(moves),
+            len(factors.columns),
+        )
+    if not moves:
+        return Attribution(
+            confidence=Confidence.UNAVAILABLE,
+            r2=sensitivity.r2,
+            resid_vol=sensitivity.resid_vol,
+            note=f"no factor observations at all for {session}",
+        )
+
     expected = expected_return(sensitivity, moves)
     z = residual_z(sensitivity, float(actual), moves)
+    if math.isnan(expected) or math.isnan(z):
+        return Attribution(
+            confidence=Confidence.UNAVAILABLE,
+            r2=sensitivity.r2,
+            resid_vol=sensitivity.resid_vol,
+            note=f"the factor model produced no usable number for {session}",
+        )
     return Attribution(
         # A model estimate is never MEASURED, however well it fits.
         confidence=Confidence.ESTIMATED,
@@ -401,6 +439,7 @@ def _anchor_from_archive(store: DaemonStore, symbol: str, limit: int) -> list[Ev
     interrupting for, and assembling them after the fact does not change that.
     """
     from advisor.news.classify import classify_filing
+    from advisor.news.foreign import classify_headline
 
     items = [
         i
@@ -409,7 +448,13 @@ def _anchor_from_archive(store: DaemonStore, symbol: str, limit: int) -> list[Ev
     ]
     anchors: list[Event] = []
     for item in items[:limit]:
-        classification = classify_filing(item.doc_type, item.item_codes)
+        # A 6-K is classified from its exhibit headline, exactly as the live
+        # ingest does; classifying it by form alone makes every foreign
+        # issuer's disclosure read as a generic "foreign issuer report".
+        if item.doc_type.upper().startswith("6-K") and item.summary:
+            classification = classify_headline(item.summary)
+        else:
+            classification = classify_filing(item.doc_type, item.item_codes)
         anchors.append(
             Event(
                 source=EventSource.EDGAR,
