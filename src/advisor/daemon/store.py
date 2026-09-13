@@ -309,6 +309,37 @@ class DaemonStore:
             return None
         return BookSnapshot.model_validate_json(row["snapshot_json"])
 
+    def load_book_at(self, moment):
+        """The newest snapshot taken at or before ``moment``, or None.
+
+        A story about an event from three weeks ago must report the position
+        held *then*. Falling back to the current book would silently restate
+        history — if the position was closed since, the story would describe a
+        loss on shares no longer owned. Returning None is the honest answer
+        when the daemon was not yet recording; the caller says so.
+        """
+        from advisor.daemon.book import BookSnapshot
+
+        row = self._conn.execute(
+            "SELECT snapshot_json FROM book_snapshots WHERE as_of <= ? "
+            "ORDER BY as_of DESC LIMIT 1",
+            (moment.isoformat(),),
+        ).fetchone()
+        if row is None:
+            return None
+        return BookSnapshot.model_validate_json(row["snapshot_json"])
+
+    def earliest_book_snapshot_at(self):
+        """Timestamp of the oldest snapshot held, or None.
+
+        Lets a caller distinguish "you held nothing then" from "the daemon
+        was not running then" — the two look identical without it.
+        """
+        row = self._conn.execute(
+            "SELECT as_of FROM book_snapshots ORDER BY as_of ASC LIMIT 1"
+        ).fetchone()
+        return datetime.fromisoformat(row["as_of"]) if row else None
+
     def book_snapshot_count(self) -> int:
         return self._conn.execute("SELECT COUNT(*) AS n FROM book_snapshots").fetchone()["n"]
 
