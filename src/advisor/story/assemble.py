@@ -19,8 +19,9 @@ import logging
 from datetime import date, datetime, timedelta
 
 from advisor.daemon import market_calendar as mc
-from advisor.daemon.models import Event
+from advisor.daemon.models import Event, EventSource, EventTier
 from advisor.daemon.store import DaemonStore
+from advisor.news.models import SourceTier
 from advisor.story.models import (
     Anchor,
     Attribution,
@@ -388,14 +389,64 @@ def build_story(store: DaemonStore, event: Event, *, prices=None, factors=None) 
     )
 
 
+def _anchor_from_archive(store: DaemonStore, symbol: str, limit: int) -> list[Event]:
+    """Synthesise anchors from archived filings when no event exists.
+
+    The event stream only carries what was new enough to be worth reporting;
+    a position opened today, or one whose filings predate the daemon, has a
+    history worth reading and no events at all. AMD had eight filings since
+    July and not one story.
+
+    These anchors are Tier C by construction: they were never judged worth
+    interrupting for, and assembling them after the fact does not change that.
+    """
+    from advisor.news.classify import classify_filing
+
+    items = [
+        i
+        for i in store.recent_source_items(symbol, limit=60)
+        if i.tier is SourceTier.PRIMARY and i.doc_type
+    ]
+    anchors: list[Event] = []
+    for item in items[:limit]:
+        classification = classify_filing(item.doc_type, item.item_codes)
+        anchors.append(
+            Event(
+                source=EventSource.EDGAR,
+                kind=f"FILING_{classification.kind.value}",
+                tier=EventTier.C,
+                symbol=symbol,
+                dedup_key=item.dedup_key(),
+                payload={
+                    "form": item.doc_type,
+                    "items": item.item_codes,
+                    "label": classification.label,
+                    "url": item.url,
+                    "accession": item.accession,
+                    "accepted_at": item.published_at.isoformat(),
+                    "provider": item.provider,
+                    "match": item.entity.method.value,
+                    "from_archive": True,
+                },
+            )
+        )
+    return anchors
+
+
 def stories_for_symbol(store: DaemonStore, symbol: str, *, limit: int = 3) -> list[Story]:
-    """Stories for a symbol's most recent events, newest first."""
+    """Stories for a symbol's most recent events, newest first.
+
+    Falls back to the archive when nothing has been evented, so every holding
+    with a filing history has a story rather than a blank page.
+    """
     symbol = symbol.upper()
     events = [
         e
         for e in store.recent_events(limit=400)
         if (e.symbol or "").upper() == symbol and e.tier.value in {"A", "B"}
     ][:limit]
+    if not events:
+        events = _anchor_from_archive(store, symbol, limit)
     if not events:
         return []
 

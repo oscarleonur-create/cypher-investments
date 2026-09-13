@@ -394,3 +394,69 @@ class TestStoryShape:
         story = build_story(store, dilution_event(), prices=price_frame(), factors=factor_frame())
         assert story.assembled_at.tzinfo is not None
         assert story.anchor.occurred_at.tzinfo is not None
+
+
+class TestArchiveFallback:
+    """Every holding with a filing history deserves a story.
+
+    Found end to end on AMD: eight filings since July, none of them evented
+    (all older than the five-day event window when first seen), and so no
+    story at all. The event stream carries what was worth reporting; the
+    archive carries what happened. A story needs the second.
+    """
+
+    def source(self, **kw) -> SourceItem:
+        base = dict(
+            tier=SourceTier.PRIMARY,
+            provider="SEC EDGAR",
+            url="https://www.sec.gov/amd.htm",
+            title="8-K: ADVANCED MICRO DEVICES INC",
+            published_at=FILED,
+            entity=EntityMatch(symbol="AMD", cik=2488, method=MatchMethod.CIK),
+            doc_type="8-K",
+            item_codes=["5.02", "9.01"],
+            accession="0000002488-26-000163",
+        )
+        return SourceItem(**{**base, **kw})
+
+    def test_a_symbol_with_filings_but_no_events_still_gets_a_story(self, store):
+        from advisor.story.assemble import _anchor_from_archive
+
+        store.save_source_item(self.source())
+        anchors = _anchor_from_archive(store, "AMD", 3)
+        assert len(anchors) == 1
+        assert anchors[0].kind == "FILING_MANAGEMENT_CHANGE"
+
+    def test_archive_anchors_are_tier_c(self, store):
+        """They were never judged worth interrupting for; that does not change."""
+        from advisor.story.assemble import _anchor_from_archive
+
+        store.save_source_item(self.source())
+        assert _anchor_from_archive(store, "AMD", 3)[0].tier is EventTier.C
+
+    def test_the_anchor_keeps_the_filing_timestamp_not_todays(self, store):
+        from advisor.story.assemble import _anchor_from_archive
+
+        store.save_source_item(self.source())
+        anchor = _anchor_from_archive(store, "AMD", 3)[0]
+        assert anchor.payload["accepted_at"].startswith("2026-08-21")
+        assert anchor.payload["from_archive"] is True
+
+    def test_news_items_are_not_used_as_anchors(self, store):
+        """A headline is context, not an event a story can be built around."""
+        from advisor.story.assemble import _anchor_from_archive
+
+        store.save_source_item(
+            self.source(
+                tier=SourceTier.UNTAGGED,
+                doc_type="NEWS",
+                accession=None,
+                url="https://news/x",
+            )
+        )
+        assert _anchor_from_archive(store, "AMD", 3) == []
+
+    def test_a_symbol_with_nothing_archived_yields_nothing(self, store):
+        from advisor.story.assemble import _anchor_from_archive
+
+        assert _anchor_from_archive(store, "ZZZZ", 3) == []

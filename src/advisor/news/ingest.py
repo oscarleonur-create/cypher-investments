@@ -25,6 +25,7 @@ from advisor.daemon.market_calendar import now_et
 from advisor.daemon.models import Event, EventSource, EventTier
 from advisor.daemon.store import DaemonStore
 from advisor.news.classify import (
+    Classification,
     FilingKind,
     Materiality,
     classify_delisting,
@@ -32,6 +33,7 @@ from advisor.news.classify import (
 )
 from advisor.news.enrich import offering_size_for
 from advisor.news.models import SourceItem, SourceTier, capped_tier
+from advisor.news.offering import offering_shape_for
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,12 @@ logger = logging.getLogger(__name__)
 # archived, but only recent filings become events. Without the guard, a first
 # run would fire a dozen interrupts about things that resolved weeks ago.
 MAX_FILING_AGE_DAYS = 5
+
+# How far back to look the first time a symbol is seen. A position opened
+# today deserves the context of its recent filings — AMD had eight since July,
+# none of them archived, because a single global watermark had moved past them
+# on another symbol's behalf.
+FIRST_LOOK_DAYS = 120
 
 # Dilution below this share of market cap is real but not worth an interrupt.
 MATERIAL_DILUTION_PCT = 0.02
@@ -85,21 +93,50 @@ def _event_for_filing(item: SourceItem, *, market_caps: dict[str, float]) -> Eve
         "match": item.entity.method.value,
     }
 
-    # A dilution event without a size is a notification; with one it is a
-    # decision. The size is extracted from the filing's own words, and the
-    # sentence it came from travels with it so the number can be checked.
+    # A 424B does not say what it is offering; the cover page does. AMD's
+    # August supplement sold $4.75bn of senior notes — leverage, with not one
+    # share issued — and calling that dilution reported the wrong fact.
     if classification.kind is FilingKind.DILUTION and item.accession:
+        shape = offering_shape_for(item.accession)
+        if shape is not None:
+            payload["security_type"] = shape.security.value
+            payload["preliminary"] = shape.preliminary
+            if not shape.dilutive:
+                classification = Classification(
+                    FilingKind.DEBT_ISSUANCE,
+                    Materiality.MEDIUM,
+                    "debt offering — leverage, not dilution",
+                )
+                payload["kind"] = classification.kind.value
+                payload["label"] = classification.label
+                proposed = EventTier.B
+            if shape.preliminary:
+                # An unpriced preliminary is an intention, not a completed
+                # deal; the pricing supplement that follows is the event.
+                payload["label"] = f"{payload['label']} (preliminary, not yet priced)"
+                proposed = EventTier.B if proposed is EventTier.A else proposed
+
+    # Size every offering, debt included: $4.75bn of new notes is material
+    # information about leverage even though it dilutes nobody. Only the
+    # *dilution* percentage is reserved for offerings that issue shares.
+    if classification.kind in (FilingKind.DILUTION, FilingKind.DEBT_ISSUANCE) and item.accession:
         size = offering_size_for(item.accession)
         if size is not None:
             payload["offering_usd"] = size.amount_usd
             payload["quote"] = size.quote
             cap = market_caps.get(item.entity.symbol)
-            pct = size.dilution_pct(cap) if cap else None
-            if pct is not None:
+            if cap:
                 payload["market_cap"] = cap
-                payload["dilution_pct"] = round(pct, 4)
-                if pct < MATERIAL_DILUTION_PCT:
-                    proposed = EventTier.B
+                pct = size.dilution_pct(cap)
+                if pct is not None:
+                    key = (
+                        "dilution_pct"
+                        if classification.kind is FilingKind.DILUTION
+                        else "offering_pct_of_cap"
+                    )
+                    payload[key] = round(pct, 4)
+                    if classification.kind is FilingKind.DILUTION and pct < MATERIAL_DILUTION_PCT:
+                        proposed = EventTier.B
 
     return Event(
         source=EventSource.EDGAR,
@@ -125,13 +162,15 @@ async def ingest_filings(
     if not watched:
         return result
 
-    watermark = store.get_watermark(EventSource.EDGAR)
-    since = watermark.last_seen_ts
     cutoff = now_et() - timedelta(days=MAX_FILING_AGE_DAYS)
+    first_look = now_et() - timedelta(days=FIRST_LOOK_DAYS)
     market_caps = await _market_caps(watched)
 
-    newest = since
+    newest = store.get_watermark(EventSource.EDGAR).last_seen_ts
     for symbol in watched:
+        # Per symbol, from what that symbol's archive already holds. The
+        # global watermark is kept only as a coarse liveness marker.
+        since = store.latest_source_item_at(symbol) or first_look
         try:
             items = recent_filings(symbol, since=since)
         except Exception as exc:  # noqa: BLE001

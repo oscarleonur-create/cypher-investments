@@ -484,6 +484,19 @@ class DaemonStore:
             ).fetchall()
         return [SourceItem.model_validate_json(r["payload_json"]) for r in rows]
 
+    def latest_source_item_at(self, symbol: str, tier: str = "PRIMARY"):
+        """When the newest archived item of a tier was published, or None.
+
+        This is the per-symbol watermark. A single global one advances to the
+        newest filing found across *any* symbol, which permanently skips the
+        history of every other — and of every position opened later.
+        """
+        row = self._conn.execute(
+            "SELECT MAX(published_at) AS newest FROM source_items " "WHERE symbol = ? AND tier = ?",
+            (symbol.upper(), tier),
+        ).fetchone()
+        return datetime.fromisoformat(row["newest"]) if row and row["newest"] else None
+
     def source_items_between(self, symbol: str, start, end) -> list:
         """Items for ``symbol`` published in [start, end] — used by coverage scoring."""
         from advisor.news.models import SourceItem

@@ -201,3 +201,41 @@ class TestTimestamps:
                 title="t",
                 entity=EntityMatch(symbol="AAOI", method=MatchMethod.CIK),
             )
+
+
+class TestPerSymbolWatermark:
+    """One global EDGAR watermark skipped most of the book.
+
+    Found end to end: AMD had eight filings since July and none archived,
+    because the single watermark had advanced past them on another symbol's
+    behalf. Six of twelve positions had nothing at all. The archive already
+    records what has been seen per symbol, so it *is* the watermark.
+    """
+
+    def test_a_symbol_with_nothing_archived_has_no_watermark(self, store):
+        assert store.latest_source_item_at("AMD") is None
+
+    def test_the_watermark_is_the_newest_archived_filing(self, store):
+        older = item(accession="a", published_at=datetime(2026, 7, 1, tzinfo=timezone.utc))
+        newer = item(accession="b", published_at=datetime(2026, 8, 21, tzinfo=timezone.utc))
+        store.save_source_item(older)
+        store.save_source_item(newer)
+        assert store.latest_source_item_at("AAOI") == newer.published_at
+
+    def test_one_symbols_watermark_does_not_move_anothers(self, store):
+        """The whole bug in one assertion."""
+        store.save_source_item(item(accession="a"))
+        assert store.latest_source_item_at("AAOI") is not None
+        assert store.latest_source_item_at("AMD") is None
+
+    def test_news_items_do_not_advance_the_filing_watermark(self, store):
+        """A headline arriving must not make the daemon skip a filing."""
+        store.save_source_item(
+            item(
+                accession=None,
+                url="https://news/x",
+                tier=SourceTier.UNTAGGED,
+                published_at=datetime(2026, 9, 13, tzinfo=timezone.utc),
+            )
+        )
+        assert store.latest_source_item_at("AAOI", tier="PRIMARY") is None
