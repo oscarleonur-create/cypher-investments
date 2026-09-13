@@ -310,56 +310,50 @@ def _corroboration(
     )
 
 
-def _thesis(store: DaemonStore, symbol: str) -> ThesisLink:
-    """The stated thesis, or an explicit absence.
+def _thesis(store: DaemonStore, symbol: str, event: Event) -> ThesisLink:
+    """The stated thesis, and which of its claims this event tests.
 
-    Phase 4 replaces this with structured drivers and invalidations. Until
-    then a story can say whether you wrote anything down, which is already
-    more than nothing — an event on a name with no thesis is an event you
-    have no stated position on.
+    Three outcomes that must not be collapsed into one: no thesis at all, a
+    thesis document that is still the blank template, and a thesis whose
+    claims this event either trips or leaves alone.
     """
-    # The table belongs to the research module and shares this database. A
-    # brand-new database has none, which is not the same as a read failure —
-    # reporting every story as "unreadable" on a fresh install would be alarm
-    # without information.
-    conn = store._conn  # noqa: SLF001 — theses are another module's table
-    try:
-        present = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'theses'"
-        ).fetchone()
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("story: cannot inspect schema for %s: %s", symbol, exc)
-        return ThesisLink(confidence=Confidence.UNAVAILABLE, note="thesis table unreadable")
-
-    if present is None:
-        return ThesisLink(
-            confidence=Confidence.MEASURED,
-            exists=False,
-            note="no theses recorded in this database yet",
-        )
+    from advisor.thesis.match import evaluate_thesis
+    from advisor.thesis.repo import load_thesis
 
     try:
-        rows = conn.execute(
-            "SELECT title, conviction, status FROM theses WHERE upper(symbol) = ? "
-            "ORDER BY updated_at DESC LIMIT 1",
-            (symbol.upper(),),
-        ).fetchone()
+        thesis = load_thesis(store, symbol)
     except Exception as exc:  # noqa: BLE001
         logger.debug("story: thesis lookup failed for %s: %s", symbol, exc)
-        return ThesisLink(confidence=Confidence.UNAVAILABLE, note="thesis table unreadable")
+        return ThesisLink(confidence=Confidence.UNAVAILABLE, note="thesis store unreadable")
 
-    if rows is None:
+    if thesis is None:
         return ThesisLink(
             confidence=Confidence.MEASURED,
             exists=False,
             note=f"no stated thesis for {symbol} — nothing to test this against",
         )
+
+    evaluations = [e.model_dump(mode="json") for e in evaluate_thesis(thesis, event)]
+    note = thesis.prose_note
+    if not thesis.substantive:
+        note = note or "the thesis is empty"
+    elif not thesis.claims:
+        note = (
+            "no testable claims yet — add invalidations to have events checked "
+            "against this thesis automatically"
+        )
+
     return ThesisLink(
         confidence=Confidence.MEASURED,
         exists=True,
-        title=rows["title"],
-        conviction=rows["conviction"],
-        status=rows["status"],
+        substantive=thesis.substantive,
+        title=thesis.title,
+        conviction=thesis.conviction,
+        status=thesis.status,
+        claims_total=len(thesis.claims),
+        claims_monitored=len(thesis.monitored_claims),
+        evaluations=evaluations,
+        note=note,
     )
 
 
@@ -380,7 +374,7 @@ def build_story(store: DaemonStore, event: Event, *, prices=None, factors=None) 
     reaction = _reaction(symbol, anchor.occurred_at, position, prices)
     attribution = _attribution(store, symbol, reaction.session, factors, prices)
     corroboration = _corroboration(store, symbol, anchor.occurred_at, anchor.url)
-    thesis = _thesis(store, symbol)
+    thesis = _thesis(store, symbol, event)
 
     return Story(
         symbol=symbol,

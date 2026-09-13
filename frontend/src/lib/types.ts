@@ -715,3 +715,53 @@ export interface Story {
     note: string;
   };
 }
+
+// ── Structured thesis claims ──────────────────────────────────────────────────
+
+export type ClaimKind =
+  | "DRIVER"
+  | "INVALIDATION"
+  | "KPI"
+  | "MACRO_DRIVER"
+  | "CATALYST"
+  | "RISK";
+
+export interface ThesisClaim {
+  id: string | null;
+  kind: ClaimKind;
+  text: string;
+  monitored: boolean;
+  trigger_description: string;
+  trigger: {
+    event_kinds: string[];
+    field: string | null;
+    comparator: string;
+    threshold: number | null;
+    factor: string | null;
+  };
+  due: string | null;
+}
+
+export interface StructuredThesis {
+  title: string;
+  conviction: string | null;
+  status: string | null;
+  substantive: boolean;
+  prose_note: string;
+  coverage: number;
+  claims: ThesisClaim[];
+}
+
+export interface ThesisCoverageRow {
+  symbol: string;
+  weight: number;
+  written: boolean;
+  claims: number;
+  monitored: number;
+}
+
+export interface ThesisCoverage {
+  rows: ThesisCoverageRow[];
+  uncovered_count: number;
+  uncovered_weight: number;
+}

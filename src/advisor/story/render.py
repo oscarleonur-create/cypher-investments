@@ -151,10 +151,37 @@ def render(story: Story, *, width: int = 78) -> str:
         lines.append(f"   [{item['tier']:10}] {item['title'][:58]}")
 
     lines += ["", "THESIS          "]
-    if th.exists:
-        lines[-1] += f"{th.title}  (conviction {th.conviction}, {th.status})"
-    else:
+    if not th.exists:
         lines[-1] += th.note or "none"
+    elif not th.substantive:
+        # An empty template is not a view. Saying "you have a thesis" here
+        # would credit the reader with an opinion they never wrote down.
+        lines[-1] += f"{th.title} — not written yet"
+        if th.note:
+            lines.append(f"                {th.note}")
+    else:
+        meta = ", ".join(x for x in (th.conviction, th.status) if x)
+        lines[-1] += th.title + (f"  ({meta})" if meta else "")
+        if th.claims_total:
+            lines.append(
+                f"                {th.claims_monitored} of {th.claims_total} claims "
+                f"are machine-checked"
+            )
+        elif th.note:
+            lines.append(f"                {th.note}")
+
+    tripped = th.tripped
+    if tripped:
+        lines += ["", "THIS EVENT TESTS"]
+        for entry in tripped:
+            marker = "✗ BREAKS" if entry["kind"] == "INVALIDATION" else "• trips"
+            lines.append(f"   {marker}  [{entry['kind'].lower()}] {entry['text']}")
+            if entry.get("note"):
+                lines.append(f"              {entry['note']}")
+    elif th.evaluations:
+        lines.append(
+            f"                {len(th.evaluations)} claim(s) tested by this event, none tripped"
+        )
 
     if story.unavailable_slots:
         lines += ["", f"NOT ESTABLISHED {', '.join(story.unavailable_slots)}"]

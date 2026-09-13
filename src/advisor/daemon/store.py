@@ -87,6 +87,17 @@ CREATE TABLE IF NOT EXISTS source_items (
 CREATE INDEX IF NOT EXISTS idx_source_items_symbol
     ON source_items(symbol, published_at DESC);
 
+CREATE TABLE IF NOT EXISTS thesis_claims (
+    id          TEXT NOT NULL PRIMARY KEY,
+    symbol      TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    payload_json TEXT NOT NULL,             -- Claim, trigger included
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_thesis_claims_symbol ON thesis_claims(symbol);
+
 CREATE TABLE IF NOT EXISTS daemon_heartbeat (
     job         TEXT NOT NULL PRIMARY KEY,
     last_run_at TEXT,
@@ -342,6 +353,41 @@ class DaemonStore:
 
     def book_snapshot_count(self) -> int:
         return self._conn.execute("SELECT COUNT(*) AS n FROM book_snapshots").fetchone()["n"]
+
+    # ── Thesis claims ─────────────────────────────────────────────────────
+
+    def save_claim(self, symbol: str, claim) -> str:
+        """Store one claim, assigning an id when it has none. Returns the id."""
+        import uuid
+
+        claim.id = claim.id or uuid.uuid4().hex[:12]
+        self._conn.execute(
+            "INSERT OR REPLACE INTO thesis_claims (id, symbol, kind, text, payload_json) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (claim.id, symbol.upper(), claim.kind.value, claim.text, claim.model_dump_json()),
+        )
+        self._conn.commit()
+        return claim.id
+
+    def load_claims(self, symbol: str) -> list:
+        from advisor.thesis.models import Claim
+
+        rows = self._conn.execute(
+            "SELECT payload_json FROM thesis_claims WHERE symbol = ? ORDER BY created_at",
+            (symbol.upper(),),
+        ).fetchall()
+        return [Claim.model_validate_json(r["payload_json"]) for r in rows]
+
+    def delete_claim(self, claim_id: str) -> bool:
+        cur = self._conn.execute("DELETE FROM thesis_claims WHERE id = ?", (claim_id,))
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def symbols_with_claims(self) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT DISTINCT symbol FROM thesis_claims ORDER BY symbol"
+        ).fetchall()
+        return [r["symbol"] for r in rows]
 
     # ── Source items (filings, news) ──────────────────────────────────────
 

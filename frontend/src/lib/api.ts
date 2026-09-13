@@ -7,7 +7,9 @@ import type {
   ReconcileReport,
   SourceItem,
   Story,
+  StructuredThesis,
   SymbolDaemonDetail,
+  ThesisCoverage,
   BayesianOverrides,
   BayesianPriceResult,
   ChatEvent,
@@ -90,6 +92,27 @@ export const api = {
     if (symbol) q.set("symbol", symbol);
     return get<{ items: SourceItem[] }>(`/api/daemon/sources?${q}`);
   },
+  daemonThesis: (symbol: string) =>
+    get<{ symbol: string; thesis: StructuredThesis | null }>(
+      `/api/daemon/thesis/${symbol}`
+    ),
+  daemonThesisCoverage: () => get<ThesisCoverage>("/api/daemon/thesis-coverage"),
+  daemonAddClaim: (
+    symbol: string,
+    body: {
+      kind: string;
+      text: string;
+      event_kinds?: string[];
+      field?: string | null;
+      comparator?: string;
+      threshold?: number | null;
+      factor?: string | null;
+    }
+  ) =>
+    post<{ id: string; monitored: boolean; trigger_description: string }>(
+      `/api/daemon/thesis/${symbol}/claims`,
+      body
+    ),
   daemonStory: (symbol: string, limit = 1) =>
     get<{ symbol: string; stories: Story[] }>(
       `/api/daemon/story/${symbol}?limit=${limit}`

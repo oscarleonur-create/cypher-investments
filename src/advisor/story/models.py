@@ -139,14 +139,33 @@ class Corroboration(BaseModel):
 
 
 class ThesisLink(BaseModel):
-    """What you said you believed, if anything."""
+    """What you said you believed, and which parts this event tests.
+
+    ``exists`` and ``substantive`` are different questions. A row in the
+    theses table is not a view: CRDO's document is the blank template, and
+    reporting it as a thesis made the advisor claim the user held an opinion
+    they had never written down.
+    """
 
     confidence: Confidence
     exists: bool = False
+    substantive: bool = False
     title: str | None = None
     conviction: str | None = None
     status: str | None = None
+    claims_total: int = 0
+    claims_monitored: int = 0
+    evaluations: list[dict] = Field(default_factory=list)  # Evaluation, serialised
     note: str = ""
+
+    @property
+    def tripped(self) -> list[dict]:
+        """Claims this event actually broke — the reason the slot exists."""
+        return [e for e in self.evaluations if e.get("tripped")]
+
+    @property
+    def invalidated(self) -> bool:
+        return any(e.get("kind") == "INVALIDATION" for e in self.tripped)
 
 
 class Story(BaseModel):

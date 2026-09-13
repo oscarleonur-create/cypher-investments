@@ -256,3 +256,77 @@ class TestStoryEndpoint:
         """Tier C is logged context; it does not merit a narrative."""
         client.store.emit(filing_event(dedup_key="c", tier=EventTier.C))
         assert client.get("/api/daemon/story/AAOI").json()["stories"] == []
+
+
+class TestThesisEndpoints:
+    def test_a_symbol_with_nothing_written_returns_null(self, client):
+        assert client.get("/api/daemon/thesis/ZZZZ").json()["thesis"] is None
+
+    def test_a_claim_can_be_added_and_read_back(self, client):
+        created = client.post(
+            "/api/daemon/thesis/AAOI/claims",
+            json={
+                "kind": "INVALIDATION",
+                "text": "dilution above 5% breaks it",
+                "event_kinds": ["FILING_DILUTION"],
+                "field": "dilution_pct",
+                "comparator": "ABOVE",
+                "threshold": 0.05,
+            },
+        ).json()
+        assert created["monitored"] is True
+        assert "dilution_pct above 0.05" in created["trigger_description"]
+
+        thesis = client.get("/api/daemon/thesis/AAOI").json()["thesis"]
+        assert thesis["substantive"] is True
+        assert thesis["claims"][0]["id"] == created["id"]
+
+    def test_a_claim_without_a_trigger_is_recorded_but_not_monitored(self, client):
+        created = client.post(
+            "/api/daemon/thesis/AAOI/claims",
+            json={"kind": "RISK", "text": "management may be optimistic"},
+        ).json()
+        assert created["monitored"] is False
+
+    def test_coverage_counts_a_claims_only_symbol_as_written(self, client):
+        client.post(
+            "/api/daemon/thesis/AAOI/claims",
+            json={"kind": "RISK", "text": "x"},
+        )
+        assert client.get("/api/daemon/thesis/AAOI").json()["thesis"]["substantive"] is True
+
+    def test_an_unknown_claim_kind_is_rejected(self, client):
+        r = client.post(
+            "/api/daemon/thesis/AAOI/claims",
+            json={"kind": "NONSENSE", "text": "x"},
+        )
+        assert r.status_code == 422
+
+    def test_a_claim_can_be_deleted(self, client):
+        created = client.post(
+            "/api/daemon/thesis/AAOI/claims", json={"kind": "RISK", "text": "x"}
+        ).json()
+        assert client.delete(f"/api/daemon/thesis/claims/{created['id']}").status_code == 200
+        assert client.get("/api/daemon/thesis/AAOI").json()["thesis"] is None
+
+    def test_deleting_an_unknown_claim_is_a_404(self, client):
+        assert client.delete("/api/daemon/thesis/claims/nope").status_code == 404
+
+    def test_the_story_slot_reflects_a_claim_added_through_the_api(self, client):
+        """End to end: write a claim, then see the event break it."""
+        client.post(
+            "/api/daemon/thesis/AAOI/claims",
+            json={
+                "kind": "INVALIDATION",
+                "text": "dilution above 5% breaks it",
+                "event_kinds": ["FILING_DILUTION"],
+                "field": "dilution_pct",
+                "comparator": "ABOVE",
+                "threshold": 0.05,
+            },
+        )
+        client.store.emit(filing_event())
+        stories = client.get("/api/daemon/story/AAOI").json()["stories"]
+        assert stories
+        tripped = [e for e in stories[0]["thesis"]["evaluations"] if e["tripped"]]
+        assert tripped and tripped[0]["observed"] == 0.067
