@@ -400,6 +400,31 @@ def valuation_cmd(
             raise typer.Exit(1)
         price = held.price
 
+    # A blank-cheque company has no revenue by design. Running it through the
+    # revenue model returns "no usable filing", which is true and useless; its
+    # trust is a real valuation with a real floor.
+    from advisor.valuation.spac import latest_trust_value
+
+    trust = latest_trust_value(sym, price)
+    if trust is not None:
+        console.print(f"\n[bold]{sym}[/bold] — blank-cheque company, valued on its trust")
+        console.print(f"  filing {trust.source_accession}, period to {trust.asof}")
+        console.print(
+            f"  trust ${trust.trust_total:,.0f} across {trust.public_shares:,.0f} public shares"
+        )
+        colour = "red" if trust.premium > 0.15 else "yellow" if trust.premium > 0 else "green"
+        console.print(
+            f"  [bold]${trust.price:,.2f}[/bold] vs [bold]${trust.per_share:,.2f}[/bold] "
+            f"of trust per share = [{colour}]{trust.premium:+.0%}[/{colour}]"
+        )
+        console.print(
+            f"\n[dim]The trust is a floor: holders may redeem at ${trust.per_share:,.2f} "
+            "if they decline the merger. Everything above it is what the market is "
+            "paying for the deal. Revenue multiples do not apply to a company that "
+            "has none by construction.[/dim]"
+        )
+        return
+
     fundamentals = latest_fundamentals(sym)
     if fundamentals is None:
         console.print(f"[red]No usable filing for {sym}[/red]")

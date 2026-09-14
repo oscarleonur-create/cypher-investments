@@ -427,12 +427,15 @@ class TestArchiveFallback:
         assert len(anchors) == 1
         assert anchors[0].kind == "FILING_MANAGEMENT_CHANGE"
 
-    def test_archive_anchors_are_tier_c(self, store):
-        """They were never judged worth interrupting for; that does not change."""
+    def test_archive_anchors_carry_the_filings_own_materiality(self, store):
+        """Not a blanket Tier C: an 8-K item 5.02 is a medium-materiality
+        management change, and describing it as routine context would be
+        describing it wrongly. These anchors never enter the event stream, so
+        the tier here ranks and describes but cannot interrupt."""
         from advisor.story.assemble import _anchor_from_archive
 
         store.save_source_item(self.source())
-        assert _anchor_from_archive(store, "AMD", 3)[0].tier is EventTier.C
+        assert _anchor_from_archive(store, "AMD", 3)[0].tier is EventTier.B
 
     def test_the_anchor_keeps_the_filing_timestamp_not_todays(self, store):
         from advisor.story.assemble import _anchor_from_archive
@@ -526,3 +529,95 @@ class TestForeignAnchors:
         anchor = _anchor_from_archive(store, "NBIS", 3)[0]
         assert anchor.kind == "FILING_MATERIAL_AGREEMENT"
         assert anchor.payload["label"] == "partnership announced"
+
+
+class TestAnchorRanking:
+    """Tier before recency, and archived filings compete with events.
+
+    Found on CCXI: a Tier A merger S-4 from nine days earlier sat behind a
+    routine deep-drawdown notice from that morning, because stories were
+    sorted by date alone. Worse, the S-4 had never been evented at all — it
+    was older than the five-day event window when those forms began being
+    watched — so it could not compete until archived filings were allowed to.
+    """
+
+    def filing(self, **kw) -> SourceItem:
+        base = dict(
+            tier=SourceTier.PRIMARY,
+            provider="SEC EDGAR",
+            url="https://www.sec.gov/ccxi-s4.htm",
+            title="S-4: Churchill Capital Corp XI",
+            published_at=FILED,
+            entity=EntityMatch(symbol="CCXI", cik=2074973, method=MatchMethod.CIK),
+            doc_type="S-4",
+            accession="0001213900-26-097764",
+        )
+        return SourceItem(**{**base, **kw})
+
+    def test_an_archived_merger_outranks_a_routine_event(self, store):
+        from advisor.story.assemble import stories_for_symbol
+
+        store.save_source_item(self.filing())
+        store.emit(
+            Event(
+                source=EventSource.COMPUTED,
+                kind="DEEP_DRAWDOWN",
+                tier=EventTier.B,
+                symbol="CCXI",
+                dedup_key="dd",
+                payload={},
+            )
+        )
+        stories = stories_for_symbol(store, "CCXI", limit=1)
+        assert stories and stories[0].anchor.kind == "FILING_MERGER"
+
+    def test_an_archive_anchor_carries_the_filings_own_materiality(self, store):
+        from advisor.story.assemble import _anchor_from_archive
+
+        store.save_source_item(self.filing())
+        anchor = _anchor_from_archive(store, "CCXI", 3)[0]
+        assert anchor.tier is EventTier.A
+
+    def test_a_routine_filing_anchors_low(self, store):
+        from advisor.story.assemble import _anchor_from_archive
+
+        store.save_source_item(self.filing(doc_type="425", accession="b", url="https://x/425"))
+        assert _anchor_from_archive(store, "CCXI", 3)[0].tier is EventTier.C
+
+    def test_an_event_and_its_archived_item_are_not_duplicated(self, store):
+        from advisor.story.assemble import stories_for_symbol
+
+        item = self.filing()
+        store.save_source_item(item)
+        store.emit(
+            Event(
+                source=EventSource.EDGAR,
+                kind="FILING_MERGER",
+                tier=EventTier.A,
+                symbol="CCXI",
+                dedup_key=item.dedup_key(),
+                # A real filing event carries its accession; that is what the
+                # archive is deduped against, because dedup_key does not
+                # survive the round trip through the events table.
+                payload={"form": "S-4", "accession": item.accession},
+            )
+        )
+        stories = stories_for_symbol(store, "CCXI", limit=5)
+        assert len({s.anchor.event_id for s in stories}) == len(stories)
+        assert len(stories) == 1
+
+    def test_a_tier_a_event_still_leads_over_an_archived_medium(self, store):
+        from advisor.story.assemble import stories_for_symbol
+
+        store.save_source_item(self.filing(doc_type="10-Q", accession="q", url="https://x/q"))
+        store.emit(
+            Event(
+                source=EventSource.EDGAR,
+                kind="FILING_DILUTION",
+                tier=EventTier.A,
+                symbol="CCXI",
+                dedup_key="dil",
+                payload={},
+            )
+        )
+        assert stories_for_symbol(store, "CCXI", limit=1)[0].anchor.kind == "FILING_DILUTION"

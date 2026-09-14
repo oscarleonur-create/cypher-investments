@@ -34,6 +34,10 @@ CREATE TABLE IF NOT EXISTS events (
     created_at  TEXT DEFAULT (datetime('now'))
 );
 
+-- `dedup_key` is deliberately not stored: only the hash it produces is, which
+-- is all the uniqueness guarantee needs. An Event read back therefore has an
+-- empty key, so callers comparing events must compare payload identifiers
+-- (an SEC accession, say) rather than the key.
 -- The dedup guarantee: re-ingesting the same fact is a silent no-op.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_events_dedup ON events(dedup_hash);
 
