@@ -57,6 +57,17 @@ WATCHED_FORMS: tuple[str, ...] = (
     "20-F",
     "40-F",
     "6-K",
+    # Merger communications and the registration statement that carries a
+    # deal. A SPAC holder's single most material event arrives as a stream of
+    # 425s and an S-4, none of which were watched: Churchill Capital Corp XI
+    # filed nine 425s and an S-4 for its Agility Robotics merger and the
+    # system saw a 10-Q and an unrelated 8-K.
+    "425",
+    "S-4",
+    "S-4/A",
+    "DEFM14A",
+    "PREM14A",
+    "DEF 14A",
 )
 
 # Form 4 (insider transactions) is separated because a single company can file

@@ -125,6 +125,21 @@ FORM_MAP: dict[str, Classification] = {
         FilingKind.SHELF, Materiality.MEDIUM, "shelf registration — capacity, not yet issuance"
     ),
     "S-3ASR": Classification(FilingKind.SHELF, Materiality.MEDIUM, "automatic shelf registration"),
+    # A merger changes what the ticker *is*. For a SPAC it is the entire
+    # thesis; for anyone else it is the end of one.
+    "S-4": Classification(
+        FilingKind.MERGER, Materiality.HIGH, "registration statement for a merger"
+    ),
+    "S-4/A": Classification(FilingKind.MERGER, Materiality.HIGH, "amended merger registration"),
+    "DEFM14A": Classification(
+        FilingKind.MERGER, Materiality.HIGH, "definitive merger proxy — a vote is scheduled"
+    ),
+    "PREM14A": Classification(FilingKind.MERGER, Materiality.MEDIUM, "preliminary merger proxy"),
+    # A 425 is a merger communication. There are many per deal — investor
+    # decks, press releases, even reprinted news articles — so they inform
+    # without interrupting; the S-4 and the proxy are the dated events.
+    "425": Classification(FilingKind.MERGER, Materiality.LOW, "merger communication"),
+    "DEF 14A": Classification(FilingKind.OTHER, Materiality.LOW, "proxy statement"),
     "SC 13D": Classification(
         FilingKind.ACTIVIST_STAKE, Materiality.HIGH, "activist stake — intent to influence"
     ),

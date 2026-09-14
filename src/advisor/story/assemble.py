@@ -22,6 +22,7 @@ from datetime import date, datetime, timedelta
 from advisor.daemon import market_calendar as mc
 from advisor.daemon.models import Event, EventSource, EventTier
 from advisor.daemon.store import DaemonStore
+from advisor.news.classify import Materiality
 from advisor.news.models import SourceTier
 from advisor.story.models import (
     Anchor,
@@ -427,6 +428,15 @@ def build_story(store: DaemonStore, event: Event, *, prices=None, factors=None) 
     )
 
 
+# How an archived filing reads when a story is built from it. Used only to
+# rank and describe — never to emit.
+_ARCHIVE_TIER = {
+    Materiality.HIGH: EventTier.A,
+    Materiality.MEDIUM: EventTier.B,
+    Materiality.LOW: EventTier.C,
+}
+
+
 def _anchor_from_archive(store: DaemonStore, symbol: str, limit: int) -> list[Event]:
     """Synthesise anchors from archived filings when no event exists.
 
@@ -435,8 +445,15 @@ def _anchor_from_archive(store: DaemonStore, symbol: str, limit: int) -> list[Ev
     history worth reading and no events at all. AMD had eight filings since
     July and not one story.
 
-    These anchors are Tier C by construction: they were never judged worth
-    interrupting for, and assembling them after the fact does not change that.
+    Anchors carry the filing's own materiality, not a blanket Tier C. The two
+    layers answer different questions: the event stream decides what
+    interrupts *now*; the story describes what *happened*. CCXI's merger S-4
+    was nine days old when those forms began being watched, so it was archived
+    and never evented — and a story that called it routine would describe it
+    wrongly.
+
+    These anchors never enter the event stream, so materiality here cannot
+    cause an interrupt after the fact.
     """
     from advisor.news.classify import classify_filing
     from advisor.news.foreign import classify_headline
@@ -459,7 +476,7 @@ def _anchor_from_archive(store: DaemonStore, symbol: str, limit: int) -> list[Ev
             Event(
                 source=EventSource.EDGAR,
                 kind=f"FILING_{classification.kind.value}",
-                tier=EventTier.C,
+                tier=_ARCHIVE_TIER[classification.materiality],
                 symbol=symbol,
                 dedup_key=item.dedup_key(),
                 payload={
@@ -485,13 +502,34 @@ def stories_for_symbol(store: DaemonStore, symbol: str, *, limit: int = 3) -> li
     with a filing history has a story rather than a blank page.
     """
     symbol = symbol.upper()
-    events = [
+    # Tier before recency. Sorting by date alone buried CCXI's merger — a
+    # Tier A S-4 from nine days earlier — behind a routine deep-drawdown
+    # notice from that morning, so the story led with the least important
+    # thing that had happened.
+    candidates = [
         e
         for e in store.recent_events(limit=400)
         if (e.symbol or "").upper() == symbol and e.tier.value in {"A", "B"}
-    ][:limit]
-    if not events:
-        events = _anchor_from_archive(store, symbol, limit)
+    ]
+    # Archived filings compete with events on the same footing: a merger the
+    # daemon learned about too late to report is still the most important
+    # thing that happened to this position. CCXI's S-4 was nine days old when
+    # those forms started being watched, so it was archived and never evented,
+    # and the story led with a routine deep-drawdown notice instead.
+    # Dedup on the accession carried in the payload, not on `dedup_key`: the
+    # events table stores only the hash, so an event read back from the
+    # database has no key to compare and every filing would appear twice.
+    seen = {
+        (e.payload or {}).get("accession") for e in candidates if (e.payload or {}).get("accession")
+    }
+    candidates += [
+        a
+        for a in _anchor_from_archive(store, symbol, limit * 4)
+        if a.payload.get("accession") not in seen
+    ]
+
+    tier_rank = {"A": 0, "B": 1, "C": 2}
+    events = sorted(candidates, key=lambda e: (tier_rank[e.tier.value], -e.ts.timestamp()))[:limit]
     if not events:
         return []
 
