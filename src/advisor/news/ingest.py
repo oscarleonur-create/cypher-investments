@@ -213,7 +213,32 @@ async def ingest_filings(
 
     if newest is not None:
         store.set_watermark(EventSource.EDGAR, last_seen_ts=newest)
+
     return result
+
+
+async def scan_insiders(store: DaemonStore, symbols: list[str]) -> list[Event]:
+    """Insider clusters across a book. Weekly, never in the morning brief.
+
+    Each Form 4 must be fetched and its XML parsed, so a book of twelve names
+    is several hundred round trips — enough to time the brief out, which it
+    did. The pattern develops over forty-five days and does not need looking
+    at every morning.
+    """
+    from advisor.news.insider import cluster_event, recent_activity
+
+    market_caps = await _market_caps(symbols)
+    events: list[Event] = []
+    for symbol in symbols:
+        try:
+            activity = recent_activity(symbol)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("news: insider scan failed for %s: %s", symbol, exc)
+            continue
+        event = cluster_event(activity, market_caps.get(symbol))
+        if event is not None and store.emit(event):
+            events.append(event)
+    return events
 
 
 async def _market_caps(symbols: list[str]) -> dict[str, float]:

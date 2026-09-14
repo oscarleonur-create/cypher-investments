@@ -145,6 +145,12 @@ FORM_MAP: dict[str, Classification] = {
     ),
     "SC 13G": Classification(FilingKind.PASSIVE_STAKE, Materiality.LOW, "passive stake"),
     "4": Classification(FilingKind.INSIDER_TRADE, Materiality.LOW, "insider transaction"),
+    # A 144 is notice of an intended sale of restricted stock, filed before
+    # the Form 4 that records it. One is routine; several in a fortnight is
+    # the leading edge of a pattern, which the cluster detector picks up.
+    "144": Classification(
+        FilingKind.INSIDER_TRADE, Materiality.LOW, "notice of proposed insider sale"
+    ),
     "10-K": Classification(FilingKind.PERIODIC_REPORT, Materiality.MEDIUM, "annual report"),
     "10-Q": Classification(FilingKind.PERIODIC_REPORT, Materiality.MEDIUM, "quarterly report"),
     "20-F": Classification(FilingKind.PERIODIC_REPORT, Materiality.MEDIUM, "annual report"),
@@ -179,6 +185,30 @@ def classify_items(item_codes: list[str]) -> list[Classification]:
     return out
 
 
+# EDGAR returns "SCHEDULE 13D" where the form is conventionally written
+# "SC 13D", and an amendment carries a "/A" suffix. Looking a form up
+# verbatim meant an activist stake — the most material ownership event there
+# is — classified as "unclassified filing, LOW".
+_FORM_ALIASES = {
+    "SCHEDULE 13D": "SC 13D",
+    "SCHEDULE 13G": "SC 13G",
+    "SCHEDULE 14D9": "SC 14D9",
+}
+
+
+def normalise_form(form: str) -> tuple[str, bool]:
+    """Return ``(canonical form, is_amendment)``.
+
+    An amendment of a form is still that form: SC 13D/A is an activist
+    revising a stake, not a different kind of document.
+    """
+    cleaned = " ".join((form or "").upper().split())
+    amended = cleaned.endswith("/A")
+    if amended:
+        cleaned = cleaned[:-2].strip()
+    return _FORM_ALIASES.get(cleaned, cleaned), amended
+
+
 def classify_filing(form: str, item_codes: list[str] | None = None) -> Classification:
     """The single most material reading of a filing.
 
@@ -187,9 +217,20 @@ def classify_filing(form: str, item_codes: list[str] | None = None) -> Classific
     which is why an offering buried alongside two housekeeping items still
     surfaces.
     """
+    canonical, amended = normalise_form(form)
     candidates = classify_items(item_codes or [])
-    form_class = FORM_MAP.get(form.upper().strip())
-    if form_class and not (form.upper().startswith("8-K") and candidates):
+    form_class = FORM_MAP.get(canonical)
+    if form_class and not (canonical.startswith("8-K") and candidates):
+        if amended:
+            # An amendment restates rather than announces. Worth reading,
+            # one notch below the original.
+            form_class = Classification(
+                form_class.kind,
+                Materiality.MEDIUM
+                if form_class.materiality is Materiality.HIGH
+                else Materiality.LOW,
+                f"{form_class.label} (amended)",
+            )
         candidates.append(form_class)
     if not candidates:
         return UNKNOWN

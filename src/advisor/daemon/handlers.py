@@ -118,6 +118,34 @@ async def _explain_todays_movers(ctx: JobContext) -> list[str]:
     return explained
 
 
+async def run_insiders(ctx: JobContext) -> JobResult:
+    """Weekly: who inside the company has been buying or selling on the market.
+
+    Weekly because each Form 4 is a fetch and an XML parse, and a book of a
+    dozen names is several hundred round trips — enough to time out a job
+    that has to finish before the open. The pattern it looks for develops
+    over weeks anyway.
+    """
+    from advisor.daemon.book import fetch_book
+    from advisor.news.ingest import scan_insiders
+
+    try:
+        book = await fetch_book()
+    except Exception as exc:  # noqa: BLE001
+        return JobResult(job="insiders", ok=False, detail=f"book unavailable: {exc}")
+
+    events = await scan_insiders(ctx.store, book.symbols)
+    detail = (
+        ", ".join(
+            f"{e.symbol} {e.payload['insider_count']} {e.payload['side'].lower()}" for e in events
+        )
+        if events
+        else "no insider clusters"
+    )
+    logger.info("insiders: %s", detail)
+    return JobResult(job="insiders", ok=True, detail=detail, events_emitted=len(events))
+
+
 async def run_valuation(ctx: JobContext) -> JobResult:
     """Recompute what each holding's price requires the business to deliver.
 

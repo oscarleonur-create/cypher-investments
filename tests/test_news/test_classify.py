@@ -147,3 +147,49 @@ class TestDelistingClass:
 
     def test_a_bare_25nse_form_lookup_is_no_longer_high(self):
         assert classify_filing("25-NSE").materiality is Materiality.MEDIUM
+
+
+class TestFormNameNormalisation:
+    """EDGAR's form strings are not the conventional ones.
+
+    Found on BE: EDGAR returns "SCHEDULE 13D" where the form is written
+    "SC 13D", so an activist stake — the most material ownership event there
+    is — classified as "unclassified filing, LOW".
+    """
+
+    def test_edgars_spelling_of_an_activist_stake_is_recognised(self):
+        result = classify_filing("SCHEDULE 13D")
+        assert result.kind is FilingKind.ACTIVIST_STAKE
+        assert result.materiality is Materiality.HIGH
+
+    def test_the_conventional_spelling_still_works(self):
+        assert classify_filing("SC 13D").kind is FilingKind.ACTIVIST_STAKE
+
+    def test_a_passive_stake_is_recognised_either_way(self):
+        for form in ("SC 13G", "SCHEDULE 13G"):
+            assert classify_filing(form).kind is FilingKind.PASSIVE_STAKE
+
+    def test_an_amendment_keeps_the_kind(self):
+        """SC 13D/A is an activist revising a stake, not a different document."""
+        assert classify_filing("SCHEDULE 13D/A").kind is FilingKind.ACTIVIST_STAKE
+
+    def test_an_amendment_is_one_notch_less_material(self):
+        assert classify_filing("SC 13D").materiality is Materiality.HIGH
+        assert classify_filing("SC 13D/A").materiality is Materiality.MEDIUM
+
+    def test_an_amended_low_form_stays_low(self):
+        assert classify_filing("SCHEDULE 13G/A").materiality is Materiality.LOW
+
+    def test_the_label_says_it_is_an_amendment(self):
+        assert "amended" in classify_filing("10-Q/A").label
+
+    def test_normalisation_reports_the_amendment_flag(self):
+        from advisor.news.classify import normalise_form
+
+        assert normalise_form("SCHEDULE 13D/A") == ("SC 13D", True)
+        assert normalise_form("  sc 13d  ") == ("SC 13D", False)
+
+    def test_a_notice_of_proposed_insider_sale_is_recognised(self):
+        """Form 144 — the leading edge of a Form 4."""
+        assert classify_filing("144").kind is FilingKind.INSIDER_TRADE
+        assert classify_filing("144").materiality is Materiality.LOW

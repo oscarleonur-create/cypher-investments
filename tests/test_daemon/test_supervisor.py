@@ -50,6 +50,7 @@ class TestRegistry:
             "macro_refresh",
             "reconcile",
             "valuation",
+            "insiders",
             "heartbeat",
         }
 
@@ -66,6 +67,13 @@ class TestRegistry:
         assert by_name["review"].at == time(16, 30)
         assert isinstance(by_name["watch"], EveryMinutes)
         assert by_name["watch"].minutes == 15
+
+    def test_the_insider_scan_is_weekly_not_in_the_brief(self):
+        """Each Form 4 is a fetch and an XML parse; a dozen names is several
+        hundred round trips, which timed the morning brief out."""
+        trigger = {j.name: j.trigger for j in build_registry()}["insiders"]
+        assert isinstance(trigger, AtLeastEvery)
+        assert trigger.days == 7
 
     def test_valuation_refreshes_weekly_not_daily(self):
         """Its inputs are a quarterly filing and a price; a daily refit would
