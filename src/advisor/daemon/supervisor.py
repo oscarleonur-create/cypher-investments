@@ -150,7 +150,20 @@ class Supervisor:
             # A DailyAt job firing well after its slot is a catch-up run.
             last_ok = self.store.get_heartbeat(job.name).last_ok_at
             catch_up = isinstance(job.trigger, DailyAt) and last_ok is not None
-            results.append(await self.run_job(job, catch_up=catch_up))
+            result = await self.run_job(job, catch_up=catch_up)
+            # A successful job logged nothing, so a working daemon and a hung
+            # one looked identical: "daemon up" and then silence forever. The
+            # one line per run is what makes the process observable.
+            logger.log(
+                logging.INFO if result.ok else logging.ERROR,
+                "%s %s (%dms)%s — %s",
+                "ok" if result.ok else "FAILED",
+                result.job,
+                result.duration_ms,
+                f" +{result.events_emitted} event(s)" if result.events_emitted else "",
+                result.detail or "",
+            )
+            results.append(result)
         return results
 
     async def run(self) -> None:
