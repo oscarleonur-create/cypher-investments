@@ -68,6 +68,9 @@ WATCHED_FORMS: tuple[str, ...] = (
     "DEFM14A",
     "PREM14A",
     "DEF 14A",
+    # Notices of proposed insider sales. Individually routine; the cluster
+    # detector in `insider.py` is what makes them mean anything.
+    "144",
 )
 
 # Form 4 (insider transactions) is separated because a single company can file

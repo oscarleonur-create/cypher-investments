@@ -70,6 +70,14 @@ def build_registry() -> JobRegistry:
     )
     reg.register(
         Job(
+            name="insiders",
+            trigger=AtLeastEvery(days=7, after=time(6, 30)),
+            handler=handlers.run_insiders,
+            description="weekly open-market insider buying and selling",
+        )
+    )
+    reg.register(
+        Job(
             name="valuation",
             trigger=AtLeastEvery(days=7, after=time(6, 15)),
             handler=handlers.run_valuation,

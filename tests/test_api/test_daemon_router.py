@@ -81,6 +81,7 @@ class TestStatus:
             "macro_refresh",
             "reconcile",
             "valuation",
+            "insiders",
             "heartbeat",
         } == names
 
