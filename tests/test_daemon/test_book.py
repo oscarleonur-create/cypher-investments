@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from advisor.daemon.book import (
     EQUITY,
     EQUITY_OPTION,
@@ -128,3 +129,105 @@ class TestSnapshot:
         b = BookSnapshot(positions=[equity(), equity(instrument=EQUITY_OPTION, multiplier=100)])
         assert len(b.equities) == 1
         assert len(b.options) == 1
+
+
+class TestLiveMarks:
+    """The positions endpoint never populates a mark, open or shut.
+
+    Found the first time the daemon ran during a session: at 12:33 on a
+    Tuesday, all twelve positions carried `mark_price: 0.0` and were priced at
+    the previous close. The fallback in `Position.price` was written believing
+    marks appear during market hours; the broker returns the field and simply
+    never fills it there.
+
+    Not cosmetic — every stop and target in the position pillar was being
+    evaluated against yesterday. A breach this morning would surface tomorrow.
+    """
+
+    class FakeQuote:
+        def __init__(self, symbol, mark=None, last=None):
+            self.symbol, self.mark, self.last = symbol, mark, last
+
+    async def _apply(self, snapshot, quotes, monkeypatch, raises=False):
+        import tastytrade.market_data as md
+        from advisor.daemon.book import _apply_live_marks
+
+        async def fake(session, equities=None, options=None):
+            if raises:
+                raise RuntimeError("market data unavailable")
+            return quotes
+
+        monkeypatch.setattr(md, "get_market_data_by_type", fake)
+        await _apply_live_marks(object(), snapshot)
+
+    def _book(self, *positions, net_liq=7_300.0) -> BookSnapshot:
+        return BookSnapshot(positions=list(positions), net_liq=net_liq)
+
+    def _pos(self, symbol="AMD", close=493.41, mark=0.0) -> Position:
+        return Position(
+            account="A",
+            symbol=symbol,
+            underlying=symbol,
+            instrument=EQUITY,
+            quantity=2,
+            multiplier=1,
+            avg_open_price=504.06,
+            close_price=close,
+            mark_price=mark,
+        )
+
+    async def test_a_live_mark_replaces_the_prior_close(self, monkeypatch):
+        book = self._book(self._pos())
+        await self._apply(book, [self.FakeQuote("AMD", mark=502.85)], monkeypatch)
+        assert book.positions[0].mark_price == pytest.approx(502.85)
+        assert book.positions[0].price == pytest.approx(502.85)
+
+    async def test_without_it_the_position_is_priced_at_yesterday(self):
+        """The bug, stated as a test: no mark means the prior close is used."""
+        position = self._pos()
+        assert position.mark_price == 0.0
+        assert position.price == pytest.approx(493.41)
+
+    async def test_last_is_used_when_mark_is_absent(self, monkeypatch):
+        book = self._book(self._pos())
+        await self._apply(book, [self.FakeQuote("AMD", last=502.85)], monkeypatch)
+        assert book.positions[0].price == pytest.approx(502.85)
+
+    async def test_a_quote_failure_leaves_the_prior_close_in_place(self, monkeypatch):
+        """Overnight behaviour must survive a market-data outage."""
+        book = self._book(self._pos())
+        await self._apply(book, [], monkeypatch, raises=True)
+        assert book.positions[0].price == pytest.approx(493.41)
+
+    async def test_a_missing_symbol_keeps_its_prior_close(self, monkeypatch):
+        book = self._book(self._pos("AMD"), self._pos("COHR", close=266.50))
+        await self._apply(book, [self.FakeQuote("AMD", mark=502.85)], monkeypatch)
+        by_symbol = {p.underlying: p for p in book.positions}
+        assert by_symbol["AMD"].price == pytest.approx(502.85)
+        assert by_symbol["COHR"].price == pytest.approx(266.50)
+
+    async def test_a_zero_mark_is_not_applied(self, monkeypatch):
+        """The broker's own 0.0 must never overwrite a usable close."""
+        book = self._book(self._pos())
+        await self._apply(book, [self.FakeQuote("AMD", mark=0.0)], monkeypatch)
+        assert book.positions[0].price == pytest.approx(493.41)
+
+    async def test_an_empty_book_makes_no_call(self, monkeypatch):
+        called = []
+        import tastytrade.market_data as md
+        from advisor.daemon.book import _apply_live_marks
+
+        async def fake(session, equities=None, options=None):
+            called.append(True)
+            return []
+
+        monkeypatch.setattr(md, "get_market_data_by_type", fake)
+        await _apply_live_marks(object(), self._book())
+        assert called == []
+
+    async def test_unrealised_pnl_follows_the_live_mark(self, monkeypatch):
+        """The number the stop logic actually reads."""
+        book = self._book(self._pos())
+        await self._apply(book, [self.FakeQuote("AMD", mark=502.85)], monkeypatch)
+        position = book.positions[0]
+        assert position.unrealized_pct == pytest.approx((502.85 - 504.06) / 504.06, abs=1e-6)
