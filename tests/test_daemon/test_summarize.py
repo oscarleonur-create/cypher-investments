@@ -229,3 +229,85 @@ class TestNewsContext:
 
     def test_a_context_item_without_a_trigger_still_renders(self):
         assert summarize(event(kind="NEWS_CONTEXT", title="A headline")) == "A headline"
+
+
+class TestPositionLifecycle:
+    """The realised return is the point of a close, and it was the one thing
+    not rendered — "BE position closed" said nothing about whether it was
+    closed at a gain or a loss."""
+
+    def test_a_close_reports_the_realised_return(self):
+        line = summarize(
+            event(kind="POSITION_CLOSED", symbol="BE", quantity=2, realized_pct=0.0702)
+        )
+        assert "2 shares" in line
+        assert "closed at +7.0%" in line
+
+    def test_a_close_at_a_loss_carries_the_sign(self):
+        line = summarize(event(kind="POSITION_CLOSED", quantity=-5, realized_pct=-0.12))
+        assert "-12.0%" in line
+
+    def test_an_open_reports_size_price_and_notional(self):
+        line = summarize(
+            event(
+                kind="POSITION_OPENED", symbol="GOOGL", quantity=3, price=344.04, notional=1032.12
+            )
+        )
+        assert "+3 @ 344.04" in line
+        assert "$1,032.12" in line
+
+    def test_a_resize_reports_both_ends_and_the_direction(self):
+        line = summarize(
+            event(
+                kind="POSITION_SIZE_CHANGED",
+                symbol="SPCX",
+                from_quantity=9,
+                to_quantity=11,
+                direction="increased",
+            )
+        )
+        assert "+9 → +11 shares" in line
+        assert "increased" in line
+
+    def test_a_lifecycle_event_missing_its_numbers_does_not_crash(self):
+        assert "None" not in summarize(event(kind="POSITION_CLOSED", realized_pct=None))
+
+
+class TestEveryStoredKindRenders:
+    """A kind that renders empty is a row the reader cannot act on.
+
+    Three position-lifecycle kinds were silently blank until a live stream
+    was read row by row; this fails if a fourth appears.
+    """
+
+    KINDS_WITH_NO_FIGURE = {"HEARTBEAT"}
+
+    def test_the_known_payload_shapes_all_produce_a_line(self):
+        shapes = [
+            ("STOP_BREACHED", {"unrealized_pct": -0.08, "entry": 1.0, "price": 0.92}),
+            ("PROFIT_TARGET_HIT", {"unrealized_pct": 0.25, "entry": 1.0, "price": 1.25}),
+            ("DEEP_DRAWDOWN", {"unrealized_pct": -0.30}),
+            ("CONCENTRATION_WARNING", {"weight": 0.22, "threshold": 0.20}),
+            ("POSITION_OPENED", {"quantity": 3, "price": 344.04, "notional": 1032.12}),
+            ("POSITION_CLOSED", {"quantity": 2, "realized_pct": 0.07}),
+            ("POSITION_SIZE_CHANGED", {"from_quantity": 9, "to_quantity": 11}),
+            ("FILING_DILUTION", {"offering_usd": 6e8, "dilution_pct": 0.067}),
+            ("FILING_RESULTS", {"form": "8-K", "items": ["2.02"]}),
+            (
+                "FACTOR_SHOCK_HITTING_BOOK",
+                {"factor": "MKT", "z": -2.8, "expected_book_move": -0.014},
+            ),
+            (
+                "RESIDUAL_DIVERGENCE",
+                {"actual_return": -0.22, "expected_return": 0.01, "residual_z": -4.9},
+            ),
+            (
+                "INSIDER_SELLING_CLUSTER",
+                {"insider_count": 6, "side": "SELLING", "total_value": 2.7e8},
+            ),
+            ("IMPLIED_EXPECTATIONS_SHIFT", {"implied_cagr": 0.28, "previous_implied_cagr": 0.25}),
+            ("DATA_QUALITY_FAILURE", {"check": "price_agreement", "failed": 9, "symbols": ["BE"]}),
+            ("NEWS_CONTEXT", {"title": "A headline"}),
+        ]
+        blank = [kind for kind, payload in shapes if not summarize(event(kind=kind, **payload))]
+        assert blank == [], f"these render as an empty row: {blank}"

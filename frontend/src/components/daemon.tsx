@@ -6,7 +6,7 @@ import type {
   SourceItem,
   SourceTier,
 } from "@/lib/types";
-import { cn, fmtEt, fmtNum, fmtUsd } from "@/lib/utils";
+import { cn, fmtEt, fmtNum } from "@/lib/utils";
 
 /** Tier is the single most important thing on screen: it says whether this
  *  interrupts you, reaches a digest, or is only context. */
@@ -72,28 +72,16 @@ function humanKind(kind: string) {
 }
 
 /** The one line that says what an event actually means for the book. */
+/** The detail line, served by the API.
+ *
+ *  This used to be computed here, and it had drifted: it covered offerings
+ *  and factor shocks but not crossings, concentration, insider clusters or
+ *  news headlines — so a stop breach rendered without its numbers and eight
+ *  news items rendered as eight blank rows. `advisor.daemon.summarize` is now
+ *  the one tested implementation and both readers are served from it.
+ */
 function eventDetail(event: DaemonEvent): string | null {
-  const p = event.payload as Record<string, number | string | undefined>;
-  if (p.dilution_pct != null && p.offering_usd != null) {
-    return `${fmtUsd(Number(p.offering_usd))} = ${(Number(p.dilution_pct) * 100).toFixed(
-      1
-    )}% of market cap`;
-  }
-  if (p.offering_usd != null) return `${fmtUsd(Number(p.offering_usd))} offered (unsized vs cap)`;
-  if (p.expected_book_move != null) {
-    return `${p.factor} moved ${(Number(p.move) * 100).toFixed(2)}% (z ${fmtNum(
-      Number(p.z),
-      1
-    )}) → book ${(Number(p.expected_book_move) * 100).toFixed(2)}%`;
-  }
-  if (p.residual_z != null) {
-    return `${(Number(p.actual_return) * 100).toFixed(2)}% actual vs ${(
-      Number(p.expected_return) * 100
-    ).toFixed(2)}% expected (z ${fmtNum(Number(p.residual_z), 1)})`;
-  }
-  if (p.check != null) return `${p.check}: ${p.failed} symbol(s) failed`;
-  if (p.label != null) return String(p.label);
-  return null;
+  return event.summary || null;
 }
 
 export function EventRow({ event }: { event: DaemonEvent }) {
