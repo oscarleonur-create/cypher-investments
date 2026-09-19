@@ -768,3 +768,41 @@ export interface ThesisCoverage {
   uncovered_count: number;
   uncovered_weight: number;
 }
+
+// ── Action cards ──────────────────────────────────────────────────────────────
+
+export type ActionKind =
+  | "REVIEW_NOW"
+  | "REVIEW"
+  | "WRITE_THESIS"
+  | "HOLD"
+  | "CANNOT_SAY";
+
+export interface EvidenceItem {
+  name: string;
+  asof: string | null;
+  detail: string;
+  ok: boolean;
+  blocking: boolean;
+}
+
+export interface ClaimVerdict {
+  text: string;
+  kind: string;
+  status: "BROKEN" | "INTACT" | "UNTESTED" | "UNREACHABLE";
+  note: string;
+}
+
+export interface ActionCard {
+  symbol: string;
+  assembled_at: string;
+  action: ActionKind;
+  headline: string;
+  because: string[];
+  deadline: string | null;
+  position_note: string;
+  triggers: { kind: string; tier: EventTier; when: string; detail: string; url: string | null }[];
+  claims: ClaimVerdict[];
+  evidence: { items: EvidenceItem[] };
+  what_would_sharpen_this: string[];
+}
