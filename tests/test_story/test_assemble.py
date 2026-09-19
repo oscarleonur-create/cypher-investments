@@ -621,3 +621,98 @@ class TestAnchorRanking:
             )
         )
         assert stories_for_symbol(store, "CCXI", limit=1)[0].anchor.kind == "FILING_DILUTION"
+
+
+class TestSelfPricedEvents:
+    """A crossing is a price, not something a session prices.
+
+    "What session priced this?" is right for a filing, which lands after the
+    close and is priced at the next open. It is wrong for a crossing computed
+    from a live quote: that event *is* a price and carries the one that
+    tripped it.
+
+    Asking the session instead produced a flat contradiction. CBRS breached
+    its stop at 10:30 on 18 September at 199.66, 8.03% below entry — on a day
+    that closed up 2.18% — and the story was headed "stop breached (+2.18%)".
+    """
+
+    def crossing(self, **kw) -> Event:
+        payload = {
+            "entry": 217.09,
+            "price": 199.66,
+            "unrealized_pct": -0.0803,
+            "unrealized_usd": -34.86,
+            "threshold": -0.08,
+        }
+        payload.update(kw.pop("payload", {}))
+        base = dict(
+            source=EventSource.COMPUTED,
+            kind="STOP_BREACHED",
+            tier=EventTier.A,
+            symbol="AAOI",
+            dedup_key="stop",
+            payload=payload,
+        )
+        return Event(**{**base, **kw})
+
+    def test_the_move_is_the_events_own_not_the_sessions(self, store):
+        store.save_book(book(pos(), as_of=FILED - timedelta(hours=1)))
+        story = build_story(store, self.crossing(), prices=price_frame(), factors=factor_frame())
+        assert story.reaction.pct_move == pytest.approx(-0.0803)
+        assert story.reaction.before == pytest.approx(217.09)
+        assert story.reaction.after == pytest.approx(199.66)
+
+    def test_a_stop_breach_never_headlines_as_a_gain(self, store):
+        from advisor.story.render import headline
+
+        store.save_book(book(pos(), as_of=FILED - timedelta(hours=1)))
+        story = build_story(store, self.crossing(), prices=price_frame(), factors=factor_frame())
+        assert "-8.03%" in headline(story)
+        assert "+" not in headline(story)
+
+    def test_it_is_marked_as_measured_at_the_event(self, store):
+        store.save_book(book(pos(), as_of=FILED - timedelta(hours=1)))
+        story = build_story(store, self.crossing(), prices=price_frame(), factors=factor_frame())
+        assert story.reaction.self_priced is True
+
+    def test_the_rendering_says_which_measurement_it_used(self, store):
+        from advisor.story.render import render
+
+        store.save_book(book(pos(), as_of=FILED - timedelta(hours=1)))
+        story = build_story(store, self.crossing(), prices=price_frame(), factors=factor_frame())
+        assert "measured at the event" in render(story)
+
+    def test_the_dollar_figure_comes_from_the_event(self, store):
+        store.save_book(book(pos(), as_of=FILED - timedelta(hours=1)))
+        story = build_story(store, self.crossing(), prices=price_frame(), factors=factor_frame())
+        assert story.reaction.dollars == pytest.approx(-34.86)
+
+    def test_a_filing_is_still_priced_by_the_next_session(self, store):
+        """The fix must not reach events that genuinely are priced later."""
+        store.save_book(book(pos(), as_of=FILED - timedelta(hours=1)))
+        story = build_story(store, dilution_event(), prices=price_frame(), factors=factor_frame())
+        assert story.reaction.self_priced is False
+        assert story.reaction.priced_next_session is True
+        assert story.reaction.session == date(2026, 8, 24)
+
+    def test_an_event_without_its_own_price_falls_back_to_the_session(self, store):
+        """DEEP_DRAWDOWN carries a percentage but no price."""
+        store.save_book(book(pos(), as_of=FILED - timedelta(hours=1)))
+        standing = self.crossing(
+            kind="DEEP_DRAWDOWN", dedup_key="dd", payload={"entry": None, "price": None}
+        )
+        story = build_story(store, standing, prices=price_frame(), factors=factor_frame())
+        assert story.reaction.self_priced is False
+
+    def test_a_profit_target_headlines_as_a_gain(self, store):
+        from advisor.story.render import headline
+
+        store.save_book(book(pos(), as_of=FILED - timedelta(hours=1)))
+        target = self.crossing(
+            kind="PROFIT_TARGET_HIT",
+            tier=EventTier.B,
+            dedup_key="target",
+            payload={"unrealized_pct": 0.26, "price": 163.0, "unrealized_usd": 40.2},
+        )
+        story = build_story(store, target, prices=price_frame(), factors=factor_frame())
+        assert "+26.0" in headline(story)

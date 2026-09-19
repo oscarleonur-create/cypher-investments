@@ -88,6 +88,9 @@ class PriceReaction(BaseModel):
     dollars: float | None = None  # on the position actually held
     pct_of_book: float | None = None
     priced_next_session: bool = False  # event landed after the close
+    # True when the event carries the price it fired at, rather than being
+    # priced by a later session.
+    self_priced: bool = False
     note: str = ""
 
 

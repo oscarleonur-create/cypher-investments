@@ -101,10 +101,13 @@ def render(story: Story, *, width: int = 78) -> str:
     if rx.confidence is Confidence.UNAVAILABLE:
         lines[-1] += f"unknown — {rx.note}"
     else:
-        priced = (
-            " (next session — the event landed after the close)" if rx.priced_next_session else ""
-        )
-        lines[-1] += f"{rx.session}{priced}"
+        if rx.self_priced:
+            suffix = " (measured at the event, not at the session close)"
+        elif rx.priced_next_session:
+            suffix = " (next session — the event landed after the close)"
+        else:
+            suffix = ""
+        lines[-1] += f"{rx.session}{suffix}"
         lines.append(
             f"                {_money(rx.before)} → {_money(rx.after)}  "
             f"({_pct(rx.pct_move, sign=True)})"
