@@ -229,6 +229,11 @@ def crossing_events(
                     unrealized_pct=round(now, 4),
                     previous_pct=round(was, 4),
                     threshold=limits.profit_target_pct,
+                    # The stop carries entry and price; the target did not, so
+                    # the same crossing read as a full sentence going down and
+                    # a bare percentage going up.
+                    entry=position.avg_open_price,
+                    price=position.price,
                     unrealized_usd=round(position.unrealized_pnl, 2),
                 )
             )

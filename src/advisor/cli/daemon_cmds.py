@@ -183,6 +183,7 @@ def daemon_events(
     from rich.table import Table
 
     from advisor.daemon.models import EventTier
+    from advisor.daemon.summarize import summarize
 
     store = _store()
     try:
@@ -200,16 +201,18 @@ def daemon_events(
         table = Table(title=f"Events (latest {len(events)})")
         table.add_column("when")
         table.add_column("tier")
-        table.add_column("source")
         table.add_column("symbol")
         table.add_column("kind")
+        table.add_column("detail", overflow="fold")
+        tier_colour = {"A": "red", "B": "yellow", "C": "dim"}
         for e in events:
+            colour = tier_colour.get(e.tier.value, "white")
             table.add_row(
                 e.ts.strftime("%m-%d %H:%M"),
-                e.tier.value,
-                e.source.value,
+                f"[{colour}]{e.tier.value}[/{colour}]",
                 e.symbol or "—",
                 e.kind,
+                summarize(e),
             )
         console.print(table)
     finally:
