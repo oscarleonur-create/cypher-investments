@@ -376,3 +376,41 @@ class TestEventSummary:
         client.store.emit(filing_event(dedup_key="bare", payload={}))
         rows = client.get("/api/daemon/events").json()["events"]
         assert all(isinstance(r["summary"], str) for r in rows)
+
+
+class TestCombinedFilters:
+    """The Signals page filters by tier and ticker at once.
+
+    The API accepted both from the day it shipped and the page exposed only
+    tier, so the one question you actually ask — "what has happened to this
+    name?" — could not be asked in the browser.
+    """
+
+    def test_tier_and_symbol_narrow_together(self, client):
+        client.store.emit(filing_event(dedup_key="a", symbol="CBRS", tier=EventTier.A))
+        client.store.emit(filing_event(dedup_key="b", symbol="CBRS", tier=EventTier.C))
+        client.store.emit(filing_event(dedup_key="c", symbol="AAOI", tier=EventTier.A))
+
+        rows = client.get("/api/daemon/events?tier=A&symbol=CBRS").json()["events"]
+        assert len(rows) == 1
+        assert rows[0]["symbol"] == "CBRS"
+        assert rows[0]["tier"] == "A"
+
+    def test_a_symbol_with_no_events_at_that_tier_is_empty_not_unfiltered(self, client):
+        """The dangerous failure: a filter that silently does nothing."""
+        client.store.emit(filing_event(symbol="CBRS", tier=EventTier.C))
+        assert client.get("/api/daemon/events?tier=A&symbol=CBRS").json()["events"] == []
+
+    def test_book_level_events_are_excluded_by_a_symbol_filter(self, client):
+        """A factor shock carries no symbol; the page says so in the footer."""
+        client.store.emit(filing_event(dedup_key="book", symbol=None, tier=EventTier.A))
+        client.store.emit(filing_event(dedup_key="named", symbol="CBRS", tier=EventTier.A))
+        rows = client.get("/api/daemon/events?symbol=CBRS").json()["events"]
+        assert [r["symbol"] for r in rows] == ["CBRS"]
+
+    def test_the_unfiltered_read_still_carries_every_symbol(self, client):
+        """The chip row is built from this; filtering it would shrink itself."""
+        client.store.emit(filing_event(dedup_key="a", symbol="CBRS"))
+        client.store.emit(filing_event(dedup_key="b", symbol="AAOI"))
+        rows = client.get("/api/daemon/events").json()["events"]
+        assert {r["symbol"] for r in rows} == {"CBRS", "AAOI"}
