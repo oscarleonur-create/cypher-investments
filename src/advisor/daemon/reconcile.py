@@ -18,6 +18,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date
 
+from advisor.daemon import market_calendar as mc
 from advisor.daemon.book import BookSnapshot
 from advisor.daemon.market_calendar import previous_trading_day
 from advisor.daemon.models import Event, EventSource, EventTier
@@ -242,12 +243,24 @@ async def run_reconciliation(book: BookSnapshot, *, today: date | None = None) -
         from advisor.macro.factors import fetch_prices
 
         prices = fetch_prices(symbols, period="1mo")
+        # The broker's `close_price` is the *prior* session's close. During a
+        # session yfinance's last row is today's partial bar, so comparing the
+        # two measures the day's move and calls it a data fault. On the first
+        # live-session run this fired a Tier A failure on nine of twelve
+        # symbols — every gap was simply that day's price change.
+        session_open = mc.is_market_open()
+        today = report.asof
         for symbol in symbols:
-            if symbol in prices.columns:
-                column = prices[symbol].dropna()
-                if not column.empty:
-                    quotes[symbol] = float(column.iloc[-1])
-                    last_bars[symbol] = column.index[-1].date()
+            if symbol not in prices.columns:
+                continue
+            column = prices[symbol].dropna()
+            if column.empty:
+                continue
+            index = -1
+            if session_open and column.index[-1].date() >= today and len(column) > 1:
+                index = -2  # step back to the last completed session
+            quotes[symbol] = float(column.iloc[index])
+            last_bars[symbol] = column.index[index].date()
     except Exception as exc:  # noqa: BLE001
         logger.warning("reconcile: independent prices unavailable: %s", exc)
         report.findings.append(

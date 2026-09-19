@@ -210,4 +210,62 @@ async def fetch_book(accounts: list[str] | None = None) -> BookSnapshot:
         snapshot.net_liq += float(balances.get("net_liq") or 0)
         snapshot.cash += float(balances.get("cash") or 0)
         snapshot.buying_power += float(balances.get("buying_power") or 0)
+
+    await _apply_live_marks(session, snapshot)
     return snapshot
+
+
+async def _apply_live_marks(session, snapshot: BookSnapshot) -> None:
+    """Fill in live prices, because the positions endpoint never does.
+
+    The broker returns ``mark_price: 0.0`` on a position whether the market is
+    open or shut — the field exists and is simply never populated there. The
+    fallback to ``close_price`` was written believing marks appeared during a
+    session, and the first live run showed all twelve positions priced at the
+    previous close at 12:33 on a Tuesday.
+
+    That is not cosmetic: every stop and target in the position pillar was
+    being evaluated against yesterday. A breach that happened this morning
+    would not have been noticed until tomorrow.
+
+    Quotes come from the market-data endpoint instead. A failure here leaves
+    the prior close in place, which is the old behaviour and still correct
+    overnight.
+    """
+    symbols = sorted({p.underlying.upper() for p in snapshot.positions if not p.is_option})
+    options = sorted({p.symbol for p in snapshot.positions if p.is_option})
+    if not symbols and not options:
+        return
+
+    try:
+        from tastytrade.market_data import get_market_data_by_type
+
+        quotes = await get_market_data_by_type(
+            session,
+            equities=symbols or None,
+            options=options or None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("book: live quotes unavailable, using prior closes: %s", exc)
+        return
+
+    marks = {}
+    for quote in quotes:
+        mark = getattr(quote, "mark", None) or getattr(quote, "last", None)
+        if mark:
+            marks[str(quote.symbol).upper()] = float(mark)
+
+    applied = 0
+    for position in snapshot.positions:
+        key = position.symbol.upper() if position.is_option else position.underlying.upper()
+        mark = marks.get(key)
+        if mark:
+            position.mark_price = mark
+            applied += 1
+
+    if applied < len(snapshot.positions):
+        logger.info(
+            "book: %d of %d positions priced live; the rest use the prior close",
+            applied,
+            len(snapshot.positions),
+        )

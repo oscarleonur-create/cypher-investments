@@ -25,13 +25,29 @@ def daemon_run(
     """Run the daemon in the foreground until Ctrl-C."""
     import asyncio
     import logging
+    from datetime import datetime
 
+    from advisor.daemon.market_calendar import MARKET_TZ
     from advisor.daemon.supervisor import serve
 
+    # `force=True` matters: the CLI callback has already called basicConfig at
+    # WARNING, and a second call without it is a silent no-op. The daemon then
+    # ran completely mute — no "daemon up", no job results, no events — which
+    # for an always-on process is the difference between working and only
+    # appearing to.
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        format="%(asctime)s ET | %(levelname)-7s | %(name)s | %(message)s",
+        datefmt="%H:%M:%S",
+        force=True,
     )
+    # The daemon reasons entirely in market time; logging in the machine's
+    # local zone makes every line a translation exercise and has already
+    # produced three timezone bugs in this project. Stamp ET, and say so.
+    logging.Formatter.converter = lambda *args: datetime.now(MARKET_TZ).timetuple()
+    # Third-party debug chatter would bury the daemon's own lines.
+    for noisy in ("tastytrade", "httpx", "httpcore", "urllib3", "yfinance", "peewee"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     store = _store()
     try:
         asyncio.run(serve(store, tick_seconds=tick))

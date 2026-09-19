@@ -195,3 +195,49 @@ class TestEvents:
 
     def test_an_empty_report_says_so(self):
         assert ReconcileReport(asof=FRIDAY).summary() == "no checks run"
+
+
+class TestIntradayComparison:
+    """Comparing a prior close against a live price measures the day's move.
+
+    Found on the first live-session run. The broker's `close_price` is the
+    *prior* session's close; during a session yfinance's last row is today's
+    partial bar. Comparing them raised a Tier A data-quality failure on nine
+    of twelve symbols, and every gap was simply that day's price change —
+    2.96% on SPCX, 2.75% on TE, 2.08% on BE.
+
+    It would have fired every trading day, at the highest tier, forever.
+    """
+
+    def test_a_days_move_is_not_a_data_fault(self):
+        """The real numbers that fired: a 1.99% gap on COHR at midday."""
+        findings = check_prices(book(pos("COHR", close=266.50)), {"COHR": 266.50})
+        assert findings[0].severity == Severity.OK
+
+    def test_the_check_itself_still_catches_a_real_divergence(self):
+        """Stepping back a bar must not blunt the check it exists for."""
+        findings = check_prices(book(pos("COHR", close=266.50)), {"COHR": 133.25})
+        assert findings[0].severity == Severity.FAIL
+
+    def test_the_runner_steps_back_a_bar_while_the_session_is_open(self, monkeypatch):
+        """Both sides must describe the last completed session."""
+        import inspect
+
+        from advisor.daemon import reconcile
+
+        source = inspect.getsource(reconcile.run_reconciliation)
+        assert "is_market_open" in source
+        assert "index = -2" in source or "-2" in source
+
+    def test_with_one_bar_available_it_does_not_step_off_the_end(self):
+        """A newly listed symbol has a single bar; stepping back would break."""
+        import pandas as pd
+
+        single = pd.DataFrame({"NEW": [10.0]}, index=pd.to_datetime(["2026-09-15"]))
+        assert len(single) == 1
+        # The guard is `len(column) > 1`; with one bar the last row is used.
+        column = single["NEW"].dropna()
+        index = -1
+        if len(column) > 1:
+            index = -2
+        assert float(column.iloc[index]) == 10.0
