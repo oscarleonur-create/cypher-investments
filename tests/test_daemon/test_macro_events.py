@@ -159,3 +159,97 @@ class TestResidualDivergence:
 
     def test_empty_inputs_produce_nothing(self, rng):
         assert residual_divergence_events(self._book(), {}, pd.DataFrame(), pd.DataFrame()) == []
+
+
+def pos(symbol="AMD", *, qty=10, price=100.0):
+    return Position(
+        account="A",
+        symbol=symbol,
+        underlying=symbol,
+        instrument=EQUITY,
+        quantity=qty,
+        multiplier=1,
+        avg_open_price=price,
+        close_price=price,
+    )
+
+
+def sens(symbol="AMD", *, resid_vol=0.02):
+    from datetime import date
+
+    return SymbolSensitivity(
+        symbol=symbol,
+        asof=date(2026, 9, 4),
+        window_days=250,
+        n_obs=250,
+        r2=0.5,
+        resid_vol=resid_vol,
+        loadings=[FactorLoading(factor=Factor.MKT.value, loading=1.5, tstat=4.0)],
+    )
+
+
+class TestNaNCannotInterrupt:
+    """A NaN walks through every threshold gate and fires a Tier A interrupt.
+
+    Found by leaving the daemon running for four days. The brief runs at 07:00
+    ET, pre-market, where yfinance often carries a row for the current day
+    whose values are not yet filled — and `dropna(how="all")` keeps it,
+    because *some* tickers have a bar.
+
+    The resulting NaN passed every guard: `abs(nan) < 2.5` is False, and so is
+    every other comparison. Six interrupts fired every morning for three days
+    running — eighteen against a stated budget of 0-3 a week, each one
+    reporting "move +nan%, z +nan, expected book move +nan%".
+
+    This is the third time NaN has produced a confident false statement in
+    this project. The rule: a comparison is not a guard when NaN is possible.
+    """
+
+    def test_abs_nan_defeats_every_threshold(self):
+        """The mechanism, stated once so it is not rediscovered a fourth time."""
+        import math
+
+        nan = float("nan")
+        assert not abs(nan) < FACTOR_SHOCK_Z
+        assert not abs(nan) < MIN_EXPECTED_BOOK_MOVE
+        assert not abs(nan) >= FACTOR_SHOCK_Z
+        assert math.isnan(nan)  # the only test that works
+
+    def test_an_unobserved_factor_does_not_fire(self, rng):
+        factors = factor_frame(rng, last_move={Factor.MKT.value: 0.05})
+        factors.iloc[-1, factors.columns.get_loc(Factor.MKT.value)] = float("nan")
+        assert factor_shock_events(factors, exposure({Factor.MKT.value: 1.5})) == []
+
+    def test_a_pre_market_row_of_all_nan_fires_nothing(self, rng):
+        """The exact live shape: every factor unfilled at 07:00."""
+        factors = factor_frame(rng)
+        factors.iloc[-1, :] = float("nan")
+        loadings = {f.value: 1.5 for f in Factor}
+        assert factor_shock_events(factors, exposure(loadings)) == []
+
+    def test_an_observed_factor_still_fires_alongside_an_unobserved_one(self, rng):
+        """Narrowing the panel must not silence a real shock."""
+        factors = factor_frame(
+            rng, last_move={Factor.MKT.value: 0.05, Factor.VOL.value: float("nan")}
+        )
+        events = factor_shock_events(
+            factors, exposure({Factor.MKT.value: 1.5, Factor.VOL.value: 2.0})
+        )
+        assert [e.payload["factor"] for e in events] == [Factor.MKT.value]
+
+    def test_an_infinite_move_does_not_fire(self, rng):
+        factors = factor_frame(rng, last_move={Factor.MKT.value: float("inf")})
+        assert factor_shock_events(factors, exposure({Factor.MKT.value: 1.5})) == []
+
+    def test_a_nan_residual_does_not_fire(self, rng):
+        """The same hole in the divergence detector, closed before it fired."""
+        import numpy as np
+        import pandas as pd
+
+        factors = factor_frame(rng, n=300)
+        factors.iloc[-1, :] = float("nan")
+        prices = pd.DataFrame({"AMD": np.linspace(100, 200, 300)}, index=factors.index)
+        book = BookSnapshot(positions=[pos("AMD")], net_liq=10_000.0)
+        from advisor.macro.factors import log_returns
+
+        assert residual_divergence_events(book, {"AMD": sens()}, log_returns(prices), factors) == []
