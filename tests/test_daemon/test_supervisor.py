@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import time
+from datetime import datetime, time
 from pathlib import Path
 
 import pytest
@@ -14,6 +14,7 @@ from advisor.daemon.jobs import (
     JobContext,
     JobRegistry,
 )
+from advisor.daemon.market_calendar import MARKET_TZ
 from advisor.daemon.models import JobResult
 from advisor.daemon.store import DaemonStore
 from advisor.daemon.supervisor import Supervisor, build_registry
@@ -173,3 +174,56 @@ class TestFailureModes:
 
     async def test_empty_registry_ticks_without_error(self, store):
         assert await Supervisor(store, JobRegistry()).tick() == []
+
+
+class TestCatchUpDetection:
+    """A punctual job announced itself as late, every single morning.
+
+    The old test was `isinstance(trigger, DailyAt) and it has run before`,
+    which is true of every daily job after its first run. Three days of live
+    logs read "fired late for a missed slot" while the daemon was perfectly
+    on time — which makes the one line that would matter, an actual catch-up
+    after the laptop slept, invisible.
+    """
+
+    def _brief(self) -> Job:
+        return Job("brief", DailyAt(time(7, 0), grace_hours=6.0), ok_handler)
+
+    def test_firing_on_the_slot_is_not_a_catch_up(self):
+        """07:00:16 for a 07:00 slot — the real log line that was wrong."""
+        now = datetime(2026, 9, 18, 7, 0, 16, tzinfo=MARKET_TZ)
+        assert Supervisor._is_catch_up(self._brief(), now) is False
+
+    def test_a_few_minutes_late_is_still_on_time(self):
+        now = datetime(2026, 9, 18, 7, 8, tzinfo=MARKET_TZ)
+        assert Supervisor._is_catch_up(self._brief(), now) is False
+
+    def test_hours_late_is_a_catch_up(self):
+        """The laptop slept through the slot and woke at noon."""
+        now = datetime(2026, 9, 18, 12, 0, tzinfo=MARKET_TZ)
+        assert Supervisor._is_catch_up(self._brief(), now) is True
+
+    def test_exactly_at_the_boundary_is_not_yet_a_catch_up(self):
+        now = datetime(2026, 9, 18, 7, 15, tzinfo=MARKET_TZ)
+        assert Supervisor._is_catch_up(self._brief(), now) is False
+
+    def test_one_minute_past_the_boundary_is(self):
+        now = datetime(2026, 9, 18, 7, 16, tzinfo=MARKET_TZ)
+        assert Supervisor._is_catch_up(self._brief(), now) is True
+
+    def test_an_interval_job_is_never_a_catch_up(self):
+        """Only a slot can be missed; an interval simply runs again."""
+        job = Job("watch", EveryMinutes(15, during_session_only=True), ok_handler)
+        now = datetime(2026, 9, 18, 12, 0, tzinfo=MARKET_TZ)
+        assert Supervisor._is_catch_up(job, now) is False
+
+    def test_the_afternoon_review_uses_its_own_slot(self):
+        """16:30, not the brief's 07:00."""
+        review = Job("review", DailyAt(time(16, 30), grace_hours=6.0), ok_handler)
+        assert (
+            Supervisor._is_catch_up(review, datetime(2026, 9, 18, 16, 31, tzinfo=MARKET_TZ))
+            is False
+        )
+        assert (
+            Supervisor._is_catch_up(review, datetime(2026, 9, 18, 19, 0, tzinfo=MARKET_TZ)) is True
+        )

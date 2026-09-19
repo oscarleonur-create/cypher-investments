@@ -11,7 +11,7 @@ import asyncio
 import contextlib
 import logging
 import signal
-from datetime import time
+from datetime import datetime, time, timedelta
 
 from advisor.daemon import handlers
 from advisor.daemon import market_calendar as mc
@@ -31,6 +31,11 @@ logger = logging.getLogger(__name__)
 # How often the loop wakes to ask "is anything due?". Independent of any job's
 # own cadence — jobs decide against wall clock, this only bounds latency.
 TICK_SECONDS = 30
+
+# Past this much after its slot, a daily job is catching up rather than
+# running on schedule — long enough to absorb a slow tick and a slow job,
+# short enough that a real missed slot still shows.
+CATCH_UP_AFTER = timedelta(minutes=15)
 
 
 def build_registry() -> JobRegistry:
@@ -147,9 +152,7 @@ class Supervisor:
         now = mc.now_et()
         results = []
         for job in self.registry.due(now, self.store):
-            # A DailyAt job firing well after its slot is a catch-up run.
-            last_ok = self.store.get_heartbeat(job.name).last_ok_at
-            catch_up = isinstance(job.trigger, DailyAt) and last_ok is not None
+            catch_up = self._is_catch_up(job, now)
             result = await self.run_job(job, catch_up=catch_up)
             # A successful job logged nothing, so a working daemon and a hung
             # one looked identical: "daemon up" and then silence forever. The
@@ -165,6 +168,29 @@ class Supervisor:
             )
             results.append(result)
         return results
+
+    @staticmethod
+    def _is_catch_up(job: Job, now: datetime) -> bool:
+        """Whether a daily job is firing late for a slot it missed.
+
+        The old test was `isinstance(trigger, DailyAt) and it has run before`,
+        which marks every daily job after its first run — so a brief firing at
+        07:00:16 for its 07:00 slot announced itself as a catch-up. Three
+        days of live logs said "fired late for a missed slot" every morning
+        while the daemon was perfectly punctual, which makes the one line that
+        would matter — an actual catch-up after the laptop slept — invisible.
+
+        A job that fires within a tick or two of its slot is on time.
+        """
+        if not isinstance(job.trigger, DailyAt):
+            return False
+        slot = now.replace(
+            hour=job.trigger.at.hour,
+            minute=job.trigger.at.minute,
+            second=0,
+            microsecond=0,
+        )
+        return (now - slot) > CATCH_UP_AFTER
 
     async def run(self) -> None:
         """Loop until stopped, ticking every ``tick_seconds``."""

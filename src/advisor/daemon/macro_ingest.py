@@ -17,6 +17,7 @@ Two cadences, because the two things move at different speeds:
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date
 
 import pandas as pd
@@ -138,9 +139,22 @@ def factor_shock_events(
         if len(history) < 60:
             continue
         sigma = float(history.std())
-        if sigma <= 0:
+        if not sigma > 0 or math.isnan(sigma):
             continue
         move = float(latest[factor])
+        if math.isnan(move) or math.isinf(move):
+            # The brief runs at 07:00 ET, pre-market. yfinance often carries a
+            # row for the current day whose values are not yet filled, and
+            # `dropna(how="all")` keeps it because *some* tickers have one.
+            #
+            # A NaN then walks straight through every guard below — `abs(nan)
+            # < 2.5` is False, and so is every other comparison — so the
+            # factor fires a Tier A interrupt on no data at all. Live, this
+            # produced six interrupts every morning for three days running:
+            # eighteen against a stated budget of 0-3 a week, every one of
+            # them reporting "move +nan%, z +nan".
+            logger.info("macro: %s has no observation for %s, skipping", factor, session)
+            continue
         z = move / sigma
         loading = exposure.loading(factor)
         expected_move = loading * move
@@ -193,7 +207,25 @@ def residual_divergence_events(
     # factor panel also keeps dedup keys consistent with the shock events.
     session_ts = factors.index[-1]
     session = session_ts.date().isoformat()
-    moves = {f: float(factors[f].iloc[-1]) for f in factors.columns}
+    # Same NaN hole as the shock detector, latent rather than firing: a NaN
+    # factor move poisons `expected_return`, which poisons the residual z,
+    # and `abs(nan) < 2.0` is False — so the divergence would fire on no
+    # data. Dropping the unobserved factor narrows the model instead.
+    moves = {
+        f: float(factors[f].iloc[-1])
+        for f in factors.columns
+        if not math.isnan(float(factors[f].iloc[-1]))
+    }
+    if not moves:
+        logger.info("macro: no factor observations for %s, skipping residuals", session)
+        return []
+    if len(moves) < len(factors.columns):
+        logger.info(
+            "macro: %d of %d factors unobserved on %s",
+            len(factors.columns) - len(moves),
+            len(factors.columns),
+            session,
+        )
     events: list[Event] = []
 
     for symbol in book.symbols:
@@ -206,7 +238,7 @@ def residual_divergence_events(
             continue
         actual = column.iloc[-1]
         z = residual_z(estimate, float(actual), moves)
-        if abs(z) < RESIDUAL_DIVERGENCE_Z:
+        if math.isnan(z) or abs(z) < RESIDUAL_DIVERGENCE_Z:
             continue
         expected = float(actual) - z * estimate.resid_vol
         events.append(
