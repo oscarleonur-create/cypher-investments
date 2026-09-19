@@ -414,3 +414,20 @@ class TestCombinedFilters:
         client.store.emit(filing_event(dedup_key="b", symbol="AAOI"))
         rows = client.get("/api/daemon/events").json()["events"]
         assert {r["symbol"] for r in rows} == {"CBRS", "AAOI"}
+
+
+class TestActionsEndpoint:
+    def test_a_symbol_not_held_cannot_be_advised_on(self, client):
+        card = client.get("/api/daemon/actions?symbol=NVDA").json()["cards"][0]
+        assert card["action"] == "CANNOT_SAY"
+
+    def test_the_evidence_travels_with_the_card(self, client):
+        """A card that proposed something on thin data must not hide it."""
+        card = client.get("/api/daemon/actions?symbol=NVDA").json()["cards"][0]
+        assert card["evidence"]["items"]
+
+    def test_no_action_names_a_trade(self, client):
+        """The constraint the whole module exists under, asserted at the edge."""
+        cards = client.get("/api/daemon/actions").json()["cards"]
+        for card in cards:
+            assert card["action"] in {"REVIEW_NOW", "REVIEW", "WRITE_THESIS", "HOLD", "CANNOT_SAY"}
