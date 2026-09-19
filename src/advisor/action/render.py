@@ -61,6 +61,28 @@ def render(card: ActionCard, *, width: int = 78) -> str:
         stamp = f"{item.asof}" if item.asof else "—"
         lines.append(f"   {mark} {item.name:14} {stamp:12} {item.detail[:44]}")
 
+    steps = (card.rationale or {}).get("steps") or []
+    if steps:
+        mark = {"AGAINST": "✗", "SUPPORTS": "✓", "BLIND": "?", "CONTEXT": "·"}
+        lines += ["", "RATIONALE"]
+        for step in steps:
+            lines.append(f"   {mark.get(step['bearing'], '·')} {step['label']}")
+            lines.append(f"     {step['fact'][:70]}")
+
+    proposed = (card.rationale or {}).get("proposed")
+    if proposed:
+        origin = {
+            "YOUR_RULE": "your own rule, quoted",
+            "ARITHMETIC": "arithmetic from the limit you set",
+            "NONE": "nothing to return to you",
+        }[proposed["source"]]
+        lines += ["", f"PROPOSED        ({origin})"]
+        lines.append(f"   {proposed['text']}")
+        if proposed.get("size"):
+            lines.append(f"   = {proposed['size']}")
+        if proposed.get("quoted_from"):
+            lines.append(f"   from your rule: {proposed['quoted_from'][:64]}")
+
     if card.what_would_sharpen_this:
         lines += ["", "TO SHARPEN THIS"]
         for hint in card.what_would_sharpen_this:

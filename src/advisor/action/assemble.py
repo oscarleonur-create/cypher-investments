@@ -301,6 +301,10 @@ def build_card(store: DaemonStore, symbol: str, book: BookSnapshot, *, today: da
         )
 
     card.what_would_sharpen_this = _suggestions(card, evidence)
+
+    from advisor.action.rationale import build_rationale
+
+    card.rationale = build_rationale(store, symbol, book, card).model_dump(mode="json")
     return card
 
 

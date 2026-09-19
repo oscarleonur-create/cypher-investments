@@ -804,5 +804,27 @@ export interface ActionCard {
   triggers: { kind: string; tier: EventTier; when: string; detail: string; url: string | null }[];
   claims: ClaimVerdict[];
   evidence: { items: EvidenceItem[] };
+  rationale: Rationale | Record<string, never>;
   what_would_sharpen_this: string[];
+}
+
+export type Bearing = "SUPPORTS" | "AGAINST" | "CONTEXT" | "BLIND";
+export type ActionSource = "YOUR_RULE" | "ARITHMETIC" | "NONE";
+
+export interface ReasonStep {
+  label: string;
+  fact: string;
+  bearing: Bearing;
+}
+
+export interface ProposedAction {
+  source: ActionSource;
+  text: string;
+  size: string;
+  quoted_from: string;
+}
+
+export interface Rationale {
+  steps: ReasonStep[];
+  proposed: ProposedAction | null;
 }

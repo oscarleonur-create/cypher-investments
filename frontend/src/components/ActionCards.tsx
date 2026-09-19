@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { AlertCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { api } from "@/lib/api";
-import type { ActionCard, ActionKind } from "@/lib/types";
+import type { ActionCard, ActionKind, Rationale } from "@/lib/types";
 import { cn, fmtEt } from "@/lib/utils";
 import { Section } from "@/components/common";
 
@@ -25,8 +25,27 @@ const CLAIM_MARK: Record<string, { mark: string; tone: string }> = {
   UNREACHABLE: { mark: "!", tone: "text-warn" },
 };
 
+const BEARING: Record<string, { mark: string; tone: string }> = {
+  AGAINST: { mark: "✗", tone: "text-neg" },
+  SUPPORTS: { mark: "✓", tone: "text-pos" },
+  BLIND: { mark: "?", tone: "text-warn" },
+  CONTEXT: { mark: "·", tone: "text-muted" },
+};
+
+const SOURCE_LABEL: Record<string, string> = {
+  YOUR_RULE: "your own rule, quoted back",
+  ARITHMETIC: "arithmetic from the limit you set",
+  NONE: "nothing to return to you",
+};
+
 function Card({ card }: { card: ActionCard }) {
   const [open, setOpen] = useState(card.action === "REVIEW_NOW");
+  // A card built before the rationale existed, or one that refused, carries
+  // an empty object rather than the shape — normalise once.
+  const rationale: Rationale = {
+    steps: (card.rationale as Rationale)?.steps ?? [],
+    proposed: (card.rationale as Rationale)?.proposed ?? null,
+  };
   const style = ACTION_STYLE[card.action];
   const Chevron = open ? ChevronDown : ChevronRight;
 
@@ -85,6 +104,54 @@ function Card({ card }: { card: ActionCard }) {
             </div>
           ) : (
             <div className="text-xs text-muted">No rules written for this name.</div>
+          )}
+
+          {/* The chain of stored facts. Each step says what it does to the
+              picture, never whether it is good or bad. */}
+          {rationale.steps.length > 0 && (
+            <div className="space-y-0.5">
+              <div className="text-[11px] uppercase tracking-wide text-muted">
+                rationale
+              </div>
+              {rationale.steps.map((step, i) => (
+                <div key={i} className="flex items-start gap-1.5 text-xs">
+                  <span className={cn("w-3 shrink-0", BEARING[step.bearing].tone)}>
+                    {BEARING[step.bearing].mark}
+                  </span>
+                  <span className="w-28 shrink-0 text-muted">{step.label}</span>
+                  <span className="min-w-0">{step.fact}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* A proposal always names where it came from. There are exactly two
+              sources — a rule the user wrote, or arithmetic — and neither is
+              the system forming a view. */}
+          {rationale.proposed && (
+            <div
+              className={cn(
+                "rounded border px-2 py-1.5",
+                rationale.proposed.source === "YOUR_RULE"
+                  ? "border-accent/40 bg-accent/10"
+                  : rationale.proposed.source === "ARITHMETIC"
+                    ? "border-border bg-panel-2"
+                    : "border-border/60"
+              )}
+            >
+              <div className="text-[11px] uppercase tracking-wide text-muted">
+                proposed · {SOURCE_LABEL[rationale.proposed.source]}
+              </div>
+              <div className="mt-0.5 text-sm">{rationale.proposed.text}</div>
+              {rationale.proposed.size && (
+                <div className="tnum text-xs text-accent">= {rationale.proposed.size}</div>
+              )}
+              {rationale.proposed.quoted_from && (
+                <div className="mt-0.5 text-xs text-muted">
+                  from your rule: “{rationale.proposed.quoted_from}”
+                </div>
+              )}
+            </div>
           )}
 
           {/* Always shown, never collapsed away: a card that proposed something

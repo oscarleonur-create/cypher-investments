@@ -125,6 +125,9 @@ class ActionCard(BaseModel):
     triggers: list[TriggerRef] = Field(default_factory=list)
     claims: list[ClaimVerdict] = Field(default_factory=list)
     evidence: Evidence = Field(default_factory=Evidence)
+    # The chain of stored facts behind the verdict, and the next step it
+    # implies. `rationale.proposed` always names where it came from.
+    rationale: dict = Field(default_factory=dict)
     # What the user could do that would let the system say more next time.
     what_would_sharpen_this: list[str] = Field(default_factory=list)
 

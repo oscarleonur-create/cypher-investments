@@ -82,6 +82,10 @@ class Claim(BaseModel):
     kind: ClaimKind
     text: str
     trigger: Trigger = Field(default_factory=Trigger)
+    # What the user decided to do if this trips, written at the time they were
+    # calm. Quoted back verbatim when it fires — the system proposes nothing of
+    # its own, it returns the decision to the person who made it.
+    response: str = ""
     due: date | None = None  # CATALYST only
     created_at: datetime = Field(default_factory=now_et)
 

@@ -47,6 +47,10 @@ def add_claim(
     factor: Annotated[
         Optional[str], typer.Option("--factor", help="MACRO_DRIVER: factor name")
     ] = None,
+    then: Annotated[
+        Optional[str],
+        typer.Option("--then", help="What you will do if this trips, in your own words"),
+    ] = None,
 ) -> None:
     """Add a claim. With --on it is checked against every matching event."""
     from advisor.thesis.models import Claim, ClaimKind, Comparator, Trigger
@@ -68,7 +72,7 @@ def add_claim(
         threshold=threshold,
         factor=factor.upper() if factor else None,
     )
-    claim = Claim(kind=ClaimKind(kind.upper()), text=text, trigger=trigger)
+    claim = Claim(kind=ClaimKind(kind.upper()), text=text, trigger=trigger, response=then or "")
 
     store = _store()
     try:
@@ -79,6 +83,13 @@ def add_claim(
             if trigger.is_testable
             else "  [yellow]recorded but not machine-testable — no event will check it[/yellow]"
         )
+        if claim.response:
+            console.print(f"  [green]if it trips:[/green] {claim.response}")
+        elif trigger.is_testable:
+            console.print(
+                "  [dim]no --then, so when this trips the card will say to review "
+                "rather than what you decided to do[/dim]"
+            )
     finally:
         store.close()
 
