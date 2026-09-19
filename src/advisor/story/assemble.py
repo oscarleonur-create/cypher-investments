@@ -117,6 +117,11 @@ def _anchor(event: Event) -> Anchor:
             "expected_book_move",
             "weight",
             "unrealized_pct",
+            "entry",
+            "price",
+            "unrealized_usd",
+            "threshold",
+            "realized_pct",
         }
     }
     return Anchor(
@@ -181,6 +186,39 @@ def _position(store: DaemonStore, symbol: str, occurred_at: datetime) -> Positio
         snapshot_asof=snapshot.as_of,
         covers_event=covers,
         note=note,
+    )
+
+
+def _self_priced(anchor: Anchor, position: PositionAtEvent) -> PriceReaction | None:
+    """The reaction for an event that already knows the price it fired at.
+
+    "What session priced this?" is the right question for a filing, which
+    lands after the close and is priced at the next open. It is the wrong
+    question for a crossing computed from a live quote: that event *is* a
+    price, and it carries the one that tripped it.
+
+    Asking the session instead produced a flat contradiction. CBRS breached
+    its stop at 10:30 on 18 September at 199.66, down 8.03% from entry — and
+    the session closed up 2.18% on the previous day, so the story was headed
+    "stop breached (+2.18%)".
+    """
+    facts = anchor.facts
+    entry, price = facts.get("entry"), facts.get("price")
+    move = facts.get("unrealized_pct")
+    if not isinstance(price, (int, float)) or not isinstance(move, (int, float)):
+        return None
+
+    dollars = facts.get("unrealized_usd")
+    net_liq = position.net_liq
+    return PriceReaction(
+        confidence=Confidence.MEASURED,
+        session=mc.to_et(anchor.occurred_at).date(),
+        before=entry if isinstance(entry, (int, float)) else None,
+        after=price,
+        pct_move=move,
+        dollars=dollars if isinstance(dollars, (int, float)) else None,
+        pct_of_book=(dollars / net_liq) if isinstance(dollars, (int, float)) and net_liq else None,
+        self_priced=True,
     )
 
 
@@ -411,7 +449,9 @@ def build_story(store: DaemonStore, event: Event, *, prices=None, factors=None) 
             factors = build_factor_returns(period="1y")
 
     position = _position(store, symbol, anchor.occurred_at)
-    reaction = _reaction(symbol, anchor.occurred_at, position, prices)
+    reaction = _self_priced(anchor, position) or _reaction(
+        symbol, anchor.occurred_at, position, prices
+    )
     attribution = _attribution(store, symbol, reaction.session, factors, prices)
     corroboration = _corroboration(store, symbol, anchor.occurred_at, anchor.url)
     thesis = _thesis(store, symbol, event)

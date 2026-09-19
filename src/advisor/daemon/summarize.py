@@ -53,6 +53,35 @@ def summarize(event) -> str:
         if usd:
             parts.append(f"({usd})")
 
+    # A position closing. The realised return is the point of the event and
+    # was the one thing not rendered — "BE position closed" said nothing
+    # about whether it was closed at a gain or a loss.
+    elif "realized_pct" in payload:
+        quantity = payload.get("quantity")
+        if isinstance(quantity, (int, float)):
+            parts.append(f"{abs(quantity):,.0f} shares")
+        realised = _pct(payload.get("realized_pct"))
+        if realised:
+            parts.append(f"closed at {realised}")
+
+    # A position opening.
+    elif "notional" in payload and "quantity" in payload:
+        quantity, price = payload.get("quantity"), payload.get("price")
+        if isinstance(quantity, (int, float)) and isinstance(price, (int, float)):
+            parts.append(f"{quantity:+,.0f} @ {price:,.2f}")
+        notional = _money(payload.get("notional"))
+        if notional:
+            parts.append(f"= {notional}")
+
+    # A position resized.
+    elif "from_quantity" in payload:
+        was, now = payload.get("from_quantity"), payload.get("to_quantity")
+        if isinstance(was, (int, float)) and isinstance(now, (int, float)):
+            parts.append(f"{was:+,.0f} → {now:+,.0f} shares")
+        direction = payload.get("direction")
+        if direction:
+            parts.append(f"({direction})")
+
     # Concentration.
     elif "weight" in payload:
         weight = _pct(payload.get("weight"), sign=False)

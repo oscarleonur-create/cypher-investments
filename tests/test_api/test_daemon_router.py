@@ -339,3 +339,40 @@ class TestThesisEndpoints:
         assert stories
         tripped = [e for e in stories[0]["thesis"]["evaluations"] if e["tripped"]]
         assert tripped and tripped[0]["observed"] == 0.067
+
+
+class TestEventSummary:
+    """The detail line is served, not recomputed in the browser.
+
+    The frontend had its own copy of this logic and it had drifted: it covered
+    offerings and factor shocks but not crossings, concentration, insider
+    clusters or news headlines. A stop breach rendered without its numbers and
+    eight news items rendered as eight blank rows, in a page that had shipped
+    weeks earlier looking correct.
+    """
+
+    def test_every_event_carries_a_summary_field(self, client):
+        client.store.emit(filing_event())
+        row = client.get("/api/daemon/events").json()["events"][0]
+        assert "summary" in row
+
+    def test_the_summary_carries_the_numbers(self, client):
+        client.store.emit(filing_event())
+        row = client.get("/api/daemon/events").json()["events"][0]
+        assert "$600M" in row["summary"]
+        assert "6.7%" in row["summary"]
+
+    def test_it_matches_the_cli(self, client):
+        """One implementation, two readers — the drift this replaces."""
+        from advisor.daemon.summarize import summarize
+
+        event = filing_event()
+        client.store.emit(event)
+        row = client.get("/api/daemon/events").json()["events"][0]
+        assert row["summary"] == summarize(event)
+
+    def test_an_empty_payload_yields_an_empty_string_not_null(self, client):
+        """The frontend treats it as a string; null would render as 'null'."""
+        client.store.emit(filing_event(dedup_key="bare", payload={}))
+        rows = client.get("/api/daemon/events").json()["events"]
+        assert all(isinstance(r["summary"], str) for r in rows)

@@ -551,6 +551,9 @@ export interface DaemonEvent {
   tier: EventTier;
   symbol: string | null;
   payload: Record<string, unknown>;
+  /** One numeric line saying what this means, computed server-side so the two
+   *  readers cannot drift apart. Empty when the payload carries nothing. */
+  summary: string;
 }
 
 export interface FactorExposureRow {

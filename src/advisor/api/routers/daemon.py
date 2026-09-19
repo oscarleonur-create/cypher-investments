@@ -26,6 +26,8 @@ def _store():
 
 
 def _event_row(event) -> dict:
+    from advisor.daemon.summarize import summarize
+
     return {
         "id": event.id,
         "ts": event.ts.isoformat(),
@@ -34,6 +36,13 @@ def _event_row(event) -> dict:
         "tier": event.tier.value,
         "symbol": event.symbol,
         "payload": event.payload,
+        # Computed server-side on purpose. The frontend had its own copy of
+        # this logic and it had already drifted: it covered offerings and
+        # factor shocks but not crossings, concentration, insider clusters or
+        # news headlines, so a stop breach rendered without its numbers and
+        # eight context items rendered as eight blank rows. One tested
+        # implementation, served to both readers.
+        "summary": summarize(event),
     }
 
 
