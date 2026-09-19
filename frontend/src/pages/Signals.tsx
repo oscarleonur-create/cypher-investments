@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Play, RefreshCw, ShieldCheck } from "lucide-react";
 import { api } from "@/lib/api";
@@ -18,6 +19,7 @@ const TIERS: { key: EventTier | "ALL"; label: string; hint: string }[] = [
 export default function Signals() {
   const qc = useQueryClient();
   const [tier, setTier] = useState<EventTier | "ALL">("ALL");
+  const [symbol, setSymbol] = useState<string | null>(null);
 
   // Store-backed: instant, safe to poll.
   const status = useQuery({
@@ -26,10 +28,27 @@ export default function Signals() {
     refetchInterval: 60_000,
   });
   const events = useQuery({
-    queryKey: ["daemon", "events", tier],
-    queryFn: () => api.daemonEvents({ limit: 60, tier: tier === "ALL" ? undefined : tier }),
+    queryKey: ["daemon", "events", tier, symbol],
+    queryFn: () =>
+      api.daemonEvents({
+        limit: 60,
+        tier: tier === "ALL" ? undefined : tier,
+        symbol: symbol ?? undefined,
+      }),
     refetchInterval: 60_000,
   });
+
+  // Tickers come from an unfiltered read, so selecting one does not shrink the
+  // list you would use to pick another. Book-level events (a factor shock, a
+  // data-quality failure) carry no symbol and are simply absent from it.
+  const universe = useQuery({
+    queryKey: ["daemon", "events", "universe"],
+    queryFn: () => api.daemonEvents({ limit: 300 }),
+    refetchInterval: 300_000,
+  });
+  const symbols = Array.from(
+    new Set((universe.data?.events ?? []).map((e) => e.symbol).filter((s): s is string => !!s))
+  ).sort();
   const exposure = useQuery({ queryKey: ["daemon", "exposure"], queryFn: api.daemonExposure });
   const sources = useQuery({
     queryKey: ["daemon", "sources"],
@@ -43,7 +62,18 @@ export default function Signals() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["daemon"] }),
   });
 
-  const counts = status.data?.event_counts ?? {};
+  // With a ticker selected the tiles count that ticker, not the book. Showing
+  // "ACT 6" while the stream below lists one symbol's events invites reading
+  // six interrupts as belonging to it.
+  const bookCounts = status.data?.event_counts ?? {};
+  const symbolCounts = (universe.data?.events ?? [])
+    .filter((e) => e.symbol === symbol)
+    .reduce<Record<string, number>>((acc, e) => {
+      acc[e.tier] = (acc[e.tier] ?? 0) + 1;
+      return acc;
+    }, {});
+  const counts = symbol ? symbolCounts : bookCounts;
+  const scope = symbol ? `${symbol} only` : "whole book";
   const staleJobs = (status.data?.jobs ?? []).filter((j) => j.error_count > 0);
 
   return (
@@ -88,9 +118,9 @@ export default function Signals() {
       )}
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Stat label="Act" value={counts.A ?? 0} sub="interrupts" />
-        <Stat label="Digest" value={counts.B ?? 0} sub="worth reading" />
-        <Stat label="Context" value={counts.C ?? 0} sub="logged only" />
+        <Stat label="Act" value={counts.A ?? 0} sub={`interrupts · ${scope}`} />
+        <Stat label="Digest" value={counts.B ?? 0} sub={`worth reading · ${scope}`} />
+        <Stat label="Context" value={counts.C ?? 0} sub={`logged only · ${scope}`} />
         <Stat
           label="Jobs failing"
           value={staleJobs.length}
@@ -122,11 +152,48 @@ export default function Signals() {
               </div>
             }
           >
+            {symbols.length > 0 && (
+              <div className="mb-2 flex flex-wrap items-center gap-1 border-b border-border/40 pb-2">
+                <button
+                  onClick={() => setSymbol(null)}
+                  className={cn(
+                    "rounded px-2 py-0.5 text-xs",
+                    symbol === null ? "bg-panel-2 text-text" : "text-muted hover:text-text"
+                  )}
+                >
+                  All
+                </button>
+                {symbols.map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setSymbol(symbol === s ? null : s)}
+                    className={cn(
+                      "rounded px-2 py-0.5 text-xs font-medium",
+                      symbol === s
+                        ? "bg-accent/20 text-accent"
+                        : "text-muted hover:text-text"
+                    )}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
             <div>
               {events.data?.events.map((e) => (
                 <EventRow key={e.id} event={e} />
               ))}
             </div>
+            {symbol && (
+              <div className="pt-2 text-xs text-muted">
+                Showing {symbol} only.{" "}
+                <Link to={`/ticker/${symbol}`} className="text-accent hover:underline">
+                  Open its full page →
+                </Link>
+                {"  ·  "}
+                Book-level events carry no ticker and are hidden by this filter.
+              </div>
+            )}
           </Section>
 
           {reconcile.data && (
