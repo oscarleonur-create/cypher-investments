@@ -789,7 +789,7 @@ export interface EvidenceItem {
 export interface ClaimVerdict {
   text: string;
   kind: string;
-  status: "BROKEN" | "INTACT" | "UNTESTED" | "UNREACHABLE";
+  status: "BROKEN" | "STANDING" | "INTACT" | "UNTESTED" | "UNREACHABLE";
   note: string;
 }
 

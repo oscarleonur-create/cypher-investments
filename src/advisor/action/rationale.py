@@ -147,12 +147,21 @@ def build_rationale(
 
     # 3. What the user said.
     broken = [c for c in card.claims if c.status == "BROKEN"]
+    standing = [c for c in card.claims if c.status == "STANDING"]
     intact = [c for c in card.claims if c.status == "INTACT"]
-    if broken:
+    if broken or standing:
         for claim in broken:
             rationale.steps.append(
                 ReasonStep(
                     label="your rule broke",
+                    fact=f"{claim.text} — {claim.note}",
+                    bearing=Bearing.AGAINST,
+                )
+            )
+        for claim in standing:
+            rationale.steps.append(
+                ReasonStep(
+                    label="violated now",
                     fact=f"{claim.text} — {claim.note}",
                     bearing=Bearing.AGAINST,
                 )
@@ -222,7 +231,9 @@ def _propose(store, symbol, position, card, limits) -> ProposedAction | None:
         return None
 
     # First source: something the user already decided.
-    broken = [c for c in card.claims if c.status == "BROKEN"]
+    # A standing violation returns the user's decision too — it is still their
+    # rule, still met. It simply is not news.
+    broken = [c for c in card.claims if c.status in {"BROKEN", "STANDING"}]
     if broken:
         from advisor.thesis.repo import ThesisReadError, load_thesis
 

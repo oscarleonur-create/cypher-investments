@@ -170,10 +170,14 @@ def _triggers(store: DaemonStore, symbol: str, today: date) -> list[Event]:
     ]
 
 
-def _claims(store: DaemonStore, symbol: str, events: list[Event]) -> list[ClaimVerdict]:
-    """Where each written rule stands against what actually happened."""
+def _claims(
+    store: DaemonStore, symbol: str, events: list[Event], book: BookSnapshot
+) -> list[ClaimVerdict]:
+    """Where each written rule stands — against what happened, and against
+    what is true now."""
     from advisor.thesis.match import evaluate_claim
     from advisor.thesis.repo import ThesisReadError, load_thesis
+    from advisor.thesis.state import evaluate_against_state
 
     try:
         thesis = load_thesis(store, symbol)
@@ -205,16 +209,32 @@ def _claims(store: DaemonStore, symbol: str, events: list[Event]) -> list[ClaimV
 
         results = [r for r in (evaluate_claim(claim, e) for e in events) if r is not None]
         tripped = [r for r in results if r.tripped]
+
+        # An event tripping a rule is news. The current state violating it is
+        # a condition that was true yesterday too. Both matter and they are
+        # not the same thing: a rule can be violated for weeks without any
+        # event firing, because the event stream deliberately reports changes.
+        standing = evaluate_against_state(store, symbol, claim, book)
+
         if tripped:
             verdicts.append(
                 ClaimVerdict(
                     text=claim.text, kind=claim.kind.value, status="BROKEN", note=tripped[0].note
                 )
             )
-        elif results:
+        elif standing is not None and standing.tripped:
             verdicts.append(
                 ClaimVerdict(
-                    text=claim.text, kind=claim.kind.value, status="INTACT", note=results[0].note
+                    text=claim.text, kind=claim.kind.value, status="STANDING", note=standing.note
+                )
+            )
+        elif results or standing is not None:
+            verdicts.append(
+                ClaimVerdict(
+                    text=claim.text,
+                    kind=claim.kind.value,
+                    status="INTACT",
+                    note=(results[0] if results else standing).note,
                 )
             )
         else:
@@ -223,7 +243,7 @@ def _claims(store: DaemonStore, symbol: str, events: list[Event]) -> list[ClaimV
                     text=claim.text,
                     kind=claim.kind.value,
                     status="UNTESTED",
-                    note="nothing this week tested it",
+                    note="nothing this week tested it, and it has no standing form",
                 )
             )
     return verdicts
@@ -264,9 +284,10 @@ def build_card(store: DaemonStore, symbol: str, book: BookSnapshot, *, today: da
         )
         for e in events
     ]
-    card.claims = _claims(store, symbol, events)
+    card.claims = _claims(store, symbol, events, book)
 
     broken = [c for c in card.claims if c.status == "BROKEN"]
+    standing = [c for c in card.claims if c.status == "STANDING"]
     material = [e for e in events if e.kind in MATERIAL_KINDS]
 
     if broken:
@@ -276,6 +297,13 @@ def build_card(store: DaemonStore, symbol: str, book: BookSnapshot, *, today: da
         # The deadline is the point of a Tier A: something has to be decided
         # before the market next opens on it.
         card.deadline = today + timedelta(days=1)
+    elif standing:
+        # Never REVIEW_NOW. A standing violation would be urgent every day for
+        # as long as it lasts, which is precisely how an alert channel stops
+        # being read — the lesson phase 2a paid for.
+        card.action = ActionKind.REVIEW
+        card.headline = f"{len(standing)} rule(s) you wrote are violated right now"
+        card.because = [f"{c.text} — {c.note}" for c in standing]
     elif material:
         card.action = ActionKind.REVIEW
         card.headline = f"{len(material)} material event(s), no written rule covers them"

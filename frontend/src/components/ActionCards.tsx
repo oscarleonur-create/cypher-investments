@@ -20,6 +20,9 @@ const ACTION_STYLE: Record<ActionKind, { tone: string; label: string }> = {
 
 const CLAIM_MARK: Record<string, { mark: string; tone: string }> = {
   BROKEN: { mark: "✗", tone: "text-neg" },
+  // Violated by the current state rather than by an event: true today, and
+  // true yesterday. Marked apart so it is not read as fresh news.
+  STANDING: { mark: "▲", tone: "text-warn" },
   INTACT: { mark: "✓", tone: "text-pos" },
   UNTESTED: { mark: "·", tone: "text-muted" },
   UNREACHABLE: { mark: "!", tone: "text-warn" },

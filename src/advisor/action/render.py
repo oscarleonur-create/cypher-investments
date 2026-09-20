@@ -11,6 +11,9 @@ from advisor.action.models import ACTION_TEXT, ActionCard, ActionKind
 
 _MARK = {
     "BROKEN": "✗",
+    # Violated by the current state rather than by an event: true today, and
+    # true yesterday. Marked differently so it is not read as fresh news.
+    "STANDING": "▲",
     "INTACT": "✓",
     "UNTESTED": "·",
     "UNREACHABLE": "!",
@@ -47,7 +50,11 @@ def render(card: ActionCard, *, width: int = 78) -> str:
 
     if card.claims:
         broken = sum(1 for c in card.claims if c.status == "BROKEN")
-        lines += ["", f"YOUR RULES      {len(card.claims)} written, {broken} broken"]
+        standing = sum(1 for c in card.claims if c.status == "STANDING")
+        tally = f"{len(card.claims)} written, {broken} broken"
+        if standing:
+            tally += f", {standing} violated by the current state"
+        lines += ["", f"YOUR RULES      {tally}"]
         for claim in card.claims:
             lines.append(f"   {_MARK[claim.status]} {claim.text[:64]}")
             if claim.note:
