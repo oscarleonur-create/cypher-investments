@@ -6,6 +6,7 @@ import type {
   JobRunResult,
   ReconcileReport,
   SourceItem,
+  ActionCard,
   Story,
   StructuredThesis,
   SymbolDaemonDetail,
@@ -92,6 +93,10 @@ export const api = {
     if (symbol) q.set("symbol", symbol);
     return get<{ items: SourceItem[] }>(`/api/daemon/sources?${q}`);
   },
+  daemonActions: (symbol?: string) =>
+    get<{ cards: ActionCard[] }>(
+      `/api/daemon/actions${symbol ? `?symbol=${symbol}` : ""}`
+    ),
   daemonThesis: (symbol: string) =>
     get<{ symbol: string; thesis: StructuredThesis | null }>(
       `/api/daemon/thesis/${symbol}`

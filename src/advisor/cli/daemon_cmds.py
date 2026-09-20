@@ -503,3 +503,50 @@ def valuation_cmd(
         "not whether it will. No business above $100bn of revenue has sustained "
         "25% growth for a decade.[/dim]"
     )
+
+
+@app.command("action")
+def action_cmd(
+    symbol: Annotated[Optional[str], typer.Argument(help="Ticker, or omit for the book")] = None,
+    output: Annotated[str, typer.Option("--output", "-o")] = "text",
+) -> None:
+    """What follows from what is stored. Reports your own rules, proposes no trade."""
+    import asyncio
+
+    from advisor.action.assemble import build_all, build_card
+    from advisor.action.render import one_line, render, summary_note
+    from advisor.daemon.book import fetch_book
+
+    store = _store()
+    try:
+        book = asyncio.run(fetch_book())
+        if symbol:
+            cards = [build_card(store, symbol, book)]
+        else:
+            cards = build_all(store, book)
+
+        if output == "json":
+            output_json([c.model_dump(mode="json") for c in cards])
+            return
+
+        if symbol:
+            console.print(render(cards[0]))
+            return
+
+        console.print()
+        for card in cards:
+            colour = {
+                "REVIEW_NOW": "red",
+                "REVIEW": "yellow",
+                "WRITE_THESIS": "cyan",
+                "HOLD": "green",
+                "CANNOT_SAY": "magenta",
+            }[card.action.value]
+            console.print(f"[{colour}]{one_line(card)}[/{colour}]")
+        console.print(f"\n{summary_note(cards)}")
+        console.print(
+            "\n[dim]advisor daemon action <TICKER> for the full card. This reports "
+            "conditions you defined in advance; it holds no view of its own.[/dim]"
+        )
+    finally:
+        store.close()

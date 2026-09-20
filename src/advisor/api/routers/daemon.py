@@ -407,6 +407,25 @@ async def delete_claim(claim_id: str) -> dict:
         store.close()
 
 
+@router.get("/actions")
+async def actions(symbol: str | None = None) -> dict:
+    """What follows from what is stored, per ticker.
+
+    Reaches the broker for the current book, so this is not a poll-me
+    endpoint; the frontend requests it when the page opens.
+    """
+    from advisor.action.assemble import build_all, build_card
+    from advisor.daemon.book import fetch_book
+
+    store = _store()
+    try:
+        book = await fetch_book()
+        cards = [build_card(store, symbol, book)] if symbol else build_all(store, book)
+        return {"cards": [c.model_dump(mode="json") for c in cards]}
+    finally:
+        store.close()
+
+
 @router.post("/reconcile")
 async def reconcile() -> dict:
     """Run every data-quality check live. Slow — reaches the broker and network."""

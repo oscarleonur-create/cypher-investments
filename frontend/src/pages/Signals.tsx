@@ -8,6 +8,7 @@ import { cn, fmtEt, fmtNum, fmtUsd } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Section, Stat } from "@/components/common";
 import { EventRow, ExposureBars, FindingRow, SourceRow } from "@/components/daemon";
+import { ActionCards } from "@/components/ActionCards";
 
 const TIERS: { key: EventTier | "ALL"; label: string; hint: string }[] = [
   { key: "ALL", label: "All", hint: "Everything in the stream" },
@@ -128,6 +129,8 @@ export default function Signals() {
           className={staleJobs.length ? "text-neg" : undefined}
         />
       </div>
+
+      <ActionCards />
 
       <div className="grid gap-4 lg:grid-cols-[3fr_2fr]">
         <div className="space-y-4">

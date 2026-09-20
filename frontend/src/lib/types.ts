@@ -768,3 +768,63 @@ export interface ThesisCoverage {
   uncovered_count: number;
   uncovered_weight: number;
 }
+
+// ── Action cards ──────────────────────────────────────────────────────────────
+
+export type ActionKind =
+  | "REVIEW_NOW"
+  | "REVIEW"
+  | "WRITE_THESIS"
+  | "HOLD"
+  | "CANNOT_SAY";
+
+export interface EvidenceItem {
+  name: string;
+  asof: string | null;
+  detail: string;
+  ok: boolean;
+  blocking: boolean;
+}
+
+export interface ClaimVerdict {
+  text: string;
+  kind: string;
+  status: "BROKEN" | "STANDING" | "INTACT" | "UNTESTED" | "UNREACHABLE";
+  note: string;
+}
+
+export interface ActionCard {
+  symbol: string;
+  assembled_at: string;
+  action: ActionKind;
+  headline: string;
+  because: string[];
+  deadline: string | null;
+  position_note: string;
+  triggers: { kind: string; tier: EventTier; when: string; detail: string; url: string | null }[];
+  claims: ClaimVerdict[];
+  evidence: { items: EvidenceItem[] };
+  rationale: Rationale | Record<string, never>;
+  what_would_sharpen_this: string[];
+}
+
+export type Bearing = "SUPPORTS" | "AGAINST" | "CONTEXT" | "BLIND";
+export type ActionSource = "YOUR_RULE" | "ARITHMETIC" | "NONE";
+
+export interface ReasonStep {
+  label: string;
+  fact: string;
+  bearing: Bearing;
+}
+
+export interface ProposedAction {
+  source: ActionSource;
+  text: string;
+  size: string;
+  quoted_from: string;
+}
+
+export interface Rationale {
+  steps: ReasonStep[];
+  proposed: ProposedAction | null;
+}
