@@ -2,13 +2,18 @@
 
 The gap these close was found writing the NBIS thesis by hand. Two of its six
 claims read a figure out of a results filing — `revenue_growth_yoy` and
-`ai_cloud_adj_ebitda`. No `FILING_RESULTS` payload has ever carried a figure:
-the classifier stores the form, the label and the URL, and nothing parses the
+`ai_cloud_adj_ebitda`. No `FILING_RESULTS` payload carried a figure: the
+classifier stored the form, the label and the URL, and nothing parsed the
 statements. The CLI still printed them under "checked by", because
 `KNOWN_FIELDS` had no entry for that kind and an absent entry abstains.
 
 The two unreachable claims were the two that carried the thesis. A thesis that
 believes it is watched when it is not is worse than one known to be unwatched.
+
+`valuation.interim` has since made the revenue line real, promoted from the
+6-K exhibit. The segment line is still absent on purpose — its name is
+whatever the issuer calls its own business — so both directions are tested
+here: a promoted field is reachable, a segment field is not.
 """
 
 from __future__ import annotations
@@ -40,8 +45,28 @@ def claim(**trigger) -> Claim:
 # --- the live failure -------------------------------------------------------
 
 
-def test_results_filing_cannot_carry_a_revenue_figure(store):
-    """The NBIS claim that reported itself as monitored and never could fire."""
+def test_results_filing_cannot_carry_a_segment_figure(store):
+    """The NBIS KPI claim. `Adjusted EBITDA for the Nebius AI cloud business`
+    is parsed out of the exhibit and readable, but never promoted to a payload
+    key — a thesis must not come to depend on a name only this issuer uses."""
+    r = claim_reachability(
+        store,
+        "NBIS",
+        claim(
+            event_kinds=["FILING_RESULTS"],
+            field="ai_cloud_adj_ebitda",
+            comparator=Comparator.BELOW,
+            threshold=0.0,
+        ),
+    )
+    assert r.blocked
+    assert "ai_cloud_adj_ebitda" in r.reason
+    assert "FILING_RESULTS" in r.reason
+
+
+def test_the_revenue_line_promoted_from_the_exhibit_is_reachable(store):
+    """The other half of the same NBIS finding: this claim was unreachable
+    until the 6-K exhibit was parsed, and is the one carrying "parabolic"."""
     r = claim_reachability(
         store,
         "NBIS",
@@ -52,9 +77,7 @@ def test_results_filing_cannot_carry_a_revenue_figure(store):
             threshold=1.0,
         ),
     )
-    assert r.blocked
-    assert "revenue_growth_yoy" in r.reason
-    assert "FILING_RESULTS" in r.reason
+    assert r.reachable
 
 
 def test_results_filing_is_reachable_on_a_field_it_does_carry(store):
@@ -82,7 +105,7 @@ def test_a_field_on_two_kinds_is_still_checked(store):
         "NBIS",
         claim(
             event_kinds=["FILING_RESULTS", "FILING_MERGER"],
-            field="revenue_growth_yoy",
+            field="ai_cloud_adj_ebitda",
             comparator=Comparator.BELOW,
             threshold=1.0,
         ),
@@ -114,7 +137,7 @@ def test_one_unknown_kind_makes_the_whole_check_abstain(store):
         "NBIS",
         claim(
             event_kinds=["FILING_RESULTS", "NEWS_CONTEXT"],
-            field="revenue_growth_yoy",
+            field="ai_cloud_adj_ebitda",
             comparator=Comparator.BELOW,
             threshold=1.0,
         ),
@@ -200,7 +223,7 @@ def test_every_known_kind_is_a_bare_string_not_a_set():
 
 def test_audit_returns_one_verdict_per_claim(store):
     claims = [
-        claim(event_kinds=["FILING_RESULTS"], field="revenue_growth_yoy", threshold=1.0),
+        claim(event_kinds=["FILING_RESULTS"], field="ai_cloud_adj_ebitda", threshold=0.0),
         claim(event_kinds=["FILING_DILUTION"], field="dilution_pct", threshold=0.1),
         claim(),
     ]
