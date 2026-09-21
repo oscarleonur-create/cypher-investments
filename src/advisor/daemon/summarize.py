@@ -141,6 +141,13 @@ def summarize(event) -> str:
         )
         if was and now:
             parts.append(f"required growth {was} → {now}")
+            # Naming the cause, because an unchanged price whose required
+            # growth halved has not repriced — it has been re-measured.
+            driver = payload.get("driver")
+            if driver == "FIGURES":
+                parts.append("on newer figures, not a price move")
+            elif driver == "BOTH":
+                parts.append("on newer figures and a price move")
 
     # News pulled to explain something. The headline is the whole content of
     # the event; without it six of these render as six identical blank rows.

@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 from datetime import date
+from datetime import date as _date
 from pathlib import Path
 
 import pytest
 from advisor.daemon.models import EventTier
 from advisor.daemon.store import DaemonStore
+from advisor.daemon.summarize import summarize
 from advisor.macro.sensitivity import FactorLoading, SymbolSensitivity
 from advisor.thesis.models import Claim, ClaimKind, Comparator, Trigger
 from advisor.thesis.reachability import claim_reachability
 from advisor.valuation.implied import build_snapshot
 from advisor.valuation.ingest import MATERIAL_CAGR_SHIFT, shift_event
-from advisor.valuation.models import Fundamentals
+from advisor.valuation.models import Fundamentals, ValuationSnapshot
 
 BASE = dict(
     symbol="SPCX",
@@ -204,3 +206,124 @@ class TestReachability:
         assert len(thesis.claims) == 1
         assert thesis.monitored_claims == []
         assert thesis.blocked
+
+
+# --- what moved: the price, or the figures under it -------------------------
+
+
+def _snap(
+    *,
+    accession: str,
+    period_end: _date,
+    price: float,
+    revenue: float,
+) -> ValuationSnapshot:
+    """A snapshot whose base case is driven by the revenue given."""
+    return build_snapshot(
+        Fundamentals(
+            symbol="NBIS",
+            source_accession=accession,
+            period_end=period_end,
+            fiscal_period="Q",
+            revenue=revenue,
+            cash=8_042_100_000.0,
+            total_debt=8_545_700_000.0,
+            shares_outstanding=271_855_218.0,
+        ),
+        price,
+    )
+
+
+def test_a_shift_on_an_unchanged_price_is_attributed_to_the_figures():
+    """The live case: NBIS went 33.0% to 15.4% in one refresh because the
+    quarter behind it moved from December to June. The price did not move."""
+    before = _snap(
+        accession="0001104659-26-052948",
+        period_end=_date(2025, 12, 31),
+        price=222.25,
+        revenue=132_450_000.0,
+    )
+    after = _snap(
+        accession="0001104659-26-094844",
+        period_end=_date(2026, 6, 30),
+        price=222.25,
+        revenue=582_300_000.0,
+    )
+    event = shift_event(before, after)
+    assert event is not None
+    assert event.payload["driver"] == "FIGURES"
+    assert event.payload["previous_filing"] == "0001104659-26-052948"
+    assert event.payload["previous_period_end"] == "2025-12-31"
+
+
+def test_a_shift_on_the_same_filing_is_attributed_to_the_price():
+    before = _snap(
+        accession="0001104659-26-094844",
+        period_end=_date(2026, 6, 30),
+        price=150.0,
+        revenue=582_300_000.0,
+    )
+    after = _snap(
+        accession="0001104659-26-094844",
+        period_end=_date(2026, 6, 30),
+        price=280.0,
+        revenue=582_300_000.0,
+    )
+    event = shift_event(before, after)
+    assert event is not None
+    assert event.payload["driver"] == "PRICE"
+
+
+def test_both_moving_is_reported_as_both():
+    before = _snap(
+        accession="0001104659-26-052948",
+        period_end=_date(2025, 12, 31),
+        price=150.0,
+        revenue=132_450_000.0,
+    )
+    after = _snap(
+        accession="0001104659-26-094844",
+        period_end=_date(2026, 6, 30),
+        price=280.0,
+        revenue=582_300_000.0,
+    )
+    event = shift_event(before, after)
+    assert event is not None
+    assert event.payload["driver"] == "BOTH"
+
+
+def test_a_price_move_under_a_percent_is_not_a_price_move():
+    """Boundary: a quote that ticked is the same price."""
+    before = _snap(
+        accession="0001104659-26-052948",
+        period_end=_date(2025, 12, 31),
+        price=222.25,
+        revenue=132_450_000.0,
+    )
+    after = _snap(
+        accession="0001104659-26-094844",
+        period_end=_date(2026, 6, 30),
+        price=223.00,
+        revenue=582_300_000.0,
+    )
+    event = shift_event(before, after)
+    assert event is not None
+    assert event.payload["driver"] == "FIGURES"
+
+
+def test_the_summary_says_the_price_did_not_move():
+    before = _snap(
+        accession="0001104659-26-052948",
+        period_end=_date(2025, 12, 31),
+        price=222.25,
+        revenue=132_450_000.0,
+    )
+    after = _snap(
+        accession="0001104659-26-094844",
+        period_end=_date(2026, 6, 30),
+        price=222.25,
+        revenue=582_300_000.0,
+    )
+    text = summarize(shift_event(before, after))
+    assert "required growth" in text
+    assert "not a price move" in text
