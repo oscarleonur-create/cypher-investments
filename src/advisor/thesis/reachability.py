@@ -94,27 +94,97 @@ def claim_reachability(store: DaemonStore, symbol: str, claim: Claim) -> Reachab
     # A field-and-threshold trigger on a kind that never carries that field is
     # a quieter version of the same failure.
     if trigger.field and kinds:
-        known = KNOWN_FIELDS.get(frozenset(kinds))
-        if known is not None and trigger.field not in known:
-            return Reachability(
-                claim.id,
-                False,
-                f"{', '.join(sorted(kinds))} does not carry a '{trigger.field}' field",
-            )
+        # Per kind, then unioned: the old lookup keyed on the whole trigger's
+        # kind set, so `--on FILING_RESULTS,FILING_DILUTION` missed the table
+        # entirely and went unchecked. A field is reachable when *any* of the
+        # triggered kinds can carry it; one unknown kind abstains for all,
+        # because an absent entry means "not checked", never "invalid".
+        known = [KNOWN_FIELDS.get(k) for k in kinds]
+        if all(fields is not None for fields in known):
+            carriers: set[str] = set().union(*known)  # type: ignore[arg-type]
+            if trigger.field not in carriers:
+                return Reachability(
+                    claim.id,
+                    False,
+                    f"{', '.join(sorted(kinds))} does not carry a '{trigger.field}' field",
+                )
 
     return Reachability(claim.id, True)
 
 
 # Payload fields each event kind actually publishes. Only kinds whose payload
-# is fixed are listed; an absent entry means "not checked", never "invalid".
-KNOWN_FIELDS: dict[frozenset[str], frozenset[str]] = {
-    frozenset({"FILING_DILUTION"}): frozenset({"dilution_pct", "offering_usd", "market_cap"}),
-    frozenset({"RESIDUAL_DIVERGENCE"}): frozenset(
-        {"residual_z", "actual_return", "expected_return", "r2"}
-    ),
-    frozenset({"IMPLIED_EXPECTATIONS_SHIFT"}): frozenset(
+# is fixed *by its emitter* are listed; an absent entry means "not checked",
+# never "invalid".
+#
+# The gap this table exists to close: NBIS carried a claim triggered on
+# `FILING_RESULTS` with a `revenue_growth_yoy` field. No results payload has
+# ever carried a figure — the classifier stores the form, the label and the
+# URL, and nothing reads the statements — so the claim was reported as
+# monitored and could never fire. Two of the six claims on that thesis were
+# unreachable in exactly this way, and both were the ones that mattered.
+
+# Every FILING_* payload is built from one literal in `news/ingest.py`.
+_FILING_BASE = frozenset(
+    {"form", "items", "kind", "label", "url", "accession", "accepted_at", "provider", "match"}
+)
+
+# Set only when the offering could be sized and a market cap was known.
+_DILUTION_EXTRA = frozenset(
+    {"offering_usd", "quote", "market_cap", "dilution_pct", "offering_pct_of_cap"}
+)
+
+_INSIDER_CLUSTER = frozenset(
+    {
+        "side",
+        "insiders",
+        "insider_count",
+        "trade_count",
+        "total_value",
+        "net_value",
+        "window_days",
+        "latest_filed",
+        "positions",
+        # Both only when a market cap was available.
+        "market_cap",
+        "pct_of_cap",
+    }
+)
+
+_CROSSING = frozenset(
+    {"account", "instrument", "entry", "price", "threshold", "unrealized_pct", "unrealized_usd"}
+)
+
+KNOWN_FIELDS: dict[str, frozenset[str]] = {
+    "FILING_DILUTION": _FILING_BASE | _DILUTION_EXTRA,
+    "FILING_RESULTS": _FILING_BASE,
+    "FILING_RESTATEMENT": _FILING_BASE,
+    "FILING_AUDITOR_CHANGE": _FILING_BASE,
+    "FILING_MERGER": _FILING_BASE,
+    "FILING_DELISTING": _FILING_BASE,
+    "FILING_LATE_FILING": _FILING_BASE,
+    "FILING_ACTIVIST_STAKE": _FILING_BASE,
+    "FILING_MANAGEMENT_CHANGE": _FILING_BASE,
+    "FILING_MATERIAL_AGREEMENT": _FILING_BASE,
+    "FILING_PERIODIC_REPORT": _FILING_BASE,
+    "FILING_SHELF": _FILING_BASE,
+    "FILING_INSIDER_TRADE": _FILING_BASE,
+    "FILING_OTHER": _FILING_BASE,
+    "INSIDER_SELLING_CLUSTER": _INSIDER_CLUSTER,
+    "INSIDER_BUYING_CLUSTER": _INSIDER_CLUSTER,
+    "RESIDUAL_DIVERGENCE": frozenset({"residual_z", "actual_return", "expected_return", "r2"}),
+    "IMPLIED_EXPECTATIONS_SHIFT": frozenset(
         {"implied_cagr", "previous_implied_cagr", "change", "ev_to_revenue", "price"}
     ),
+    "CONCENTRATION_WARNING": frozenset({"weight", "notional", "net_liq", "threshold"}),
+    "STOP_BREACHED": _CROSSING | {"previous_pct"},
+    "PROFIT_TARGET_HIT": _CROSSING | {"previous_pct"},
+    "DEEP_DRAWDOWN": _CROSSING,
+    "POSITION_OPENED": frozenset({"account", "instrument", "quantity", "notional", "price"}),
+    "POSITION_CLOSED": frozenset({"account", "instrument", "quantity", "realized_pct"}),
+    "POSITION_SIZE_CHANGED": frozenset(
+        {"account", "instrument", "direction", "from_quantity", "to_quantity"}
+    ),
+    "DATA_QUALITY_FAILURE": frozenset({"check", "detail", "failed", "symbols"}),
 }
 
 

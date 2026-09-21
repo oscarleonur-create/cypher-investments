@@ -62,8 +62,14 @@ class Trigger(BaseModel):
 
     def describe(self) -> str:
         if self.factor:
-            direction = "positive" if self.comparator is Comparator.ABOVE else "negative"
-            return f"{self.factor} loading turns {direction}"
+            # Every other branch here names the *trip* condition, and this one
+            # named the wanted one — so a claim leaning on negative BREADTH,
+            # which fires when the loading flips positive, printed "BREADTH
+            # loading turns negative" under "checked by". It stated the
+            # opposite of what it does.
+            wants = "positive" if self.comparator is Comparator.ABOVE else "negative"
+            trips_on = "negative" if self.comparator is Comparator.ABOVE else "positive"
+            return f"{self.factor} loading turns {trips_on} (thesis leans {wants})"
         if not self.event_kinds:
             return "not machine-testable"
         kinds = " or ".join(
