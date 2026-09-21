@@ -150,13 +150,29 @@ _INSIDER_CLUSTER = frozenset(
     }
 )
 
+# Promoted from a 6-K exhibit by `valuation.interim.headline_figures`, and
+# present only when the exhibit stated them in a form that reconciles.
+_INTERIM_FIGURES = frozenset(
+    {
+        "revenue_usd",
+        "revenue_prior_usd",
+        "revenue_period",
+        "revenue_growth_yoy",
+        "adjusted_ebitda_usd",
+        "adjusted_ebitda_prior_usd",
+    }
+)
+
 _CROSSING = frozenset(
     {"account", "instrument", "entry", "price", "threshold", "unrealized_pct", "unrealized_usd"}
 )
 
 KNOWN_FIELDS: dict[str, frozenset[str]] = {
     "FILING_DILUTION": _FILING_BASE | _DILUTION_EXTRA,
-    "FILING_RESULTS": _FILING_BASE,
+    # A results filing now carries whatever its exhibit confirmed twice.
+    # Segment lines are not promoted: a thesis must not come to depend on a
+    # payload key whose name is whatever the issuer called its business.
+    "FILING_RESULTS": _FILING_BASE | _INTERIM_FIGURES,
     "FILING_RESTATEMENT": _FILING_BASE,
     "FILING_AUDITOR_CHANGE": _FILING_BASE,
     "FILING_MERGER": _FILING_BASE,

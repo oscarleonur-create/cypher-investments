@@ -35,6 +35,7 @@ from advisor.news.enrich import extract_offering_size, offering_size_for
 from advisor.news.foreign import classify_headline, is_proposal
 from advisor.news.models import SourceItem, SourceTier, capped_tier
 from advisor.news.offering import classify_offering, offering_shape_for
+from advisor.valuation.interim import headline_figures, interim_for_accession
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +157,30 @@ def _event_for_filing(item: SourceItem, *, market_caps: dict[str, float]) -> Eve
                     payload[key] = round(pct, 4)
                     if classification.kind is FilingKind.DILUTION and pct < MATERIAL_DILUTION_PCT:
                         proposed = EventTier.B
+
+    # A results filing reached the stream as a headline and no number, so a
+    # thesis claim about revenue growth had nothing to read. For a foreign
+    # private issuer there is no XBRL either: the figures are prose inside an
+    # EX-99 exhibit. Only what the exhibit states twice is promoted here.
+    if classification.kind is FilingKind.RESULTS and item.accession:
+        results = interim_for_accession(item.accession)
+        if results is not None:
+            payload.update(headline_figures(results))
+            # Every confirmed line, segments included, for the story and the
+            # ticker page to show. These are readable, not addressable: a
+            # trigger reads the scalar keys above, whose names are the same
+            # for every filer.
+            payload["figures"] = [
+                {
+                    "metric": f.metric,
+                    "period": f.period.value,
+                    "prior": round(f.prior, 2),
+                    "current": round(f.current, 2),
+                    "growth": round(f.growth, 4) if f.growth is not None else None,
+                    "basis": f.basis.value,
+                }
+                for f in results.figures
+            ]
 
     return Event(
         source=EventSource.EDGAR,
