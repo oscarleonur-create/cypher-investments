@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 # drifted; above it, what the business must become has genuinely changed.
 MATERIAL_CAGR_SHIFT = 0.02
 
+# Below this, the price is the same price and any move in required growth
+# came from the figures underneath it.
+MATERIAL_PRICE_MOVE = 0.01
+
 
 @dataclass
 class ValuationResult:
@@ -66,6 +70,15 @@ def shift_event(previous: ValuationSnapshot | None, current: ValuationSnapshot) 
     if abs(delta) < MATERIAL_CAGR_SHIFT:
         return None
 
+    # What the price requires can move because the price moved or because the
+    # figures under it did, and the two are not the same news. NBIS went 33.0%
+    # to 15.4% in one refresh on an unchanged price — the quarter behind it
+    # had simply gone from December to June. Reported without that, a data
+    # correction reads as a market event.
+    figures_moved = previous.source_accession != current.source_accession
+    price_moved = abs(current.price - previous.price) / previous.price > MATERIAL_PRICE_MOVE
+    driver = "BOTH" if figures_moved and price_moved else "FIGURES" if figures_moved else "PRICE"
+
     return Event(
         source=EventSource.COMPUTED,
         kind="IMPLIED_EXPECTATIONS_SHIFT",
@@ -87,6 +100,10 @@ def shift_event(previous: ValuationSnapshot | None, current: ValuationSnapshot) 
             "years": base.years,
             "as_of_filing": current.source_accession,
             "period_end": current.period_end.isoformat(),
+            "driver": driver,
+            "previous_filing": previous.source_accession,
+            "previous_period_end": previous.period_end.isoformat(),
+            "previous_price": previous.price,
         },
     )
 

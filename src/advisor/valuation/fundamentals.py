@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from datetime import date
 
-from advisor.valuation.models import Fundamentals
+from advisor.valuation.models import Fundamentals, ValuationSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -261,5 +261,127 @@ def latest_fundamentals(symbol: str) -> Fundamentals | None:
     for filing in filings:
         fundamentals = fundamentals_from_filing(symbol, filing)
         if fundamentals is not None and fundamentals.complete:
-            return fundamentals
+            return _prefer_interim(symbol, fundamentals)
+    return None
+
+
+def _prefer_interim(symbol: str, periodic: Fundamentals) -> Fundamentals:
+    """Use a newer 6-K when it proves a complete set of figures.
+
+    A foreign private issuer files a 20-F once a year, so the newest periodic
+    filing can be two quarters behind the business. Nebius's was 263 days old
+    and priced the position at 107x revenue against a real 25x — a run-rate of
+    $0.53bn where the last reported quarter annualises to $2.33bn.
+
+    The periodic filing is not discarded: it is what the interim balance sheet
+    is proved against, and it is what gets returned when the proof fails.
+    """
+    if not periodic.complete:
+        return periodic
+    # A filer whose last periodic report is recent has nothing newer to find,
+    # and looking costs an EDGAR round trip per symbol. The threshold is the
+    # one the snapshot already uses to decide a run-rate may have stopped
+    # describing the business.
+    age = (date.today() - periodic.period_end).days
+    if age <= ValuationSnapshot.STALE_AFTER_DAYS:
+        return periodic
+    try:
+        interim = interim_fundamentals(symbol, periodic)
+    except Exception as exc:  # noqa: BLE001 — a valuation must survive this
+        logger.warning("interim: rebuild failed for %s: %s", symbol, exc)
+        return periodic
+    if interim is None or not interim.complete:
+        return periodic
+    if interim.period_end <= periodic.period_end:
+        return periodic
+    return interim
+
+
+# How far back to look for an interim report. A quarter is filed within weeks
+# of its close, so a handful of 6-Ks always reaches the newest one.
+_INTERIM_LOOKBACK = 8
+
+_RESULTS_EXHIBITS = ("EX-99.1", "EX-99.2", "EX-99")
+
+
+def _exhibit_texts(filing) -> list[str]:
+    texts = []
+    for attachment in getattr(filing, "attachments", []) or []:
+        if str(getattr(attachment, "document_type", "")).upper() not in _RESULTS_EXHIBITS:
+            continue
+        try:
+            text = attachment.text()
+        except Exception as exc:  # noqa: BLE001
+            logger.info("interim: an exhibit would not render: %s", exc)
+            continue
+        if text:
+            texts.append(text)
+    return texts
+
+
+def interim_fundamentals(symbol: str, known: Fundamentals) -> Fundamentals | None:
+    """A complete set of figures from a 6-K newer than ``known``, or None.
+
+    The income statement comes from `interim.parse_interim`, which takes only
+    sentences whose own arithmetic reconciles. The balance sheet comes from
+    `balance.confirm_balance`, which takes the current column only where the
+    prior column reproduces ``known``. Both halves must land, from the same
+    filing, or nothing is returned — a valuation is not improved by mixing a
+    fresh numerator with a stale denominator.
+
+    That mixing is not hypothetical here. Nebius raised $5.75bn of convertible
+    notes in August; its cash went from $3.7bn to $8.0bn and its debt from
+    $4.1bn to $8.5bn between the two columns. A June revenue over a December
+    balance sheet would have moved enterprise value by billions in the
+    flattering direction.
+    """
+    from advisor.news.edgar import company_for
+    from advisor.valuation.balance import confirm_balance
+    from advisor.valuation.interim import Period, parse_interim
+
+    company = company_for(symbol)
+    if company is None:
+        return None
+    try:
+        filings = company.get_filings(form=["6-K", "6-K/A"]).head(_INTERIM_LOOKBACK)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("interim: filing lookup failed for %s: %s", symbol, exc)
+        return None
+
+    for filing in filings:
+        texts = _exhibit_texts(filing)
+        if not texts:
+            continue
+        revenue = None
+        for text in texts:
+            figure = parse_interim(text).find(metric="total revenue", period=Period.QUARTER)
+            if figure is not None:
+                revenue = figure
+                break
+        if revenue is None:
+            continue
+        balance = next(
+            (b for b in (confirm_balance(t, known) for t in texts) if b.complete),
+            None,
+        )
+        if balance is None or balance.period_end is None:
+            logger.info("interim: %s reports revenue but its balance sheet is unproved", symbol)
+            continue
+        logger.info(
+            "interim: %s rebuilt on %s (%s), revenue %.1fm",
+            symbol,
+            filing.accession_no,
+            balance.period_end,
+            revenue.current / 1e6,
+        )
+        return Fundamentals(
+            symbol=symbol,
+            source_accession=str(filing.accession_no),
+            period_end=balance.period_end,
+            fiscal_period="Q",
+            revenue=revenue.current,
+            cash=balance.cash,
+            total_debt=balance.total_debt,
+            shares_outstanding=balance.shares_outstanding,
+        )
     return None
