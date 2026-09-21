@@ -62,6 +62,21 @@ def render(card: ActionCard, *, width: int = 78) -> str:
     else:
         lines += ["", "YOUR RULES      none written for this name"]
 
+    if card.reopened:
+        lines += ["", f"BACK IN PLAY    ({len(card.reopened)})"]
+        for ref in card.reopened:
+            lines.append(f"   ! {ref.text[:64]}")
+            lines.append(f"     {ref.reason[:70]}")
+
+    if card.decided:
+        lines += ["", f"YOU DECIDED     ({len(card.decided)})"]
+        for ref in card.decided:
+            stamp = ref.decided_at.isoformat() if ref.decided_at else "—"
+            lines.append(f"   ✓ {ref.text[:60]}")
+            lines.append(f"     {ref.verdict.lower().replace('_', ' ')} {stamp}")
+            if ref.note:
+                lines.append(f"     “{ref.note[:66]}”")
+
     lines += ["", "EVIDENCE"]
     for item in card.evidence.items:
         mark = "!" if item.blocking else ("·" if not item.ok else " ")

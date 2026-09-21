@@ -550,3 +550,124 @@ def action_cmd(
         )
     finally:
         store.close()
+
+
+@app.command("decide")
+def decide_cmd(
+    symbol: Annotated[str, typer.Argument(help="Ticker the decision is about")],
+    subject: Annotated[str, typer.Argument(help="Claim id, or an event's dedup key")],
+    verdict: Annotated[
+        str, typer.Option("--verdict", "-v", help="ACKNOWLEDGED, ACTED, DISMISSED, THESIS_REVISED")
+    ] = "ACKNOWLEDGED",
+    note: Annotated[str, typer.Option("--note", "-n", help="Why, in your own words")] = "",
+    output: Annotated[str, typer.Option("--output", "-o")] = "text",
+) -> None:
+    """Answer something a card raised, so it stops being raised.
+
+    The reading at the moment you decide is stored with the decision, and the
+    card stays quiet until the number moves materially past it.
+    """
+    import asyncio
+
+    from advisor.action.assemble import build_card
+    from advisor.action.decisions import (
+        Decision,
+        Direction,
+        SubjectKind,
+        Verdict,
+        worse_direction,
+    )
+    from advisor.daemon.book import fetch_book
+    from advisor.thesis.repo import load_thesis
+
+    store = _store()
+    try:
+        try:
+            chosen = Verdict(verdict.upper())
+        except ValueError:
+            console.print(
+                f"[red]unknown verdict {verdict!r}[/red] — one of "
+                f"{', '.join(v.value for v in Verdict)}"
+            )
+            raise typer.Exit(1) from None
+
+        thesis = load_thesis(store, symbol)
+        claim = next((c for c in (thesis.claims if thesis else []) if c.id == subject), None)
+
+        # The value now is what the decision is *about*; without it the
+        # decision would silence a 14% concentration and a 25% one alike.
+        card = build_card(store, symbol, asyncio.run(fetch_book()))
+        verdicts = {c.claim_id: c for c in card.claims if c.claim_id}
+        observed = verdicts[subject].observed if subject in verdicts else None
+        text = verdicts[subject].text if subject in verdicts else subject
+
+        if claim is None and subject not in {t.kind for t in card.triggers} and not verdicts:
+            console.print(f"[yellow]nothing on {symbol.upper()} matches {subject!r}[/yellow]")
+            raise typer.Exit(1)
+
+        decision = Decision(
+            symbol=symbol.upper(),
+            subject_kind=SubjectKind.CLAIM if claim is not None else SubjectKind.EVENT,
+            subject_id=subject,
+            verdict=chosen,
+            note=note,
+            observed=observed,
+            worse_is=worse_direction(claim) if claim is not None else Direction.NEITHER,
+        )
+        store.record_decision(decision)
+
+        if output == "json":
+            output_json(decision.model_dump(mode="json"))
+            return
+        console.print(f"[green]recorded[/green] {decision.describe()}")
+        console.print(f"  [dim]{text}[/dim]")
+        if note:
+            console.print(f"  [dim]“{note}”[/dim]")
+        if chosen is Verdict.ACKNOWLEDGED and observed is not None:
+            console.print(
+                "  [dim]quiet until it moves 10% past this reading, "
+                "then raised again with both numbers[/dim]"
+            )
+        elif chosen is Verdict.ACTED:
+            console.print(
+                "  [dim]quiet for 3 days; if the condition still stands after that "
+                "the card says so[/dim]"
+            )
+    finally:
+        store.close()
+
+
+@app.command("decisions")
+def decisions_cmd(
+    symbol: Annotated[str, typer.Argument(help="Ticker")],
+    output: Annotated[str, typer.Option("--output", "-o")] = "text",
+) -> None:
+    """Every decision recorded on a ticker, newest first."""
+    from rich.table import Table
+
+    store = _store()
+    try:
+        history = store.decision_history(symbol)
+        if output == "json":
+            output_json([d.model_dump(mode="json") for d in history])
+            return
+        if not history:
+            console.print(f"[dim]no decisions recorded on {symbol.upper()}[/dim]")
+            return
+        table = Table(title=f"Decisions — {symbol.upper()}")
+        table.add_column("when")
+        table.add_column("verdict")
+        table.add_column("subject")
+        table.add_column("at", justify="right")
+        table.add_column("note", overflow="fold")
+        for d in history:
+            table.add_row(
+                d.decided_at.date().isoformat(),
+                d.verdict.value,
+                d.subject_id,
+                f"{d.observed:,.4g}" if d.observed is not None else "—",
+                d.note,
+            )
+        console.print(table)
+    finally:
+        store.close()

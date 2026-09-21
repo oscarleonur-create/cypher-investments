@@ -106,8 +106,30 @@ class ClaimVerdict(BaseModel):
 
     text: str
     kind: str
-    status: str  # BROKEN | INTACT | UNTESTED | UNREACHABLE
+    status: str  # BROKEN | STANDING | INTACT | UNTESTED | UNREACHABLE
     note: str = ""
+    # Both carried so a decision can be recorded against this rule and later
+    # compared to where the number has gone. Acknowledging a 14% weight is
+    # not acknowledging a 25% one.
+    claim_id: str | None = None
+    observed: float | None = None
+
+
+class DecidedRef(BaseModel):
+    """Something the user has already answered, and why it is quiet.
+
+    A decided item is shown, never dropped. Hiding it would mean the card gets
+    quieter and less complete at the same time, and the record of what was
+    decided is the part worth keeping.
+    """
+
+    subject_kind: str
+    subject_id: str
+    text: str
+    verdict: str
+    note: str = ""
+    reason: str = ""
+    decided_at: date | None = None
 
 
 class ActionCard(BaseModel):
@@ -130,6 +152,13 @@ class ActionCard(BaseModel):
     rationale: dict = Field(default_factory=dict)
     # What the user could do that would let the system say more next time.
     what_would_sharpen_this: list[str] = Field(default_factory=list)
+    # Answered already, and still answered. These are the reason the card can
+    # say something new tomorrow instead of repeating itself.
+    decided: list[DecidedRef] = Field(default_factory=list)
+    # Answered, and no longer answered — the number moved past where it was
+    # acknowledged, or an action had time to show and did not. These are in
+    # `because` as well; this is where their history travels.
+    reopened: list[DecidedRef] = Field(default_factory=list)
 
     @property
     def broken(self) -> list[ClaimVerdict]:

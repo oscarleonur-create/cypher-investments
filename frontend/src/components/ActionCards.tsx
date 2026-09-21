@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { AlertCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { api } from "@/lib/api";
-import type { ActionCard, ActionKind, Rationale } from "@/lib/types";
+import type { ActionCard, ActionKind, ClaimVerdict, DecidedRef, Rationale } from "@/lib/types";
 import { cn, fmtEt } from "@/lib/utils";
 import { Section } from "@/components/common";
 
@@ -34,6 +34,102 @@ const BEARING: Record<string, { mark: string; tone: string }> = {
   BLIND: { mark: "?", tone: "text-warn" },
   CONTEXT: { mark: "·", tone: "text-muted" },
 };
+
+/** What the system does next, which is all it can honestly act on: it cannot
+ *  verify that a position was trimmed, only record what was said and behave
+ *  accordingly. */
+const VERDICTS: { value: string; label: string; hint: string }[] = [
+  {
+    value: "ACKNOWLEDGED",
+    label: "seen",
+    hint: "quiet until the number moves 10% past today's reading",
+  },
+  { value: "ACTED", label: "acted", hint: "quiet 3 days, then checked again" },
+  { value: "DISMISSED", label: "not relevant", hint: "quiet until the rule itself changes" },
+  { value: "THESIS_REVISED", label: "rewrote the rule", hint: "superseded" },
+];
+
+/** A rule the user can answer: one that is actually saying something. An
+ *  intact or unreachable rule has nothing to decide about. */
+function answerable(claim: ClaimVerdict): boolean {
+  return (claim.status === "BROKEN" || claim.status === "STANDING") && !!claim.claim_id;
+}
+
+function Answer({ symbol, claim }: { symbol: string; claim: ClaimVerdict }) {
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState("");
+  const qc = useQueryClient();
+  const record = useMutation({
+    mutationFn: (verdict: string) =>
+      api.daemonDecide(symbol, claim.claim_id as string, verdict, note),
+    onSuccess: () => {
+      setOpen(false);
+      setNote("");
+      qc.invalidateQueries({ queryKey: ["daemon-actions"] });
+    },
+  });
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="shrink-0 text-[11px] text-muted underline hover:text-accent"
+      >
+        answer
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-1 w-full space-y-1 rounded border border-border bg-panel-2 p-1.5">
+      <input
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        placeholder="why, in your own words — this is what you will read later"
+        className="w-full bg-transparent text-xs outline-none placeholder:text-muted"
+      />
+      <div className="flex flex-wrap items-center gap-1">
+        {VERDICTS.map((v) => (
+          <button
+            key={v.value}
+            title={v.hint}
+            disabled={record.isPending}
+            onClick={() => record.mutate(v.value)}
+            className="rounded border border-border px-1.5 py-0.5 text-[11px] hover:border-accent hover:text-accent disabled:opacity-50"
+          >
+            {v.label}
+          </button>
+        ))}
+        <button
+          onClick={() => setOpen(false)}
+          className="px-1 text-[11px] text-muted hover:text-text"
+        >
+          cancel
+        </button>
+      </div>
+      {record.isError && (
+        <div className="text-[11px] text-neg">{(record.error as Error).message}</div>
+      )}
+    </div>
+  );
+}
+
+function Decided({ refs, tone }: { refs: DecidedRef[]; tone: string }) {
+  return (
+    <>
+      {refs.map((ref) => (
+        <div key={ref.subject_id + ref.verdict} className="flex items-start gap-1.5 text-xs">
+          <span className={cn("w-3 shrink-0", tone)}>{tone === "text-neg" ? "!" : "✓"}</span>
+          <div className="min-w-0">
+            <div>{ref.text}</div>
+            <div className="text-muted">{ref.reason}</div>
+            {ref.note && <div className="text-muted">“{ref.note}”</div>}
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
 
 const SOURCE_LABEL: Record<string, string> = {
   YOUR_RULE: "your own rule, quoted back",
@@ -97,11 +193,12 @@ function Card({ card }: { card: ActionCard }) {
                 your rules
               </div>
               {card.claims.map((claim, i) => (
-                <div key={i} className="flex items-start gap-1.5 text-xs">
+                <div key={i} className="flex flex-wrap items-start gap-1.5 text-xs">
                   <span className={cn("shrink-0", CLAIM_MARK[claim.status].tone)}>
                     {CLAIM_MARK[claim.status].mark}
                   </span>
-                  <span className="min-w-0">{claim.text}</span>
+                  <span className="min-w-0 flex-1">{claim.text}</span>
+                  {answerable(claim) && <Answer symbol={card.symbol} claim={claim} />}
                 </div>
               ))}
             </div>
@@ -154,6 +251,25 @@ function Card({ card }: { card: ActionCard }) {
                   from your rule: “{rationale.proposed.quoted_from}”
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Answered once, and the number has moved past it. These are in
+              `because` too; here they carry the history that makes them
+              stronger than a first sighting rather than a repeat of one. */}
+          {card.reopened.length > 0 && (
+            <div className="space-y-0.5">
+              <div className="text-[11px] uppercase tracking-wide text-neg">back in play</div>
+              <Decided refs={card.reopened} tone="text-neg" />
+            </div>
+          )}
+
+          {/* Shown, never dropped. Hiding what was decided would make the card
+              quieter and less complete at the same time. */}
+          {card.decided.length > 0 && (
+            <div className="space-y-0.5">
+              <div className="text-[11px] uppercase tracking-wide text-muted">you decided</div>
+              <Decided refs={card.decided} tone="text-pos" />
             </div>
           )}
 
