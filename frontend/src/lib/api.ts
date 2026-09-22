@@ -97,6 +97,16 @@ export const api = {
     get<{ cards: ActionCard[] }>(
       `/api/daemon/actions${symbol ? `?symbol=${symbol}` : ""}`
     ),
+  daemonDecide: (symbol: string, subject_id: string, verdict: string, note: string) =>
+    post<{ decision: Record<string, unknown> }>(`/api/daemon/decisions/${symbol}`, {
+      subject_id,
+      verdict,
+      note,
+    }),
+  daemonDecisions: (symbol: string) =>
+    get<{ symbol: string; decisions: Record<string, unknown>[] }>(
+      `/api/daemon/decisions/${symbol}`
+    ),
   daemonThesis: (symbol: string) =>
     get<{ symbol: string; thesis: StructuredThesis | null }>(
       `/api/daemon/thesis/${symbol}`

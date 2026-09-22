@@ -20,6 +20,7 @@ from advisor.action.models import (
     ActionCard,
     ActionKind,
     ClaimVerdict,
+    DecidedRef,
     Evidence,
     EvidenceItem,
     TriggerRef,
@@ -192,7 +193,11 @@ def _claims(
         if blocked:
             verdicts.append(
                 ClaimVerdict(
-                    text=claim.text, kind=claim.kind.value, status="UNREACHABLE", note=blocked
+                    text=claim.text,
+                    kind=claim.kind.value,
+                    status="UNREACHABLE",
+                    note=blocked,
+                    claim_id=claim.id,
                 )
             )
             continue
@@ -203,6 +208,7 @@ def _claims(
                     kind=claim.kind.value,
                     status="UNREACHABLE",
                     note="no trigger — nothing will ever check this",
+                    claim_id=claim.id,
                 )
             )
             continue
@@ -219,13 +225,23 @@ def _claims(
         if tripped:
             verdicts.append(
                 ClaimVerdict(
-                    text=claim.text, kind=claim.kind.value, status="BROKEN", note=tripped[0].note
+                    text=claim.text,
+                    kind=claim.kind.value,
+                    status="BROKEN",
+                    note=tripped[0].note,
+                    claim_id=claim.id,
+                    observed=tripped[0].observed,
                 )
             )
         elif standing is not None and standing.tripped:
             verdicts.append(
                 ClaimVerdict(
-                    text=claim.text, kind=claim.kind.value, status="STANDING", note=standing.note
+                    text=claim.text,
+                    kind=claim.kind.value,
+                    status="STANDING",
+                    note=standing.note,
+                    claim_id=claim.id,
+                    observed=standing.observed,
                 )
             )
         elif results or standing is not None:
@@ -235,6 +251,8 @@ def _claims(
                     kind=claim.kind.value,
                     status="INTACT",
                     note=(results[0] if results else standing).note,
+                    claim_id=claim.id,
+                    observed=(results[0] if results else standing).observed,
                 )
             )
         else:
@@ -244,9 +262,101 @@ def _claims(
                     kind=claim.kind.value,
                     status="UNTESTED",
                     note="nothing this week tested it, and it has no standing form",
+                    claim_id=claim.id,
                 )
             )
     return verdicts
+
+
+def _covered_kinds(store: DaemonStore, symbol: str) -> set[str]:
+    """Event kinds some written rule is watching for this symbol.
+
+    "Material, and no written rule covers it" has to mean no rule is watching
+    that kind of event. Without this it meant "no rule broke", so a dilution
+    filing the user had a dilution rule for — and had just answered — was
+    reported as uncovered. The sentence was false in exactly the case the
+    thesis layer exists to handle.
+    """
+    from advisor.thesis.repo import ThesisReadError, load_thesis
+
+    try:
+        thesis = load_thesis(store, symbol)
+    except ThesisReadError:
+        return set()
+    if thesis is None:
+        return set()
+    return {kind for claim in thesis.claims for kind in claim.trigger.event_kinds}
+
+
+def _partition(
+    store: DaemonStore,
+    symbol: str,
+    claims: list[ClaimVerdict],
+    events: list[Event],
+    today: date,
+) -> tuple[list[ClaimVerdict], list[Event], list[DecidedRef], list[DecidedRef]]:
+    """Split what still needs answering from what the user has already answered.
+
+    A decided item is not discarded. It moves to `decided`, where it stays
+    visible with the verdict and the user's own words — the card gets quieter
+    without getting less complete.
+
+    A decision stops answering when the number moves past where it was
+    acknowledged, or when an action had time to show in the stored facts and
+    did not. Those come back into `because`, carrying the history that makes
+    them different from a first sighting: "you acknowledged this at 0.141; it
+    is 0.25 now" is a stronger sentence than the original alert.
+    """
+    from advisor.action.decisions import evaluate
+
+    decisions = store.latest_decisions(symbol)
+    if not decisions:
+        return claims, events, [], []
+
+    live_claims: list[ClaimVerdict] = []
+    quiet: list[DecidedRef] = []
+    reopened: list[DecidedRef] = []
+
+    def _ref(decision, text: str, reason: str) -> DecidedRef:
+        return DecidedRef(
+            subject_kind=decision.subject_kind.value,
+            subject_id=decision.subject_id,
+            text=text,
+            verdict=decision.verdict.value,
+            note=decision.note,
+            reason=reason,
+            decided_at=decision.decided_at.date(),
+        )
+
+    for verdict in claims:
+        decision = decisions.get(verdict.claim_id or "")
+        if decision is None:
+            live_claims.append(verdict)
+            continue
+        outcome = evaluate(decision, current=verdict.observed, today=today)
+        if outcome.quiet:
+            quiet.append(_ref(decision, verdict.text, outcome.reason))
+            continue
+        # Back in play, and the decision travels with it.
+        if outcome.reason:
+            verdict = verdict.model_copy(update={"note": f"{verdict.note} — {outcome.reason}"})
+            reopened.append(_ref(decision, verdict.text, outcome.reason))
+        live_claims.append(verdict)
+
+    live_events: list[Event] = []
+    for event in events:
+        decision = decisions.get(event.dedup_key)
+        if decision is None:
+            live_events.append(event)
+            continue
+        outcome = evaluate(decision, current=None, today=today)
+        if outcome.quiet:
+            quiet.append(_ref(decision, summarize(event), outcome.reason))
+        else:
+            reopened.append(_ref(decision, summarize(event), outcome.reason))
+            live_events.append(event)
+
+    return live_claims, live_events, quiet, reopened
 
 
 def build_card(store: DaemonStore, symbol: str, book: BookSnapshot, *, today: date | None = None):
@@ -286,9 +396,17 @@ def build_card(store: DaemonStore, symbol: str, book: BookSnapshot, *, today: da
     ]
     card.claims = _claims(store, symbol, events, book)
 
-    broken = [c for c in card.claims if c.status == "BROKEN"]
-    standing = [c for c in card.claims if c.status == "STANDING"]
-    material = [e for e in events if e.kind in MATERIAL_KINDS]
+    # Everything the user has already answered stops driving the verdict, and
+    # stays on the card as a record. Without this the same broken rule is the
+    # headline every day until the channel stops being read.
+    live_claims, live_events, card.decided, card.reopened = _partition(
+        store, symbol, card.claims, events, today
+    )
+
+    broken = [c for c in live_claims if c.status == "BROKEN"]
+    standing = [c for c in live_claims if c.status == "STANDING"]
+    covered = _covered_kinds(store, symbol)
+    material = [e for e in live_events if e.kind in MATERIAL_KINDS and e.kind not in covered]
 
     if broken:
         card.action = ActionKind.REVIEW_NOW
@@ -320,13 +438,24 @@ def build_card(store: DaemonStore, symbol: str, book: BookSnapshot, *, today: da
         ]
     else:
         card.action = ActionKind.HOLD
-        card.headline = ACTION_TEXT[ActionKind.HOLD]
-        intact = [c for c in card.claims if c.status == "INTACT"]
-        card.because = (
-            [f"{c.text} — {c.note}" for c in intact[:3]]
-            if intact
-            else ["no event this week tested any of your claims"]
+        # "your rules are intact" is the wrong sentence when a rule is
+        # violated and the user has said so. Quiet because it was answered is
+        # a different state from quiet because nothing happened, and the card
+        # should not launder one into the other.
+        answered = [d for d in card.decided if d.subject_kind == "CLAIM"]
+        card.headline = (
+            f"nothing new — {len(answered)} rule(s) you already answered"
+            if answered
+            else ACTION_TEXT[ActionKind.HOLD]
         )
+        intact = [c for c in live_claims if c.status == "INTACT"]
+        if intact:
+            card.because = [f"{c.text} — {c.note}" for c in intact[:3]]
+        elif card.decided:
+            # Quiet because it was answered, not because nothing happened.
+            card.because = [f"{d.text} — {d.reason}" for d in card.decided[:3]]
+        else:
+            card.because = ["no event this week tested any of your claims"]
 
     card.what_would_sharpen_this = _suggestions(card, evidence)
 

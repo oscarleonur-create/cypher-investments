@@ -431,3 +431,73 @@ class TestActionsEndpoint:
         cards = client.get("/api/daemon/actions").json()["cards"]
         for card in cards:
             assert card["action"] in {"REVIEW_NOW", "REVIEW", "WRITE_THESIS", "HOLD", "CANNOT_SAY"}
+
+
+class TestDecisionsEndpoint:
+    """Answering a card at the edge.
+
+    The happy path is covered where the rule lives (`test_card_decisions.py`);
+    what matters here is that the endpoint cannot be used to assert something
+    the system does not believe, and that the record reads back.
+    """
+
+    def test_an_unknown_verdict_is_refused(self, client):
+        r = client.post("/api/daemon/decisions/CBRS", json={"subject_id": "x", "verdict": "IGNORE"})
+        assert r.status_code == 400
+        assert "ACKNOWLEDGED" in r.json()["detail"]
+
+    def test_a_subject_the_card_does_not_carry_is_refused(self, client):
+        """The dangerous shape: a caller silencing a rule by naming an id the
+        system has never seen."""
+        r = client.post(
+            "/api/daemon/decisions/CBRS",
+            json={"subject_id": "not-a-real-claim", "verdict": "DISMISSED"},
+        )
+        assert r.status_code == 404
+
+    def test_the_reading_is_taken_from_the_card_not_the_request(self, client):
+        """`observed` is a fact about the system's state. The request body has
+        no field for it, so a caller cannot claim a number was something else."""
+        from advisor.api.routers.daemon import DecisionInput
+
+        assert "observed" not in DecisionInput.model_fields
+
+    def test_history_of_a_symbol_with_no_decisions_is_empty(self, client):
+        body = client.get("/api/daemon/decisions/CBRS").json()
+        assert body["symbol"] == "CBRS"
+        assert body["decisions"] == []
+
+    def test_a_recorded_decision_reads_back_whole(self, client):
+        from advisor.action.decisions import Decision, Direction, SubjectKind, Verdict
+
+        client.store.record_decision(  # type: ignore[attr-defined]
+            Decision(
+                symbol="CBRS",
+                subject_kind=SubjectKind.CLAIM,
+                subject_id="claim-1",
+                verdict=Verdict.ACKNOWLEDGED,
+                note="sized small enough",
+                observed=0.067,
+                worse_is=Direction.UP,
+            )
+        )
+        rows = client.get("/api/daemon/decisions/CBRS").json()["decisions"]
+        assert len(rows) == 1
+        assert rows[0]["verdict"] == "ACKNOWLEDGED"
+        assert rows[0]["observed"] == 0.067
+        assert rows[0]["note"] == "sized small enough"
+
+    def test_history_is_scoped_to_its_symbol(self, client):
+        from advisor.action.decisions import Decision, SubjectKind, Verdict
+
+        for symbol in ("CBRS", "AAOI"):
+            client.store.record_decision(  # type: ignore[attr-defined]
+                Decision(
+                    symbol=symbol,
+                    subject_kind=SubjectKind.CLAIM,
+                    subject_id=f"{symbol}-claim",
+                    verdict=Verdict.DISMISSED,
+                )
+            )
+        rows = client.get("/api/daemon/decisions/CBRS").json()["decisions"]
+        assert [r["symbol"] for r in rows] == ["CBRS"]

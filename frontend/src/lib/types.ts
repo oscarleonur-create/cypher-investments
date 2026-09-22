@@ -791,6 +791,25 @@ export interface ClaimVerdict {
   kind: string;
   status: "BROKEN" | "STANDING" | "INTACT" | "UNTESTED" | "UNREACHABLE";
   note: string;
+  /** Both carried so a decision can be recorded against this rule and later
+   *  compared to where the number has gone. Acknowledging a 14% weight is not
+   *  acknowledging a 25% one. */
+  claim_id: string | null;
+  observed: number | null;
+}
+
+/** Named for the loop step, not "Verdict" — `Verdict` is already the story
+ *  layer's attribution of a price move. */
+export type DecisionVerdict = "ACKNOWLEDGED" | "ACTED" | "DISMISSED" | "THESIS_REVISED";
+
+export interface DecidedRef {
+  subject_kind: string;
+  subject_id: string;
+  text: string;
+  verdict: DecisionVerdict;
+  note: string;
+  reason: string;
+  decided_at: string | null;
 }
 
 export interface ActionCard {
@@ -806,6 +825,11 @@ export interface ActionCard {
   evidence: { items: EvidenceItem[] };
   rationale: Rationale | Record<string, never>;
   what_would_sharpen_this: string[];
+  /** Answered already, and still answered — shown, never dropped. */
+  decided: DecidedRef[];
+  /** Answered, and no longer answered: the number moved past where the call
+   *  was made, or an action had time to show and did not. */
+  reopened: DecidedRef[];
 }
 
 export type Bearing = "SUPPORTS" | "AGAINST" | "CONTEXT" | "BLIND";

@@ -426,6 +426,81 @@ async def actions(symbol: str | None = None) -> dict:
         store.close()
 
 
+class DecisionInput(BaseModel):
+    subject_id: str
+    verdict: str = "ACKNOWLEDGED"
+    note: str = ""
+
+
+@router.post("/decisions/{symbol}")
+async def decide(symbol: str, body: DecisionInput) -> dict:
+    """Answer something a card raised, so it stops being raised.
+
+    The reading at the moment of the decision is taken from the card rather
+    than from the request: what was decided is a fact about the system's
+    state, not something a caller should be able to assert.
+    """
+    from advisor.action.assemble import build_card
+    from advisor.action.decisions import (
+        Decision,
+        Direction,
+        SubjectKind,
+        Verdict,
+        worse_direction,
+    )
+    from advisor.daemon.book import fetch_book
+    from advisor.thesis.repo import load_thesis
+
+    try:
+        verdict = Verdict(body.verdict.upper())
+    except ValueError:
+        raise HTTPException(
+            400, f"unknown verdict {body.verdict!r} — one of {[v.value for v in Verdict]}"
+        ) from None
+
+    store = _store()
+    try:
+        card = build_card(store, symbol, await fetch_book())
+        verdicts = {c.claim_id: c for c in card.claims if c.claim_id}
+        known_subjects = set(verdicts) | {t.kind for t in card.triggers}
+        if body.subject_id not in known_subjects:
+            raise HTTPException(
+                404, f"nothing on {symbol.upper()} matches subject {body.subject_id!r}"
+            )
+
+        thesis = load_thesis(store, symbol)
+        claim = next(
+            (c for c in (thesis.claims if thesis else []) if c.id == body.subject_id), None
+        )
+        held = verdicts.get(body.subject_id)
+        decision = Decision(
+            symbol=symbol.upper(),
+            subject_kind=SubjectKind.CLAIM if claim is not None else SubjectKind.EVENT,
+            subject_id=body.subject_id,
+            verdict=verdict,
+            note=body.note,
+            observed=held.observed if held is not None else None,
+            worse_is=worse_direction(claim) if claim is not None else Direction.NEITHER,
+        )
+        store.record_decision(decision)
+        return {"decision": decision.model_dump(mode="json")}
+    finally:
+        store.close()
+
+
+@router.get("/decisions/{symbol}")
+async def decision_history(symbol: str) -> dict:
+    """Every decision recorded on a ticker, newest first."""
+    store = _store()
+    try:
+        return {
+            "symbol": symbol.upper(),
+            "decisions": [d.model_dump(mode="json") for d in store.decision_history(symbol)],
+        }
+    finally:
+        store.close()
+
+
 @router.post("/reconcile")
 async def reconcile() -> dict:
     """Run every data-quality check live. Slow — reaches the broker and network."""

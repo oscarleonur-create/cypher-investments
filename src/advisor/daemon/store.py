@@ -11,6 +11,7 @@ import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from advisor.daemon.market_calendar import now_et
 from advisor.daemon.models import (
@@ -20,6 +21,9 @@ from advisor.daemon.models import (
     Heartbeat,
     Watermark,
 )
+
+if TYPE_CHECKING:
+    from advisor.action.decisions import Decision
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS events (
@@ -112,6 +116,21 @@ CREATE TABLE IF NOT EXISTS valuation_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_valuation_symbol
     ON valuation_snapshots(symbol, asof DESC);
+
+CREATE TABLE IF NOT EXISTS decisions (
+    id          TEXT NOT NULL PRIMARY KEY,
+    symbol      TEXT NOT NULL,
+    subject_id  TEXT NOT NULL,           -- a claim id or an event dedup key
+    payload_json TEXT NOT NULL,          -- Decision
+    decided_at  TEXT NOT NULL,
+    created_at  TEXT DEFAULT (datetime('now'))
+);
+
+-- The newest decision per subject is the one that answers it; older ones are
+-- kept so the record of what was thought when survives a change of mind.
+CREATE INDEX IF NOT EXISTS idx_decisions_subject
+    ON decisions(subject_id, decided_at DESC);
+CREATE INDEX IF NOT EXISTS idx_decisions_symbol ON decisions(symbol, decided_at DESC);
 
 CREATE TABLE IF NOT EXISTS daemon_heartbeat (
     job         TEXT NOT NULL PRIMARY KEY,
@@ -441,6 +460,50 @@ class DaemonStore:
             "SELECT DISTINCT symbol FROM thesis_claims ORDER BY symbol"
         ).fetchall()
         return [r["symbol"] for r in rows]
+
+    # --- decisions ---------------------------------------------------------
+
+    def record_decision(self, decision) -> None:
+        """Append a decision. Never replaces: a change of mind is a new row."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO decisions "
+            "(id, symbol, subject_id, payload_json, decided_at) VALUES (?, ?, ?, ?, ?)",
+            (
+                decision.id,
+                decision.symbol.upper(),
+                decision.subject_id,
+                decision.model_dump_json(),
+                decision.decided_at.isoformat(),
+            ),
+        )
+        self._conn.commit()
+
+    def latest_decisions(self, symbol: str) -> dict[str, "Decision"]:
+        """The newest decision per subject for one symbol.
+
+        Older rows stay in the table — what was thought at the time is part of
+        the record — but only the newest one answers the situation now.
+        """
+        from advisor.action.decisions import Decision
+
+        rows = self._conn.execute(
+            "SELECT subject_id, payload_json FROM decisions "
+            "WHERE symbol = ? ORDER BY decided_at ASC",
+            (symbol.upper(),),
+        ).fetchall()
+        # Ascending, so a later row overwrites an earlier one for the same
+        # subject and the last write wins.
+        return {r[0]: Decision.model_validate_json(r[1]) for r in rows}
+
+    def decision_history(self, symbol: str) -> list["Decision"]:
+        """Every decision on a symbol, newest first."""
+        from advisor.action.decisions import Decision
+
+        rows = self._conn.execute(
+            "SELECT payload_json FROM decisions WHERE symbol = ? ORDER BY decided_at DESC",
+            (symbol.upper(),),
+        ).fetchall()
+        return [Decision.model_validate_json(r[0]) for r in rows]
 
     # ── Source items (filings, news) ──────────────────────────────────────
 
