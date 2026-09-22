@@ -186,6 +186,27 @@ def factor_shock_events(
     return events
 
 
+# How much of a symbol's own sensitivity the panel must be able to see before
+# a residual means anything. Measured per symbol on |loading| mass, not on a
+# count of factors: a name with no DOLLAR exposure does not care that DOLLAR
+# is missing, and one whose MKT loading carries a third of its weight cannot
+# be judged without it.
+MIN_LOADING_COVERAGE = 0.80
+
+
+def _loading_coverage(estimate: SymbolSensitivity, moves: dict[str, float]) -> float:
+    """Share of this symbol's absolute factor sensitivity that was observed.
+
+    Returns 1.0 for a symbol with no sensitivity at all, which cannot be
+    misexplained by a missing factor — there is nothing to miss.
+    """
+    total = sum(abs(entry.loading) for entry in estimate.loadings)
+    if total <= 0:
+        return 1.0
+    seen = sum(abs(entry.loading) for entry in estimate.loadings if entry.factor in moves)
+    return seen / total
+
+
 def residual_divergence_events(
     book: BookSnapshot,
     sensitivities: dict[str, SymbolSensitivity],
@@ -231,6 +252,28 @@ def residual_divergence_events(
     for symbol in book.symbols:
         estimate = sensitivities.get(symbol)
         if estimate is None or symbol not in symbol_returns.columns:
+            continue
+        # A residual is only a residual if the model could have explained the
+        # move. `expected_return` sums over the factors it was *given*, so an
+        # unobserved factor contributes zero silently, and everything it would
+        # have accounted for lands in the residual instead.
+        #
+        # Measured on the real book: the 07:00 brief of 22 September ran with
+        # 8 of 9 factors unobserved — yfinance has no daily bar pre-market. On
+        # an ordinary risk-off day, with every holding moving *exactly* what
+        # the full panel predicts (z = 0.00 by construction), the one-factor
+        # model reported OUST at z = -2.03 and would have announced that it
+        # "moved for a reason macro cannot explain". Macro explained all of it;
+        # the model simply could not see.
+        seen = _loading_coverage(estimate, moves)
+        if seen < MIN_LOADING_COVERAGE:
+            logger.info(
+                "macro: %s has %.0f%% of its loadings observed on %s, "
+                "too little to call anything idiosyncratic",
+                symbol,
+                seen * 100,
+                session,
+            )
             continue
         column = symbol_returns[symbol].dropna()
         if column.empty or column.index[-1] != session_ts:
