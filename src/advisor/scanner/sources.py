@@ -136,6 +136,72 @@ def daily_sigma(symbols: list[str], sessions: int = 60) -> dict[str, float]:
     return out
 
 
+def choose_peers(
+    returns, symbol: str, *, max_peers: int = 5, min_corr: float = 0.3, min_obs: int = 20
+) -> list[str]:
+    """The industry members that move most with ``symbol``, strongest first.
+
+    Yahoo's industries are too coarse to use whole: "Travel Services" puts
+    online agencies and cruise lines together, and on 2026-09-23 the first
+    group fell 5-8% while the second fell 2%. Correlation over recent
+    sessions picks BKNG and ABNB for EXPE, CCL and NCLH for RCL.
+    """
+    if symbol not in returns:
+        return []
+    corr = returns.corr(min_periods=min_obs)[symbol].drop(symbol, errors="ignore").dropna()
+    corr = corr[corr >= min_corr].sort_values(ascending=False)
+    return list(corr.index[:max_peers])
+
+
+def peer_move(symbol: str, sessions: int = 60) -> tuple[list[str], float | None]:
+    """(peers, their median move today). ([], None) whenever it can't be judged.
+
+    Today's move comes from each peer's live quote, not the daily bar: during
+    the session yfinance's partial daily row is often NaN.
+    """
+    try:
+        import statistics
+
+        import pandas as pd
+        import yfinance as yf
+
+        from advisor.daemon.market_calendar import now_et
+
+        key = yf.Ticker(symbol).info.get("industryKey")
+        if not key:
+            return [], None
+        universe = [p for p in yf.Industry(key).top_companies.index.tolist() if p != symbol][:20]
+        if len(universe) < 2:
+            return [], None
+        closes = yf.download(
+            [symbol, *universe], period="6mo", interval="1d", progress=False, auto_adjust=False
+        )["Close"]
+        closes = closes[closes.index < pd.Timestamp(now_et().date())]
+        returns = closes.pct_change(fill_method=None).tail(sessions)
+        peers = choose_peers(returns, symbol)
+        moves = []
+        for p in peers:
+            # The same quote fields the screener reports for the candidate, so
+            # both sides of the comparison are measured alike. fast_info was
+            # tried and rejected on 2026-09-23: regular_market_previous_close
+            # was NaN for ADP/INTU/ULTA/SVV, and previous_close is rebuilt from
+            # daily history, which had lost the 09-22 bar (BKNG 164.40 vs the
+            # quote's 164.22).
+            q = yf.Ticker(p).info
+            last, prev = (
+                _num(q.get("regularMarketPrice")),
+                _num(q.get("regularMarketPreviousClose")),
+            )
+            if last and prev and last > 0 and prev > 0:
+                moves.append(last / prev - 1)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("scanner: peer lookup failed for %s: %s", symbol, exc)
+        return [], None
+    if len(moves) < 2:
+        return peers, None
+    return peers, statistics.median(moves)
+
+
 def find_catalysts(
     symbol: str, name: str | None, since: datetime
 ) -> tuple[list[CatalystItem], bool]:

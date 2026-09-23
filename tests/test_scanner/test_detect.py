@@ -154,6 +154,61 @@ class TestSetupC:
         assert detect.is_news_dip(dipper(prev_close=None), 0.02) == (False, None)
 
 
+class TestGapKept:
+    """Fix 3: a gap that has given back more than half is fading, not held."""
+
+    def test_ionq_2026_09_23_is_rejected(self):
+        m = gapper(prev_close=100.0, open=112.5, price=104.0)  # +12.5% gap, +4.0% now
+        assert detect.gap_kept(m) == pytest.approx(0.32)
+        assert not detect.is_catalyst_gap(m, NOON)
+
+    def test_exactly_half_kept_qualifies(self):
+        m = gapper(prev_close=100.0, open=110.0, price=105.0)
+        assert detect.gap_kept(m) == pytest.approx(0.5)
+        assert detect.is_catalyst_gap(m, NOON)
+
+    def test_just_under_half_rejected(self):
+        m = gapper(prev_close=100.0, open=110.0, price=104.9)
+        assert not detect.is_catalyst_gap(m, NOON)
+
+    def test_extending_the_gap_qualifies(self):
+        m = gapper(prev_close=100.0, open=106.0, price=112.0)
+        assert detect.gap_kept(m) == pytest.approx(2.0)
+        assert detect.is_catalyst_gap(m, NOON)
+
+    def test_no_gap_or_gap_down_has_no_ratio(self):
+        assert detect.gap_kept(gapper(open=10.0)) is None
+        assert detect.gap_kept(gapper(open=9.5)) is None
+        assert detect.gap_kept(gapper(open=None)) is None
+
+
+class TestOwnShare:
+    """Fix 1: how much of a drop is the company's own."""
+
+    def test_peers_flat_means_all_its_own(self):
+        assert detect.own_share(-0.06, 0.0) == pytest.approx(1.0)
+
+    def test_peers_fell_as_far(self):
+        assert detect.own_share(-0.06, -0.06) == pytest.approx(0.0)
+
+    def test_peers_rose(self):
+        assert detect.own_share(-0.06, 0.02) > 1
+
+    def test_exactly_half_passes(self):
+        assert detect.passes_peer_test(-0.06, -0.03)
+
+    def test_just_under_half_fails(self):
+        assert not detect.passes_peer_test(-0.06, -0.0301)
+
+    @pytest.mark.parametrize(
+        "chg,peer",
+        [(None, -0.01), (-0.06, None), (-0.06, float("nan")), (0.0, -0.01), (0.03, 0.0)],
+    )
+    def test_unjudgeable_passes(self, chg, peer):
+        assert detect.own_share(chg, peer) is None
+        assert detect.passes_peer_test(chg, peer)
+
+
 class TestDetect:
     def test_a_stock_can_only_be_one_direction(self):
         assert [s for s, _ in detect.detect(gapper(market_cap=50e9), NOON, 0.02)] == [

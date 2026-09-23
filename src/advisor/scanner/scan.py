@@ -36,6 +36,7 @@ class ScanResult:
     news_lookups: int = 0
     news_empty: int = 0
     over_budget: int = 0
+    sector_moves: list[str] = field(default_factory=list)  # C dips their peers shared
     source_error: str | None = None
 
     def summary(self) -> str:
@@ -49,6 +50,8 @@ class ScanResult:
         )
         if self.over_budget:
             text += f"; {self.over_budget} over news budget"
+        if self.sector_moves:
+            text += f"; sector move, not C: {', '.join(self.sector_moves)}"
         if self.source_error:
             text += f"; source error: {self.source_error}"
         return text
@@ -74,6 +77,7 @@ def run_scan(
     fetch_catalysts: Callable[
         [str, str | None, datetime], tuple[list[CatalystItem], bool]
     ] = sources.find_catalysts,
+    fetch_peers: Callable[[str], tuple[list[str], float | None]] = sources.peer_move,
     thresholds: rules.Thresholds = rules.DEFAULT,
     news_budget: int | None = DEFAULT_NEWS_BUDGET,
     check_news: bool = True,
@@ -103,6 +107,14 @@ def run_scan(
             if store.exists(session, setup, m.symbol):
                 result.already_recorded += 1
                 continue
+            peers, moved = [], None
+            if setup is Setup.NEWS_DIP:
+                # Re-asked on every scan until it qualifies: a dip the sector
+                # shared at 09:51 can become the company's own by 11:00.
+                peers, moved = fetch_peers(m.symbol)
+                if not rules.passes_peer_test(rules.change(m), moved, thresholds):
+                    result.sector_moves.append(m.symbol)
+                    continue
             cand = Candidate(
                 session=session,
                 setup=setup,
@@ -117,6 +129,8 @@ def run_scan(
                 rvol=rules.relative_volume(m, now),
                 sigma=z,
                 market_cap=m.market_cap,
+                peers=peers,
+                peer_move=moved,
             )
             if check_news and (news_budget is None or spent < news_budget):
                 items, checked = fetch_catalysts(m.symbol, m.name, since)

@@ -63,13 +63,18 @@ def no_news(symbol, name, since):
     return [], True
 
 
-def scan(store, movers, *, now=NOW, catalysts=news, sigma=None, **kw):
+def no_peers(symbol):
+    return [], None
+
+
+def scan(store, movers, *, now=NOW, catalysts=news, sigma=None, peers=no_peers, **kw):
     return run_scan(
         store,
         now,
         fetch_movers=lambda: (movers, None),
         fetch_sigma=lambda syms: sigma if sigma is not None else {s: 0.02 for s in syms},
         fetch_catalysts=catalysts,
+        fetch_peers=peers,
         **kw,
     )
 
@@ -183,3 +188,48 @@ def test_news_is_unlimited_by_default(store):
     r = scan(store, movers)
     assert r.news_lookups == 60 and r.over_budget == 0
     assert all(c.news_checked for c in store.list())
+
+
+# ── Setup C peer test (fix 1: a sector move is not a news dip) ────────────
+
+
+def test_sector_move_is_not_recorded(store):
+    """EXPE -6% while BKNG and ABNB fall ~5%: the travel sector, not Expedia."""
+    r = scan(store, [DIP], peers=lambda s: (["BKNG", "ABNB"], -0.05))
+    assert r.new == [] and store.count() == 0
+    assert r.sector_moves == ["AAPL"] and "sector move" in r.summary()
+
+
+def test_own_drop_is_recorded_with_its_peers(store):
+    r = scan(store, [DIP], peers=lambda s: (["MSFT", "GOOGL"], -0.005))
+    assert len(r.new) == 1
+    c = store.list()[0]
+    assert c.peers == ["MSFT", "GOOGL"] and c.peer_move == pytest.approx(-0.005)
+
+
+def test_peer_lookup_failure_records_the_dip_unjudged(store):
+    r = scan(store, [DIP], peers=lambda s: ([], None))
+    assert len(r.new) == 1 and store.list()[0].peer_move is None
+
+
+def test_sector_move_spends_no_news_credit(store):
+    calls = []
+    scan(
+        store,
+        [DIP],
+        peers=lambda s: (["X"], -0.06),
+        catalysts=lambda *a: calls.append(a) or ([], True),
+    )
+    assert calls == []
+
+
+def test_gap_ups_never_ask_for_peers(store):
+    asked = []
+    scan(store, [GAP], peers=lambda s: asked.append(s) or ([], None))
+    assert asked == []
+
+
+def test_shared_dip_can_become_its_own_later(store):
+    scan(store, [DIP], peers=lambda s: (["X"], -0.05))
+    r = scan(store, [DIP], now=et(2026, 9, 23, 11, 0), peers=lambda s: (["X"], -0.01))
+    assert len(r.new) == 1 and store.count() == 1

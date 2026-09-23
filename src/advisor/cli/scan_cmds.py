@@ -179,9 +179,16 @@ def _print(rows) -> None:
         )
     console.print(table)
     for c in rows:
-        if not c.catalysts:
+        peers = ""
+        if c.setup.value == "C":
+            peers = (
+                f"  peers {', '.join(c.peers) or '—'}: {_pct(c.peer_move)}"
+                if c.peer_move is not None
+                else "  peers: not measured"
+            )
+        if not c.catalysts and not peers:
             continue
-        console.print(f"[bold]{c.setup.value} {c.symbol}[/bold] {c.name or ''}")
+        console.print(f"[bold]{c.setup.value} {c.symbol}[/bold] {c.name or ''}{peers}")
         for item in c.catalysts[:4]:
             stamp = item.published_at.astimezone(c.detected_at.tzinfo).strftime("%m-%d %H:%M")
             console.print(f"  {stamp} [{item.kind}] {item.title[:100]}", markup=False)

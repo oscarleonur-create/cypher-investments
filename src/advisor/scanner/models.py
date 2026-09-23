@@ -57,6 +57,8 @@ class Candidate(BaseModel):
     rvol: float | None = None  # volume vs the pace expected by now
     sigma: float | None = None  # |change| in units of 60-session daily vol
     market_cap: float | None = None
+    peers: list[str] = Field(default_factory=list)  # C: most-correlated industry peers
+    peer_move: float | None = None  # C: their median move today; None = not measured
     catalysts: list[CatalystItem] = Field(default_factory=list)
     news_checked: bool = False  # False: nobody looked, which is not "no news"
     outcomes: dict[str, float | None] = Field(default_factory=dict)

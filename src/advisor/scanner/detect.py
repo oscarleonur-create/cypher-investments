@@ -45,6 +45,7 @@ _FULL_SESSION_MINUTES = 390
 class Thresholds:
     gap_min: float = 0.04  # A: open at least 4% above prev close
     hold_min: float = 0.04  # A: still at least 4% above when seen
+    gap_kept_min: float = 0.5  # A: and still holding at least half the gap
     rvol_min: float = 1.5  # A: volume at 1.5x the usual pace
     a_min_cap: float = 300e6
     a_min_price: float = 2.0
@@ -52,6 +53,7 @@ class Thresholds:
     sigma_min: float = 2.0  # C: and at least 2 sigma for this name
     c_min_cap: float = 10e9
     c_min_price: float = 5.0
+    own_share_min: float = 0.5  # C: at least half the drop is the stock's own
     min_dollar_volume: float = 1e6  # both: traded at least $1M so far
 
 
@@ -102,8 +104,22 @@ def _liquid(m: Mover, t: Thresholds) -> bool:
     return _valid(m.price) and m.volume is not None and m.volume * m.price >= t.min_dollar_volume
 
 
+def gap_kept(m: Mover) -> float | None:
+    """Share of the opening gap still held: 1.0 intact, 0.0 fully given back."""
+    g, c = gap(m), change(m)
+    if g is None or c is None or g <= 0:
+        return None
+    return c / g
+
+
 def is_catalyst_gap(m: Mover, now: datetime, t: Thresholds = DEFAULT) -> bool:
-    """Setup A, before any news check: a held gap up on heavy volume."""
+    """Setup A, before any news check: a held gap up on heavy volume.
+
+    "Held" is measured against the gap itself as well as against a floor.
+    IONQ on 2026-09-23 opened +12.5% and was +4.0% at 09:51 — above the 4%
+    floor, but having given back two thirds of its gap. That is a fading
+    gap, not the one the user trades.
+    """
     g, c, rv = gap(m), change(m), relative_volume(m, now)
     if g is None or c is None or rv is None:
         return False
@@ -113,6 +129,7 @@ def is_catalyst_gap(m: Mover, now: datetime, t: Thresholds = DEFAULT) -> bool:
         m.price >= t.a_min_price
         and g >= t.gap_min
         and c >= t.hold_min
+        and c >= t.gap_kept_min * g
         and rv >= t.rvol_min
         and _liquid(m, t)
     )
@@ -136,6 +153,32 @@ def is_news_dip(
         return True, None
     z = abs(c) / sigma_daily
     return z >= t.sigma_min, z
+
+
+def own_share(change_: float | None, peer_move: float | None) -> float | None:
+    """Fraction of a drop that is the stock's own rather than its peers'.
+
+    1.0: peers flat, the whole drop is idiosyncratic. 0.0: peers fell just as
+    far. Above 1.0: peers rose. None when either input is missing or the
+    stock did not fall.
+    """
+    if change_ is None or peer_move is None or not math.isfinite(peer_move) or change_ >= 0:
+        return None
+    return (change_ - peer_move) / change_
+
+
+def passes_peer_test(
+    change_: float | None, peer_move: float | None, t: Thresholds = DEFAULT
+) -> bool:
+    """Setup C's second stage: is the drop the company's, or its industry's?
+
+    EXPE and RCL on 2026-09-23 fell ~6% alongside the online-travel and
+    cruise names — a sector move, like EWY in the user's history, which lost.
+    Without a peer estimate the test cannot run and the dip passes, with the
+    record showing ``peer_move`` as None.
+    """
+    share = own_share(change_, peer_move)
+    return share is None or share >= t.own_share_min
 
 
 def detect(
