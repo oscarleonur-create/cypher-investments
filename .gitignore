@@ -6,7 +6,11 @@
 .env
 .env.*
 !.env.example
-data/
+# Anchored: the bare `data/` rule also swallowed src/advisor/data/*.py,
+# so two modules the test suite imports were never committed.
+/data/
+# A database created by running from another directory (frontend/data/).
+research.db*
 out/
 __pycache__/
 .ruff_cache/
