@@ -247,6 +247,47 @@ async def run_macro_refresh(ctx: JobContext) -> JobResult:
     return JobResult(job="macro_refresh", ok=True, detail=detail)
 
 
+async def run_setup_scan(ctx: JobContext) -> JobResult:
+    """Record setup A/C candidates. Measurement only: emits no events.
+
+    Nothing here reaches the event stream, the relevance gate or a message.
+    A setup earns an alert only after its recorded outcomes say it works.
+    """
+    import asyncio
+
+    from advisor.scanner.scan import run_scan
+
+    # yfinance, Tavily and EDGAR are blocking clients; run them off the loop.
+    # The connection must be opened inside that worker thread — sqlite3
+    # refuses a connection used from a thread other than its creator's.
+    result = await asyncio.to_thread(_with_scanner_store, ctx.store.db_path, run_scan, ctx.now)
+    ok = result.source_error is None or result.movers_seen > 0
+    logger.info("scan: %s", result.summary())
+    return JobResult(job="scan", ok=ok, detail=result.summary())
+
+
+async def run_scan_outcomes(ctx: JobContext) -> JobResult:
+    """After the close: fill in what each candidate's price did next."""
+    import asyncio
+
+    from advisor.scanner.outcomes import fill_outcomes
+
+    result = await asyncio.to_thread(_with_scanner_store, ctx.store.db_path, fill_outcomes, ctx.now)
+    logger.info("scan_outcomes: %s", result.summary())
+    return JobResult(job="scan_outcomes", ok=True, detail=result.summary())
+
+
+def _with_scanner_store(db_path, fn, now):
+    """Open, use and close a ScannerStore entirely within the calling thread."""
+    from advisor.scanner.store import ScannerStore
+
+    store = ScannerStore(db_path)
+    try:
+        return fn(store, now)
+    finally:
+        store.close()
+
+
 async def run_heartbeat(ctx: JobContext) -> JobResult:
     """Liveness tick — proves the supervisor loop is running between jobs.
 

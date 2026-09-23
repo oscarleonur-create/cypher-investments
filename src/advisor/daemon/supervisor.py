@@ -99,6 +99,22 @@ def build_registry() -> JobRegistry:
     )
     reg.register(
         Job(
+            name="scan",
+            trigger=EveryMinutes(30, during_session_only=True, not_before=time(9, 35)),
+            handler=handlers.run_setup_scan,
+            description="record setup A/C candidates market-wide; never alerts",
+        )
+    )
+    reg.register(
+        Job(
+            name="scan_outcomes",
+            trigger=DailyAt(time(16, 20), grace_hours=6.0),
+            handler=handlers.run_scan_outcomes,
+            description="fill what the price did after each scanner candidate",
+        )
+    )
+    reg.register(
+        Job(
             name="heartbeat",
             trigger=EveryMinutes(5, during_session_only=False),
             handler=handlers.run_heartbeat,

@@ -52,6 +52,8 @@ class TestRegistry:
             "reconcile",
             "valuation",
             "insiders",
+            "scan",
+            "scan_outcomes",
             "heartbeat",
         }
 

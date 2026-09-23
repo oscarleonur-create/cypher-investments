@@ -70,9 +70,15 @@ class EveryMinutes:
 
     minutes: int
     during_session_only: bool = True
+    # Earliest wall-clock time the job may fire each day. The scanner waits
+    # for the opening print to settle; firing at 09:30 and then counting the
+    # interval from there would push its first real look to 10:00.
+    not_before: time | None = None
 
     def is_due(self, now: datetime, last_run: datetime | None) -> bool:
         if self.during_session_only and not mc.is_market_open(now):
+            return False
+        if self.not_before is not None and mc.to_et(now).time() < self.not_before:
             return False
         if last_run is None:
             return True
@@ -80,6 +86,8 @@ class EveryMinutes:
 
     def describe(self) -> str:
         scope = "during session" if self.during_session_only else "always"
+        if self.not_before is not None:
+            scope += f", from {self.not_before.strftime('%H:%M')} ET"
         return f"every {self.minutes}m ({scope})"
 
 
