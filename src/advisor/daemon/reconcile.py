@@ -78,8 +78,27 @@ class ReconcileReport:
         )
 
 
-def check_prices(book: BookSnapshot, quotes: dict[str, float]) -> list[Finding]:
-    """Broker close against an independent price for every position."""
+def check_prices(
+    book: BookSnapshot,
+    quotes: dict[str, float],
+    *,
+    bar_dates: dict[str, date] | None = None,
+    expected_session: date | None = None,
+) -> list[Finding]:
+    """Broker close against an independent price for every position.
+
+    Two closes can only disagree if they describe the same session. On 23
+    September yfinance carried a row for the 22nd with every value NaN; the
+    frame's `dropna()` fell back to the 21st without a word, and the broker's
+    close was the 22nd's. Every symbol "disagreed" by exactly the 22nd's move,
+    all eight failed, and the evidence gate blocked every action card in the
+    book — the check built to catch bad data blacked out the system because
+    the *independent* source was a day late.
+
+    A lagging independent bar is a freshness problem with that source, which
+    `check_price_staleness` already reports. It is not evidence against the
+    broker, so the comparison is skipped and says why.
+    """
     findings: list[Finding] = []
     for position in book.positions:
         symbol = position.underlying.upper()
@@ -93,6 +112,18 @@ def check_prices(book: BookSnapshot, quotes: dict[str, float]) -> list[Finding]:
         if broker <= 0:
             findings.append(
                 Finding("price_positive", Severity.FAIL, symbol, f"broker close is {broker}")
+            )
+            continue
+        bar = (bar_dates or {}).get(symbol)
+        if expected_session is not None and bar is not None and bar < expected_session:
+            findings.append(
+                Finding(
+                    "price_agreement",
+                    Severity.WARN,
+                    symbol,
+                    f"not compared: independent close is for {bar}, "
+                    f"broker close for {expected_session}",
+                )
             )
             continue
         drift = abs(other - broker) / broker
@@ -268,7 +299,14 @@ async def run_reconciliation(book: BookSnapshot, *, today: date | None = None) -
         )
 
     if quotes:
-        report.findings.extend(check_prices(book, quotes))
+        report.findings.extend(
+            check_prices(
+                book,
+                quotes,
+                bar_dates=last_bars,
+                expected_session=previous_trading_day(report.asof),
+            )
+        )
     if last_bars:
         report.findings.extend(check_price_staleness(last_bars, today=report.asof))
 
