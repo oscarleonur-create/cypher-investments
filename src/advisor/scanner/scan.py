@@ -19,10 +19,11 @@ from advisor.scanner.store import ScannerStore
 
 logger = logging.getLogger(__name__)
 
-# News lookups per session. A Tavily query is a credit; a busy morning can
-# produce dozens of gap-ups. Beyond the budget a candidate is still recorded,
-# marked "news not checked" — which the report keeps apart from "no news".
-DEFAULT_NEWS_BUDGET = 25
+# News lookups per session. Unlimited by the user's decision (2026-09-23):
+# every candidate gets its news checked, whatever it costs in Tavily credits.
+# A cap can still be passed; beyond it a candidate is recorded as "news not
+# checked", which the report keeps apart from "no news".
+DEFAULT_NEWS_BUDGET: int | None = None
 
 
 @dataclass
@@ -74,7 +75,7 @@ def run_scan(
         [str, str | None, datetime], tuple[list[CatalystItem], bool]
     ] = sources.find_catalysts,
     thresholds: rules.Thresholds = rules.DEFAULT,
-    news_budget: int = DEFAULT_NEWS_BUDGET,
+    news_budget: int | None = DEFAULT_NEWS_BUDGET,
     check_news: bool = True,
 ) -> ScanResult:
     now = mc.to_et(now)
@@ -117,7 +118,7 @@ def run_scan(
                 sigma=z,
                 market_cap=m.market_cap,
             )
-            if check_news and spent < news_budget:
+            if check_news and (news_budget is None or spent < news_budget):
                 items, checked = fetch_catalysts(m.symbol, m.name, since)
                 cand.catalysts, cand.news_checked = items, checked
                 spent += 1

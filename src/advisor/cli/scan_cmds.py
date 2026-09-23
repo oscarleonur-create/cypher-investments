@@ -40,7 +40,9 @@ def scan_run(
     no_news: Annotated[
         bool, typer.Option("--no-news", help="Skip news lookups (no credits)")
     ] = False,
-    budget: Annotated[int, typer.Option("--news-budget", help="News lookups per session")] = 25,
+    budget: Annotated[
+        Optional[int], typer.Option("--news-budget", help="Cap news lookups per session")
+    ] = None,
     output: Annotated[str, typer.Option("--output", "-o")] = "table",
 ) -> None:
     """Scan the market now and record any new A/C candidates."""

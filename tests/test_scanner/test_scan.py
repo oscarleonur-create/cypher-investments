@@ -176,3 +176,10 @@ def test_catalyst_window_starts_at_previous_close():
     assert catalyst_window_start(et(2026, 9, 8, 10, 0)) == et(2026, 9, 4, 16, 0)
     # The day after an early close looks back to 13:00, not 16:00.
     assert catalyst_window_start(et(2026, 11, 30, 10, 0)) == et(2026, 11, 27, 13, 0)
+
+
+def test_news_is_unlimited_by_default(store):
+    movers = [GAP.model_copy(update={"symbol": f"G{i}"}) for i in range(60)]
+    r = scan(store, movers)
+    assert r.news_lookups == 60 and r.over_budget == 0
+    assert all(c.news_checked for c in store.list())
