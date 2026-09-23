@@ -241,3 +241,87 @@ class TestIntradayComparison:
         if len(column) > 1:
             index = -2
         assert float(column.iloc[index]) == 10.0
+
+
+class TestSameSessionOnly:
+    """Two closes can only disagree if they describe the same session.
+
+    Live, 23 September: yfinance carried a row for the 22nd with every value
+    NaN, `dropna()` fell back to the 21st, and the broker's close was the
+    22nd's. All eight symbols "disagreed" by exactly the 22nd's move, the
+    reconcile emitted a Tier A DATA_QUALITY_FAILURE, and the evidence gate
+    turned every action card in the book to CANNOT_SAY.
+    """
+
+    TUE = date(2026, 9, 22)
+    MON = date(2026, 9, 21)
+
+    def test_a_lagging_independent_bar_is_not_compared(self):
+        # TE: broker Tuesday 4.36, yfinance fell back to Monday's 4.45.
+        findings = check_prices(
+            book(pos("TE", close=4.36)),
+            {"TE": 4.45},
+            bar_dates={"TE": self.MON},
+            expected_session=self.TUE,
+        )
+        [f] = results(findings, "price_agreement")
+        assert f.severity == "WARN"
+        assert "2026-09-21" in f.detail and "2026-09-22" in f.detail
+
+    def test_the_live_morning_no_longer_blacks_out_the_book(self):
+        """The whole failure, end to end: eight lagging bars, zero events."""
+        symbols = ("SPCX", "AAOI", "NBIS", "CCXI", "COHR", "CRDO", "CBRS", "TE")
+        report = ReconcileReport(asof=date(2026, 9, 23))
+        report.findings = check_prices(
+            book(*[pos(s, close=100.0) for s in symbols]),
+            dict.fromkeys(symbols, 103.0),
+            bar_dates=dict.fromkeys(symbols, self.MON),
+            expected_session=self.TUE,
+        )
+        assert report.ok
+        assert reconcile_events(report) == []
+
+    def test_a_same_session_disagreement_still_fails(self):
+        """The check must keep its teeth: same day, different prices is a fault."""
+        findings = check_prices(
+            book(pos(close=100.0)),
+            {"AAOI": 110.0},
+            bar_dates={"AAOI": self.TUE},
+            expected_session=self.TUE,
+        )
+        [f] = results(findings, "price_agreement")
+        assert f.severity == "FAIL"
+
+    def test_a_bar_newer_than_the_expected_session_is_still_compared(self):
+        """After the close yfinance has today's bar; that is not staleness."""
+        findings = check_prices(
+            book(pos(close=100.0)),
+            {"AAOI": 100.2},
+            bar_dates={"AAOI": date(2026, 9, 23)},
+            expected_session=self.TUE,
+        )
+        assert results(findings, "price_agreement")[0].severity == "OK"
+
+    def test_one_lagging_symbol_does_not_excuse_the_others(self):
+        findings = check_prices(
+            book(pos("TE", close=4.36), pos("AAOI", close=100.0)),
+            {"TE": 4.45, "AAOI": 110.0},
+            bar_dates={"TE": self.MON, "AAOI": self.TUE},
+            expected_session=self.TUE,
+        )
+        by = {f.symbol: f.severity for f in results(findings, "price_agreement")}
+        assert by == {"TE": "WARN", "AAOI": "FAIL"}
+
+    def test_without_dates_the_old_behaviour_is_unchanged(self):
+        findings = check_prices(book(pos(close=100.0)), {"AAOI": 110.0})
+        assert results(findings, "price_agreement")[0].severity == "FAIL"
+
+    def test_a_missing_date_for_one_symbol_is_compared_not_skipped(self):
+        """No date is no evidence of lag; skipping would silence the check."""
+        findings = check_prices(
+            book(pos(close=100.0)),
+            {"AAOI": 110.0},
+            bar_dates={},
+            expected_session=self.TUE,
+        )
+        assert results(findings, "price_agreement")[0].severity == "FAIL"

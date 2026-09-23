@@ -59,6 +59,30 @@ MATERIAL_KINDS = frozenset(
 )
 
 
+# A reconcile emits its failure event mid-run and stamps its heartbeat at the
+# end, a few seconds later. A failure older than that margin before the last
+# successful run belongs to an earlier run the latest one did not repeat.
+RECONCILE_RUN_MARGIN = timedelta(minutes=2)
+
+
+def _superseded(store: DaemonStore, failure: Event) -> bool:
+    """Whether a later reconcile has run and not repeated this failure.
+
+    A clean reconcile emits no event, so without this a failure could never
+    be withdrawn: on 23 September a false price disagreement at 06:45 kept
+    every card in the book at CANNOT_SAY for the rest of the day and would
+    have held it through the next, after a later run had come back clean. The
+    gate trusts the most recent check, not the worst one in the window.
+
+    Conservative on purpose: if the latest run *failed as a job*, nothing is
+    superseded — a crash is not a clean bill.
+    """
+    last_ok = store.get_heartbeat("reconcile").last_ok_at
+    if last_ok is None:
+        return False
+    return failure.ts < last_ok - RECONCILE_RUN_MARGIN
+
+
 def _evidence(
     store: DaemonStore, symbol: str, book: BookSnapshot, today: date
 ) -> tuple[Evidence, str]:
@@ -109,6 +133,7 @@ def _evidence(
         if e.kind == "DATA_QUALITY_FAILURE"
         and e.ts.date() >= today - timedelta(days=1)
         and symbol in (e.payload.get("symbols") or [])
+        and not _superseded(store, e)
     ]
     if failures:
         evidence.items.append(

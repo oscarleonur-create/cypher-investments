@@ -269,3 +269,70 @@ class TestItProposesNoTrade:
         store.emit(stop_event())
         card = build_card(store, "CBRS", book(), today=TODAY)
         assert any(ch.isdigit() for ch in card.because[0])
+
+
+class TestLaterReconcileSupersedes:
+    """The gate trusts the most recent check, not the worst one in the window.
+
+    A clean reconcile emits no event, so a failure could never be withdrawn.
+    Live, 23 September: a false price disagreement at 06:45 held all eight
+    cards at CANNOT_SAY after a later reconcile came back clean, and would
+    have held them through the next day.
+    """
+
+    @staticmethod
+    def failure(store, *, minutes_ago: int, symbol="CBRS"):
+        store.emit(
+            Event(
+                source=EventSource.COMPUTED,
+                kind="DATA_QUALITY_FAILURE",
+                tier=EventTier.A,
+                symbol=None,
+                dedup_key=f"dq-{minutes_ago}",
+                ts=now_et() - timedelta(minutes=minutes_ago),
+                payload={"check": "price_agreement", "failed": 1, "symbols": [symbol]},
+            )
+        )
+
+    @staticmethod
+    def reconcile_ran(store, *, minutes_ago: int, ok: bool = True):
+        store.record_run("reconcile", ok=ok)
+        stamp = (now_et() - timedelta(minutes=minutes_ago)).isoformat()
+        store._conn.execute(  # noqa: SLF001 — backdate the stamp the job just wrote
+            "UPDATE daemon_heartbeat SET last_run_at = ?, last_ok_at = CASE WHEN ? "
+            "THEN ? ELSE last_ok_at END WHERE job = 'reconcile'",
+            (stamp, ok, stamp),
+        )
+        store._conn.commit()  # noqa: SLF001
+
+    def test_a_failure_from_the_latest_run_still_blocks(self, store):
+        self.failure(store, minutes_ago=30)
+        self.reconcile_ran(store, minutes_ago=30)  # stamped seconds after its event
+        card = build_card(store, "CBRS", book(), today=TODAY)
+        assert card.action is ActionKind.CANNOT_SAY
+
+    def test_a_later_clean_run_withdraws_an_earlier_failure(self, store):
+        self.failure(store, minutes_ago=180)  # the 06:45 false alarm
+        self.reconcile_ran(store, minutes_ago=10)  # a later run, no new event
+        card = build_card(store, "CBRS", book(), today=TODAY)
+        assert card.action is not ActionKind.CANNOT_SAY
+
+    def test_a_later_run_that_repeats_the_failure_keeps_blocking(self, store):
+        self.failure(store, minutes_ago=180)
+        self.failure(store, minutes_ago=10)  # the later run failed it again
+        self.reconcile_ran(store, minutes_ago=10)
+        card = build_card(store, "CBRS", book(), today=TODAY)
+        assert card.action is ActionKind.CANNOT_SAY
+
+    def test_a_crashed_later_run_withdraws_nothing(self, store):
+        """A job that died is not a clean bill."""
+        self.failure(store, minutes_ago=180)
+        self.reconcile_ran(store, minutes_ago=200)  # the run that emitted it
+        self.reconcile_ran(store, minutes_ago=10, ok=False)
+        card = build_card(store, "CBRS", book(), today=TODAY)
+        assert card.action is ActionKind.CANNOT_SAY
+
+    def test_no_reconcile_on_record_keeps_the_old_behaviour(self, store):
+        self.failure(store, minutes_ago=180)
+        card = build_card(store, "CBRS", book(), today=TODAY)
+        assert card.action is ActionKind.CANNOT_SAY
