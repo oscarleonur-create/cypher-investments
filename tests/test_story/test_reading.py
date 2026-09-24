@@ -38,6 +38,13 @@ FACTS = [
     Fact(id="F4", kind="EVENT", text="lease of approximately 38,311.8 square meters in Ningbo"),
     Fact(id="F5", kind="EVENT", text="insider selling cluster 3 insiders selling  $6M"),
     Fact(id="F6", kind="CLAIM", text="The holder's claim: any raise above 5% of market cap"),
+    Fact(
+        id="F7",
+        kind="NEWS",
+        text="news context (third-party commentary from www.benzinga.com) — shares fell on an "
+        "imminent post-IPO share unlock",
+        source="www.benzinga.com",
+    ),
 ]
 
 
@@ -107,6 +114,25 @@ class TestGate:
     )
     def test_valuation_opinions_are_rejected(self, text):
         assert any("valuation opinion" in p for p in check(draft((text, ["F2"])), FACTS))
+
+    def test_commentary_stated_as_fact_is_rejected(self):
+        """Live SPCX draft: a Benzinga unlock story written as established fact."""
+        problems = check(draft(("Un desbloqueo post-OPV crea presión de oferta.", ["F7"])), FACTS)
+        assert any("without saying who said it" in p for p in problems)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Según Benzinga, un desbloqueo post-OPV crea presión de oferta.",
+            "Benzinga atribuye la caída a un desbloqueo post-OPV.",
+            "Press reports tie the drop to a post-IPO unlock.",
+        ],
+    )
+    def test_attributed_commentary_passes(self, text):
+        assert check(draft((text, ["F7"])), FACTS) == []
+
+    def test_a_filing_needs_no_attribution(self):
+        assert check(draft(("El ATM es de hasta $600M.", ["F3"])), FACTS) == []
 
     def test_a_sentence_must_cite(self):
         assert check(draft(("Algo pasa.", [])), FACTS) == ["sentence 1 cites no fact"]
@@ -282,6 +308,22 @@ class TestGatherFacts:
             store.emit(event)
         facts = gather_facts(store, "AAOI")
         assert sum("drawdown" in f.text for f in facts) == 1
+
+    def test_every_state_event_the_mechanics_emit_collapses(self):
+        """The set once said CONCENTRATION; the emitter says CONCENTRATION_WARNING."""
+        from advisor.daemon.book import EQUITY, BookSnapshot, Position
+        from advisor.daemon.mechanics import state_events
+        from advisor.story.reading import _STANDING_KINDS
+
+        # 60% of net liq and down 30%: concentrated and in deep drawdown.
+        held = Position(
+            account="A", symbol="SPCX", underlying="SPCX", instrument=EQUITY,
+            quantity=60, avg_open_price=100.0, close_price=70.0, mark_price=70.0,
+        )  # fmt: skip
+        snapshot = BookSnapshot(as_of=now_et(), net_liq=7_000.0, positions=[held])
+        kinds = {e.kind for e in state_events(snapshot)}
+        assert kinds, "the fixture should trip at least one standing condition"
+        assert kinds <= _STANDING_KINDS
 
     def test_an_atm_is_marked_as_a_maximum(self, store):
         event = Event(

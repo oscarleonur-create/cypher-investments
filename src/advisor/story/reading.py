@@ -45,8 +45,10 @@ WINDOW_DAYS = 45
 MAX_EVENT_FACTS = 20
 
 # Position mechanics that re-fire while a condition persists. Only the latest
-# of each says anything; eight DEEP_DRAWDOWN rows are one fact.
-_STANDING_KINDS = {"DEEP_DRAWDOWN", "STOP_BREACHED", "CONCENTRATION", "DRAWDOWN"}
+# of each says anything: SPCX carried eleven CONCENTRATION_WARNING rows, one a
+# day, which is one fact. The names are the literals in daemon/mechanics.py;
+# a test runs the real emitter so this set cannot drift from it again.
+_STANDING_KINDS = {"DEEP_DRAWDOWN", "STOP_BREACHED", "CONCENTRATION_WARNING"}
 
 
 class Stance(StrEnum):
@@ -60,10 +62,11 @@ class Stance(StrEnum):
 
 class Fact(BaseModel):
     id: str  # "F3"
-    kind: str  # POSITION | VALUATION | EVENT | CLAIM
+    kind: str  # POSITION | VALUATION | EVENT | NEWS | CLAIM
     text: str
     date: str | None = None
     url: str | None = None
+    source: str | None = None  # NEWS only: the publisher, for attribution
 
 
 class Sentence(BaseModel):
@@ -162,8 +165,9 @@ def gather_facts(store: DaemonStore, symbol: str, *, days: int = WINDOW_DAYS) ->
     symbol = symbol.upper()
     facts: list[Fact] = []
 
-    def add(kind: str, text: str, *, date=None, url=None) -> None:
-        facts.append(Fact(id=f"F{len(facts) + 1}", kind=kind, text=text, date=date, url=url))
+    def add(kind: str, text: str, *, date=None, url=None, source=None) -> None:
+        fact_id = f"F{len(facts) + 1}"
+        facts.append(Fact(id=fact_id, kind=kind, text=text, date=date, url=url, source=source))
 
     position = _position_fact(store, symbol)
     if position:
@@ -186,7 +190,16 @@ def gather_facts(store: DaemonStore, symbol: str, *, days: int = WINDOW_DAYS) ->
     for event in sorted(events[:MAX_EVENT_FACTS], key=lambda e: e.ts, reverse=True):
         payload = event.payload or {}
         occurred = payload.get("accepted_at") or payload.get("published_at") or event.ts.isoformat()
-        add("EVENT", _event_text(event), date=str(occurred)[:10], url=payload.get("url"))
+        # Third-party commentary is its own kind: the gate requires any sentence
+        # resting on it to say who is talking.
+        news = event.kind == "NEWS_CONTEXT"
+        add(
+            "NEWS" if news else "EVENT",
+            _event_text(event),
+            date=str(occurred)[:10],
+            url=payload.get("url"),
+            source=payload.get("provider") if news else None,
+        )
 
     for claim in store.load_claims(symbol):
         add("CLAIM", f"The holder's own thesis claim ({claim.kind.value.lower()}): {claim.text}")
@@ -354,6 +367,30 @@ def tidy(draft: Draft) -> Draft:
     )
 
 
+# Words that put a claim in someone else's mouth.
+_ATTRIBUTION = re.compile(
+    r"\b(seg[uú]n|de acuerdo con|reporta\w*|informa\w*|afirma\w*|sostiene\w*|se[nñ]ala\w*|"
+    r"dice\w*|apunta\w*|atribuye\w*|prensa|medios|analistas|comentario\w*|"
+    r"according to|report\w*|writes|wrote|says|said|claims?|per|commentary|analysts?)\b",
+    re.IGNORECASE,
+)
+
+
+def _publisher(source: str | None) -> str | None:
+    """'www.benzinga.com' -> 'benzinga'; 'Motley Fool' -> 'fool'."""
+    if not source:
+        return None
+    words = re.sub(r"^www\.|\.(com|net|org|co|au|uk)\b", "", source.lower()).split()
+    return words[-1] if words else None
+
+
+def _attributed(text: str, cited: list[Fact]) -> bool:
+    if _ATTRIBUTION.search(text):
+        return True
+    names = {_publisher(f.source) for f in cited if f.kind == "NEWS"} - {None}
+    return any(name in text.lower() for name in names)
+
+
 def check(draft: Draft, facts: list[Fact]) -> list[str]:
     """Everything wrong with ``draft``; empty means it may be shown."""
     by_id = {f.id: f for f in facts}
@@ -368,6 +405,12 @@ def check(draft: Draft, facts: list[Fact]) -> list[str]:
         if not cited:
             problems.append(f"sentence {index} cites no fact")
             continue
+        if any(f.kind == "NEWS" for f in cited) and not _attributed(sentence.text, cited):
+            problems.append(
+                f"sentence {index} rests on third-party commentary "
+                f"{[f.id for f in cited if f.kind == 'NEWS']} without saying who said it; "
+                f"attribute it (e.g. 'según Benzinga')"
+            )
         if _FORBIDDEN.search(sentence.text):
             problems.append(
                 f"sentence {index} states a valuation opinion "
@@ -400,8 +443,9 @@ as fact.
 unit and write decimals with a point. You may round (21.53% -> 21.5%), never recompute.
 4. Never state a fair value, price target, or that the stock is over/undervalued. You \
 may say what the price requires.
-5. Third-party commentary is opinion; attribute it, never treat it as fact. The holder's \
-thesis claims are the holder's beliefs; you may test facts against them.
+5. NEWS facts are third-party commentary: a sentence that cites one must say who said it \
+("según Benzinga", "reported by"). Never state it as fact. The holder's thesis claims \
+are the holder's beliefs; you may test facts against them.
 6. Do not recommend trades.
 7. An offering, facility or agreement size is what MAY be sold or spent. Never say \
 it was sold, raised or spent unless a fact says so.
@@ -460,7 +504,7 @@ def read_symbol(
     digest = facts_hash(facts)
     base = dict(symbol=symbol, facts=facts, facts_hash=digest, window_days=days)
 
-    if not any(f.kind == "EVENT" for f in facts):
+    if not any(f.kind in ("EVENT", "NEWS") for f in facts):
         return Reading(status=ReadingStatus.NO_FACTS, **base)
 
     if not refresh:

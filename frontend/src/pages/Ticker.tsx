@@ -105,6 +105,12 @@ export default function Ticker({ quotes }: { quotes: QuotesState }) {
           report is cached for this ticker (the endpoint 404s without one). */}
       <PriceChartPanel symbol={sym} quotes={quotes} />
 
+      {/* What the recent facts imply together; model prose behind a
+          numbers-must-trace gate. Outside the research block on purpose: it
+          reads the daemon's store, and SPCX — the largest holding — had no
+          cached research, so inside it the reading never showed. */}
+      <ReadingCard symbol={sym} />
+
       {/* Interactive, tool-using research agent — always available on a ticker
           page (it can work even before a full report has been built). */}
       <AgentPanel symbol={sym} />
@@ -126,9 +132,6 @@ export default function Ticker({ quotes }: { quotes: QuotesState }) {
           {/* What the daemon last saw happen to this name, assembled from
               stored rows. Renders nothing when there is no event yet. */}
           <StoryCard symbol={sym} />
-          {/* What the recent facts imply together; model prose behind a
-              numbers-must-trace gate. Renders nothing without events. */}
-          <ReadingCard symbol={sym} />
           {/* Headline white-paper brief — full width */}
           <DeepResearchPanel r={data} />
           {/* On-demand BUY/SELL/INCREASE/DECREASE/HOLD recommendation, checks

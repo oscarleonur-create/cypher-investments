@@ -861,10 +861,11 @@ export type ReadingStance = "CONSTRUCTIVE" | "NEUTRAL" | "CAUTIOUS" | "AT_RISK";
 
 export interface ReadingFact {
   id: string;
-  kind: "POSITION" | "VALUATION" | "EVENT" | "CLAIM";
+  kind: "POSITION" | "VALUATION" | "EVENT" | "NEWS" | "CLAIM";
   text: string;
   date: string | null;
   url: string | null;
+  source: string | null;
 }
 
 export interface ReadingSentence {

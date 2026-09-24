@@ -218,6 +218,49 @@ class TestArticles:
         )
         assert article_lead(abstract) == abstract
 
+    def test_benzinga_starts_below_its_headline(self):
+        """Ticker tape and the hero-image caption came back as the lead."""
+        page = (
+            "84363.992.1277%DIA\n\n514.120.03%GLD\n\n"
+            "Close-up of the SpaceX logo on a white surface, with a blurred, colorful stock "
+            "chart background.\n\nSeptember 23, 2026 4:31 PM 2 min read\n\n"
+            "# SpaceX Stock Slides Wednesday: What Happened?\n\n"
+            "Space Exploration Technologies Corp. (NASDAQ:SPCX) shares fell Wednesday as a "
+            "proposed executive insider sale and an imminent post-IPO share unlock create "
+            "near-term supply overhang concerns.\n\nHere’s what investors need to know. [...]"
+        )
+        lead = article_lead(page)
+        assert lead.startswith("Space Exploration Technologies Corp. (NASDAQ:SPCX) shares fell")
+        assert "logo" not in lead
+
+    def test_a_caption_without_a_headline_is_still_dropped(self):
+        page = (
+            "The SpaceX logo, white text on a dark background, is displayed on a screen.\n\n"
+            "SpaceX shares are remaining stable Monday as its Nasdaq-100 weighting doubles."
+        )
+        assert article_lead(page).startswith("SpaceX shares are remaining stable")
+
+    def test_a_quote_widget_is_not_a_lead(self):
+        page = (
+            "Space Exploration Technologies Stock Quote\n\n## NASDAQ: SPCX\n\nToday's Change"
+            "\n\n(-1.36%) $-2.10\n\nMarket Cap\n\n$2.1TMarket cap calculated using publicly "
+            "traded shares outstanding only. Does not include unlisted, private, or dual-class "
+            "non-traded shares.\n\n52wk Range"
+        )
+        assert article_lead(page) is None
+
+    def test_prose_before_a_widget_survives(self):
+        page = (
+            "SpaceX went public at a price that valued it near $1.8 trillion -- about 94 times "
+            "sales at the first quarter's annualized pace.\n\nSpace Exploration Technologies "
+            "Stock Quote\n\n## NASDAQ: SPCX"
+        )
+        assert article_lead(page).startswith("SpaceX went public at a price")
+
+    def test_a_headline_with_nothing_below_falls_back_to_the_page(self):
+        page = "An opening paragraph long enough to count as prose on its own.\n# Headline"
+        assert article_lead(page).startswith("An opening paragraph")
+
     def test_nothing_but_furniture_is_none(self):
         assert article_lead("Logo\nLogo\n# Headline") is None
 
