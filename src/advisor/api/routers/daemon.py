@@ -14,6 +14,8 @@ from datetime import timedelta
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from advisor.news.lead import lead_for
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/daemon", tags=["daemon"])
 
@@ -165,6 +167,7 @@ async def sources(
                     "accession": i.accession,
                     "match": i.entity.method.value,
                     "confidence": i.entity.confidence,
+                    "lead": lead_for(i),
                 }
                 for i in items
             ]
@@ -235,6 +238,7 @@ async def symbol_detail(symbol: str, days: int = Query(45, ge=7, le=365)) -> dic
                     "doc_type": i.doc_type,
                     "item_codes": i.item_codes,
                     "match": i.entity.method.value,
+                    "lead": lead_for(i),
                 }
                 for i in items
             ],

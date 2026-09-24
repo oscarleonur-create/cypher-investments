@@ -278,6 +278,8 @@ def sources_cmd(
     """Archived source items — what the advisor has read, and where it came from."""
     from rich.table import Table
 
+    from advisor.news.lead import lead_for
+
     store = _store()
     try:
         items = store.recent_source_items(symbol, limit=limit)
@@ -309,7 +311,7 @@ def sources_cmd(
                 f"[{colour}]{item.tier.value}[/{colour}]",
                 item.doc_type or "-",
                 f"{item.entity.method.value} {item.entity.confidence:.1f}",
-                item.title[:70],
+                item.title[:70] + (f"\n[dim]{lead}[/dim]" if (lead := lead_for(item)) else ""),
             )
         console.print(table)
         console.print(
@@ -318,6 +320,39 @@ def sources_cmd(
         )
     finally:
         store.close()
+
+
+@app.command("backfill-leads")
+def backfill_leads_cmd(
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Read the lead of every archived 8-K that has none, and attach it to its events.
+
+    Idempotent: only empty fields are filled, so a second run changes nothing.
+    """
+    from advisor.news.ingest import backfill_leads
+
+    store = _store()
+    try:
+        result = backfill_leads(store)
+    finally:
+        store.close()
+    if output == "json":
+        output_json(
+            {
+                "items_read": result.items_read,
+                "items_filled": result.items_filled,
+                "events_filled": result.events_filled,
+                "errors": result.errors,
+            }
+        )
+        return
+    console.print(
+        f"8-Ks read: {result.items_read}  ·  leads stored: {result.items_filled}  ·  "
+        f"events given a lead: {result.events_filled}"
+    )
+    for error in result.errors:
+        console.print(f"[red]{error}[/red]")
 
 
 @app.command("reconcile")

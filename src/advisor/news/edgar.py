@@ -27,6 +27,7 @@ from typing import Any
 
 from advisor.news.classify import classify_delisting, classify_filing
 from advisor.news.foreign import classify_headline
+from advisor.news.lead import eight_k_lead
 from advisor.news.models import EntityMatch, MatchMethod, SourceItem, SourceTier
 
 logger = logging.getLogger(__name__)
@@ -202,6 +203,9 @@ def recent_filings(
             codes = _item_codes(filing)
             security_class = _security_class(filing)
             headline = _headline(filing, form)
+            # An 8-K's items say *that* something happened; the item text says
+            # what. Read here because the filing is already in hand.
+            lead = eight_k_lead(filing, codes) if form.upper().startswith("8-K") else None
             if security_class is not None:
                 classification = classify_delisting(security_class)
             elif headline:
@@ -221,7 +225,7 @@ def recent_filings(
                     doc_type=form,
                     item_codes=codes,
                     accession=str(filing.accession_no),
-                    summary=security_class or (headline[:900] or None),
+                    summary=security_class or (headline[:900] or None) or lead,
                 )
             )
         except Exception as exc:  # noqa: BLE001
