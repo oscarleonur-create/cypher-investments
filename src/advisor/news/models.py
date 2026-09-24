@@ -63,6 +63,10 @@ class MatchMethod(StrEnum):
     COMPANY_NAME = "COMPANY_NAME"  # registered name found in the text
     CASHTAG = "CASHTAG"  # "$AAOI"
     TICKER_TOKEN = "TICKER_TOKEN"  # bare uppercase token, weakest
+    # A product or segment the holder confirmed as part of this company
+    # ("Grok" for SPCX). Never earned from the text alone — the holder vouched
+    # for the link — so it is weak and its items are capped at context.
+    ALIAS = "ALIAS"
     NONE = "NONE"  # no defensible link — the item is dropped
 
 
@@ -72,6 +76,7 @@ MATCH_CONFIDENCE: dict[MatchMethod, float] = {
     MatchMethod.COMPANY_NAME: 0.80,
     MatchMethod.CASHTAG: 0.70,
     MatchMethod.TICKER_TOKEN: 0.60,
+    MatchMethod.ALIAS: 0.55,
     MatchMethod.NONE: 0.0,
 }
 

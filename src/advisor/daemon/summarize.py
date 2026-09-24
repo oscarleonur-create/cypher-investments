@@ -156,6 +156,8 @@ def summarize(event) -> str:
         explains = payload.get("explains")
         if explains:
             parts.append(f"[{str(explains).lower().replace('_', ' ')}]")
+        if payload.get("angle"):
+            parts.append(f"[angle: {payload['angle']}]")
 
     # Data quality.
     elif "check" in payload:

@@ -11,6 +11,8 @@ import type {
   StructuredThesis,
   SymbolDaemonDetail,
   TickerReading,
+  WatchAngle,
+  AngleStatus,
   ThesisCoverage,
   BayesianOverrides,
   BayesianPriceResult,
@@ -135,6 +137,13 @@ export const api = {
     ),
   daemonSymbol: (symbol: string) =>
     get<SymbolDaemonDetail>(`/api/daemon/symbol/${symbol}`),
+  daemonAngles: (symbol: string) =>
+    get<{ symbol: string; angles: WatchAngle[] }>(`/api/daemon/symbol/${symbol}/angles`),
+  decideAngle: (symbol: string, term: string, status: AngleStatus) =>
+    post<{ symbol: string; angles: WatchAngle[] }>(`/api/daemon/symbol/${symbol}/angles`, {
+      term,
+      status,
+    }),
   daemonReading: (symbol: string, refresh = false) =>
     get<TickerReading>(`/api/daemon/symbol/${symbol}/reading?refresh=${refresh}`),
   daemonReconcile: () => post<ReconcileReport>("/api/daemon/reconcile"),

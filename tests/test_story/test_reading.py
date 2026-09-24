@@ -93,6 +93,19 @@ class TestGate:
         assert check(draft(("Hasta $0.6bn.", ["F3"])), FACTS) == []
         assert check(draft(("Hasta 600 millones.", ["F3"])), FACTS) == []
 
+    @pytest.mark.parametrize(
+        "written", ["$2 billones", "$2 billón", "$2 trillion", "$2T", "$2,000 bn"]
+    )
+    def test_the_long_scale(self, written):
+        """Live SPCX: '$2 billones' for Fool's '$2 trillion' was rejected as 10^9."""
+        facts = [Fact(id="F1", kind="EVENT", text="market value near $2 trillion today")]
+        assert check(draft((f"Vale cerca de {written}.", ["F1"])), facts) == []
+
+    def test_a_spanish_billion_is_not_an_english_billion(self):
+        facts = [Fact(id="F1", kind="EVENT", text="proceeds of $2 billion")]
+        assert check(draft(("Recaudó $2 billones.", ["F1"])), facts) != []
+        assert check(draft(("Recaudó $2 mil millones.", ["F1"])), facts) == []
+
     def test_the_space_grouped_area_is_grounded(self):
         """The live false positive: '38 311,8' was read as 311.8 and rejected."""
         assert check(draft(("Una nave de 38 311,8 m² en Ningbo.", ["F4"])), FACTS) == []
@@ -342,6 +355,40 @@ class TestGatherFacts:
         store.emit(event)
         (fact,) = [f for f in gather_facts(store, "AAOI") if "dilution" in f.text]
         assert "not an amount already raised" in fact.text
+
+    def test_angle_coverage_cannot_crowd_out_context(self, store):
+        """Live SPCX: ten Grok/xAI articles pushed the unlock story out."""
+
+        def news(kind, key, angle=None, hours=0):
+            payload = {"title": key, "url": f"https://x/{key}", "provider": "www.benzinga.com"}
+            if angle:
+                payload["angle"] = angle
+            event = Event(
+                source=EventSource.CALENDAR, kind=kind, tier=EventTier.C, symbol="SPCX",
+                dedup_key=key, payload=payload,
+            )  # fmt: skip
+            event.ts = now_et() - timedelta(hours=hours)
+            store.emit(event)
+
+        for i in range(8):
+            news("NEWS_ANGLE", f"grok-{i}", angle="Grok", hours=i)
+        for i in range(3):
+            news("NEWS_ANGLE", f"xai-{i}", angle="xAI", hours=i)
+        news("NEWS_CONTEXT", "unlock", hours=48)
+        texts = [f.text for f in gather_facts(store, "SPCX") if f.kind == "NEWS"]
+        assert any("unlock" in t for t in texts)
+        assert sum("grok-" in t for t in texts) <= 3
+        assert sum("xai-" in t for t in texts) <= 3
+        assert sum(("grok-" in t) or ("xai-" in t) for t in texts) == 5
+
+    def test_a_form_144_is_a_notice_not_a_sale(self, store):
+        event = Event(
+            source=EventSource.EDGAR, kind="FILING_INSIDER_TRADE", tier=EventTier.C,
+            symbol="SPCX", dedup_key="144", payload={"form": "144", "items": []},
+        )  # fmt: skip
+        store.emit(event)
+        (fact,) = [f for f in gather_facts(store, "SPCX") if f.kind == "EVENT"]
+        assert "not a completed sale" in fact.text
 
     def test_other_symbols_do_not_leak_in(self, store):
         filing(store)

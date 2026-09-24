@@ -43,12 +43,21 @@ logger = logging.getLogger(__name__)
 
 WINDOW_DAYS = 45
 MAX_EVENT_FACTS = 20
+# Angles are searched daily. With one shared cap, a day of Grok 4.7 coverage
+# pushed the Benzinga story on SPCX's share unlock out of the reading; each
+# kind of news now has its own room, and no single angle can take all of it.
+MAX_CONTEXT_FACTS = 5
+MAX_ANGLE_FACTS = 5
+MAX_FACTS_PER_ANGLE = 3
 
 # Position mechanics that re-fire while a condition persists. Only the latest
 # of each says anything: SPCX carried eleven CONCENTRATION_WARNING rows, one a
 # day, which is one fact. The names are the literals in daemon/mechanics.py;
 # a test runs the real emitter so this set cannot drift from it again.
 _STANDING_KINDS = {"DEEP_DRAWDOWN", "STOP_BREACHED", "CONCENTRATION_WARNING"}
+
+# Third-party reporting: pulled to explain a move, or found through an angle.
+_NEWS_KINDS = {"NEWS_CONTEXT", "NEWS_ANGLE"}
 
 
 class Stance(StrEnum):
@@ -132,8 +141,12 @@ def _valuation_fact(store: DaemonStore, symbol: str) -> str | None:
     base = snapshot.base_case()
     if base is None:
         return None
+    # Dated and tied to its own price. Written as "At $152.64 ... the price
+    # requires", the model read $152.64 as a level today's $147.60 was
+    # approaching, rather than the price the requirement was computed at.
     text = (
-        f"At ${snapshot.price:,.2f} (market cap ${snapshot.market_cap / 1e9:,.2f}bn), the price "
+        f"Last valuation, computed on {snapshot.asof} at that day's price of "
+        f"${snapshot.price:,.2f} (market cap ${snapshot.market_cap / 1e9:,.2f}bn): that price "
         f"requires {base.describe()}."
     )
     if snapshot.is_stale():
@@ -147,9 +160,14 @@ def _event_text(event: Event) -> str:
     parts = [f"{kind} (tier {event.tier.value}"]
     if payload.get("form"):
         parts[0] += f", {payload['form']}"
-    if payload.get("provider") and event.kind == "NEWS_CONTEXT":
+    if payload.get("provider") and event.kind in _NEWS_KINDS:
         parts[0] += f", third-party commentary from {payload['provider']}"
+    if payload.get("angle"):
+        parts[0] += f", found through the holder's tracked angle '{payload['angle']}'"
     parts[0] += ")"
+    if str(payload.get("form", "")).startswith("144"):
+        # A live draft wrote "an insider sale was recorded" from a Form 144.
+        parts.append("notice of a proposed insider sale — not a completed sale")
     line = summarize(event)
     if line:
         parts.append(line)
@@ -178,12 +196,26 @@ def gather_facts(store: DaemonStore, symbol: str, *, days: int = WINDOW_DAYS) ->
 
     since = now_et() - timedelta(days=days)
     seen_standing: set[str] = set()
+    context = 0
+    per_angle: dict[str, int] = {}
     events = []
     for event in store.recent_events(symbol=symbol, since=since, limit=200):
         if event.kind in _STANDING_KINDS:
             if event.kind in seen_standing:
                 continue
             seen_standing.add(event.kind)
+        if event.kind == "NEWS_CONTEXT":
+            context += 1
+            if context > MAX_CONTEXT_FACTS:
+                continue
+        if event.kind == "NEWS_ANGLE":
+            angle = str((event.payload or {}).get("angle", ""))
+            if (
+                per_angle.get(angle, 0) >= MAX_FACTS_PER_ANGLE
+                or sum(per_angle.values()) >= MAX_ANGLE_FACTS
+            ):
+                continue
+            per_angle[angle] = per_angle.get(angle, 0) + 1
         events.append(event)
     # Tier A and B first, then context, newest first within each.
     events.sort(key=lambda e: (e.tier is EventTier.C, -e.ts.timestamp()))
@@ -192,7 +224,7 @@ def gather_facts(store: DaemonStore, symbol: str, *, days: int = WINDOW_DAYS) ->
         occurred = payload.get("accepted_at") or payload.get("published_at") or event.ts.isoformat()
         # Third-party commentary is its own kind: the gate requires any sentence
         # resting on it to say who is talking.
-        news = event.kind == "NEWS_CONTEXT"
+        news = event.kind in _NEWS_KINDS
         add(
             "NEWS" if news else "EVENT",
             _event_text(event),
@@ -269,12 +301,19 @@ _DATES = re.compile(
 _NUMBER = re.compile(
     # Space-grouped thousands first ("38 311,8"), else digits and separators.
     r"(?P<num>\d{1,3}(?:[ \u00a0\u202f]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)*)\s*"
-    r"(?P<unit>%|mil millones|billones?|billion|bn|millones|mill[oó]n|million|mm|[bmk]\b)?",
+    r"(?P<unit>%|mil millones|bill[oó]n(?:es)?|billions?|trillions?|millones|mill[oó]n|"
+    r"millions?|bn|tn|mm|[bmkt]\b)?",
     re.IGNORECASE,
 )
+# Spanish counts in the long scale: un billón is 10^12, what English calls a
+# trillion. Mapping "billones" to 10^9 rejected a correct "$2 billones" for
+# Fool's "$2 trillion" market cap.
 _SCALES = {
-    "mil millones": 1e9, "billon": 1e9, "billones": 1e9, "billion": 1e9, "bn": 1e9, "b": 1e9,
-    "millones": 1e6, "millon": 1e6, "millón": 1e6, "million": 1e6, "mm": 1e6, "m": 1e6,
+    "trillion": 1e12, "trillions": 1e12, "tn": 1e12, "t": 1e12,
+    "billón": 1e12, "billon": 1e12, "billones": 1e12,
+    "mil millones": 1e9, "billion": 1e9, "billions": 1e9, "bn": 1e9, "b": 1e9,
+    "millones": 1e6, "millon": 1e6, "millón": 1e6, "million": 1e6, "millions": 1e6,
+    "mm": 1e6, "m": 1e6,
     "k": 1e3,
 }  # fmt: skip
 
