@@ -13,7 +13,7 @@ import sqlite3
 from datetime import date
 from pathlib import Path
 
-from advisor.scanner.models import Candidate, Setup
+from advisor.scanner.models import Candidate, Phase, Setup, TradeDecision, candidate_id
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS scan_candidates (
@@ -28,6 +28,19 @@ CREATE TABLE IF NOT EXISTS scan_candidates (
 );
 CREATE INDEX IF NOT EXISTS idx_scan_candidates_session
     ON scan_candidates(session DESC, setup);
+
+-- Append-only: a change of mind (a skip later corrected by a broker fill) is
+-- a new row, so the record of what was believed when survives.
+CREATE TABLE IF NOT EXISTS scan_decisions (
+    candidate_id TEXT NOT NULL,
+    taken        INTEGER NOT NULL,            -- 1 taken, 0 not taken
+    source       TEXT NOT NULL,               -- broker | user
+    payload_json TEXT NOT NULL,               -- TradeDecision
+    decided_at   TEXT NOT NULL,
+    created_at   TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_scan_decisions_candidate
+    ON scan_decisions(candidate_id, decided_at DESC);
 """
 
 
@@ -64,12 +77,48 @@ class ScannerStore:
         self._conn.commit()
         return cur.rowcount > 0
 
-    def exists(self, session: date, setup: Setup, symbol: str) -> bool:
+    def exists(
+        self, session: date, setup: Setup, symbol: str, phase: Phase = Phase.SESSION
+    ) -> bool:
         row = self._conn.execute(
             "SELECT 1 FROM scan_candidates WHERE id = ?",
-            (f"{session.isoformat()}:{setup.value}:{symbol.upper()}",),
+            (candidate_id(session, setup, symbol, phase),),
         ).fetchone()
         return row is not None
+
+    def get(self, cid: str) -> Candidate | None:
+        row = self._conn.execute(
+            "SELECT payload_json FROM scan_candidates WHERE id = ?", (cid,)
+        ).fetchone()
+        return Candidate.model_validate_json(row["payload_json"]) if row else None
+
+    # ── Journal: what the user did about each candidate ───────────────────
+
+    def record_decision(self, d: TradeDecision) -> None:
+        """Append. The newest decision per candidate is the one that stands."""
+        self._conn.execute(
+            "INSERT INTO scan_decisions (candidate_id, taken, source, payload_json, decided_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                d.candidate_id,
+                int(d.taken),
+                d.source.value,
+                d.model_dump_json(),
+                d.decided_at.isoformat(),
+            ),
+        )
+        self._conn.commit()
+
+    def latest_decisions(self) -> dict[str, TradeDecision]:
+        """Newest decision per candidate id."""
+        rows = self._conn.execute(
+            "SELECT payload_json FROM scan_decisions ORDER BY decided_at ASC, rowid ASC"
+        ).fetchall()
+        out: dict[str, TradeDecision] = {}
+        for r in rows:
+            d = TradeDecision.model_validate_json(r["payload_json"])
+            out[d.candidate_id] = d
+        return out
 
     def news_checked_count(self, session: date) -> int:
         """How many news lookups this session has spent (the credit budget)."""

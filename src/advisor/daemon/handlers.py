@@ -300,15 +300,53 @@ async def run_setup_scan(ctx: JobContext) -> JobResult:
     return JobResult(job="scan", ok=ok, detail=result.summary())
 
 
-async def run_scan_outcomes(ctx: JobContext) -> JobResult:
-    """After the close: fill in what each candidate's price did next."""
+async def run_premarket_scan(ctx: JobContext) -> JobResult:
+    """Before the bell: setups A, B and C on the TastyTrade "Swing" watchlist.
+
+    Measurement only, like the session scan: nothing reaches the event stream.
+    """
     import asyncio
 
+    from advisor.scanner.premarket import scan_watchlist
+
+    result = await asyncio.to_thread(
+        _with_scanner_store, ctx.store.db_path, scan_watchlist, ctx.now
+    )
+    # A missing watchlist is a failure worth seeing in `daemon status`; an
+    # empty morning is not.
+    ok = result.error is None
+    logger.info("premarket_scan: %s", result.summary())
+    return JobResult(job="premarket_scan", ok=ok, detail=result.summary())
+
+
+async def run_scan_outcomes(ctx: JobContext) -> JobResult:
+    """After the close: fill what each candidate's price did, and which were taken.
+
+    Fills are synced for the last three sessions, not just today's, so a
+    laptop asleep through one 16:20 slot still catches up the next day.
+    """
+    import asyncio
+
+    from advisor.daemon import market_calendar as mc
+    from advisor.scanner.journal import sync_fills
     from advisor.scanner.outcomes import fill_outcomes
 
     result = await asyncio.to_thread(_with_scanner_store, ctx.store.db_path, fill_outcomes, ctx.now)
-    logger.info("scan_outcomes: %s", result.summary())
-    return JobResult(job="scan_outcomes", ok=True, detail=result.summary())
+    today = ctx.now.date()
+    sessions = [today] if mc.is_trading_day(today) else []
+    cursor = today
+    while len(sessions) < 3:
+        cursor = mc.previous_trading_day(cursor)
+        sessions.append(cursor)
+    taken = await asyncio.to_thread(
+        _with_scanner_store,
+        ctx.store.db_path,
+        lambda store, _now: sync_fills(store, sessions),
+        ctx.now,
+    )
+    detail = f"{result.summary()}; {taken} newly taken from broker fills"
+    logger.info("scan_outcomes: %s", detail)
+    return JobResult(job="scan_outcomes", ok=True, detail=detail)
 
 
 def _with_scanner_store(db_path, fn, now):

@@ -65,6 +65,41 @@ class DailyAt:
 
 
 @dataclass(frozen=True)
+class WindowEvery:
+    """Fire every ``minutes`` inside a daily wall-clock window, trading days only.
+
+    For work that only makes sense in a slice of the day — the premarket scan
+    runs 08:00-09:25 and has nothing to say after the bell. A laptop that
+    wakes at 09:10 still gets one run in the window; one that wakes at 10:00
+    gets none, because a premarket scan at 10:00 would be a session scan
+    with the wrong entry price.
+    """
+
+    start: time
+    end: time
+    minutes: int
+
+    def is_due(self, now: datetime, last_run: datetime | None) -> bool:
+        et = mc.to_et(now)
+        if not mc.is_trading_day(et.date()):
+            return False
+        if not (self.start <= et.time() < self.end):
+            return False
+        if last_run is None:
+            return True
+        last = mc.to_et(last_run)
+        if last.date() != et.date():
+            return True
+        return et - last >= timedelta(minutes=self.minutes)
+
+    def describe(self) -> str:
+        return (
+            f"every {self.minutes}m {self.start.strftime('%H:%M')}-"
+            f"{self.end.strftime('%H:%M')} ET (trading days)"
+        )
+
+
+@dataclass(frozen=True)
 class EveryMinutes:
     """Fire on an interval, optionally only while the market is open."""
 

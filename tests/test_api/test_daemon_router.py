@@ -83,6 +83,7 @@ class TestStatus:
             "valuation",
             "insiders",
             "scan",
+            "premarket_scan",
             "scan_outcomes",
             "heartbeat",
         } == names

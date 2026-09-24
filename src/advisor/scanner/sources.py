@@ -153,15 +153,9 @@ def choose_peers(
     return list(corr.index[:max_peers])
 
 
-def peer_move(symbol: str, sessions: int = 60) -> tuple[list[str], float | None]:
-    """(peers, their median move today). ([], None) whenever it can't be judged.
-
-    Today's move comes from each peer's live quote, not the daily bar: during
-    the session yfinance's partial daily row is often NaN.
-    """
+def select_peers(symbol: str, sessions: int = 60) -> list[str]:
+    """Industry members most correlated with ``symbol``. [] when unavailable."""
     try:
-        import statistics
-
         import pandas as pd
         import yfinance as yf
 
@@ -169,16 +163,35 @@ def peer_move(symbol: str, sessions: int = 60) -> tuple[list[str], float | None]
 
         key = yf.Ticker(symbol).info.get("industryKey")
         if not key:
-            return [], None
+            return []
         universe = [p for p in yf.Industry(key).top_companies.index.tolist() if p != symbol][:20]
         if len(universe) < 2:
-            return [], None
+            return []
         closes = yf.download(
             [symbol, *universe], period="6mo", interval="1d", progress=False, auto_adjust=False
         )["Close"]
         closes = closes[closes.index < pd.Timestamp(now_et().date())]
         returns = closes.pct_change(fill_method=None).tail(sessions)
-        peers = choose_peers(returns, symbol)
+        return choose_peers(returns, symbol)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("scanner: peer selection failed for %s: %s", symbol, exc)
+        return []
+
+
+def peer_move(symbol: str, sessions: int = 60) -> tuple[list[str], float | None]:
+    """(peers, their median move today). ([], None) whenever it can't be judged.
+
+    Today's move comes from each peer's live quote, not the daily bar: during
+    the session yfinance's partial daily row is often NaN.
+    """
+    peers = select_peers(symbol, sessions)
+    if not peers:
+        return [], None
+    try:
+        import statistics
+
+        import yfinance as yf
+
         moves = []
         for p in peers:
             # The same quote fields the screener reports for the candidate, so
@@ -257,6 +270,38 @@ def find_catalysts(
 
     items.sort(key=lambda i: i.published_at, reverse=True)
     return items, asked
+
+
+def daily_closes(symbol: str, start, end) -> dict | None:
+    """{session date: close} between two dates, or None.
+
+    Yahoo sometimes returns a session's daily row as NaN (it lost 2026-09-22
+    for several names). Such a day is left out, so its horizon stays pending
+    and is retried, rather than being written from a wrong close.
+    """
+    try:
+        import yfinance as yf
+
+        df = yf.download(
+            symbol,
+            start=start.isoformat(),
+            end=end.isoformat(),
+            interval="1d",
+            progress=False,
+            auto_adjust=False,
+            multi_level_index=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("scanner: daily closes unavailable for %s: %s", symbol, exc)
+        return None
+    if df is None or df.empty or "Close" not in df:
+        return None
+    out = {}
+    for ts, px in df["Close"].items():
+        value = _num(px)
+        if value and value > 0:
+            out[ts.date()] = value
+    return out or None
 
 
 def intraday_bars(symbol: str, start, end):

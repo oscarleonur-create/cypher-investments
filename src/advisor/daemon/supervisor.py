@@ -22,6 +22,7 @@ from advisor.daemon.jobs import (
     Job,
     JobContext,
     JobRegistry,
+    WindowEvery,
 )
 from advisor.daemon.models import JobResult
 from advisor.daemon.store import DaemonStore
@@ -103,6 +104,14 @@ def build_registry() -> JobRegistry:
             trigger=EveryMinutes(30, during_session_only=True, not_before=time(9, 35)),
             handler=handlers.run_setup_scan,
             description="record setup A/C candidates market-wide; never alerts",
+        )
+    )
+    reg.register(
+        Job(
+            name="premarket_scan",
+            trigger=WindowEvery(start=time(8, 0), end=time(9, 25), minutes=20),
+            handler=handlers.run_premarket_scan,
+            description="record setup A/B/C candidates on the Swing watchlist before the bell",
         )
     )
     reg.register(

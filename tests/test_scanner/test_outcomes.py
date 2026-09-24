@@ -8,7 +8,12 @@ import pandas as pd
 import pytest
 from advisor.daemon import market_calendar as mc
 from advisor.scanner.models import Candidate, Setup
-from advisor.scanner.outcomes import KEYS, compute, fill_outcomes, next_trading_day
+from advisor.scanner.outcomes import (
+    INTRADAY_KEYS,
+    compute,
+    fill_outcomes,
+    next_trading_day,
+)
 from advisor.scanner.report import summarize
 from advisor.scanner.store import ScannerStore
 
@@ -45,7 +50,7 @@ TWO_DAYS = pd.concat([bars(date(2026, 9, 23)), bars(date(2026, 9, 24), start_pri
 
 def test_all_horizons_after_next_close():
     out = compute(cand(), TWO_DAYS, et(2026, 9, 24, 16, 30))
-    assert set(out) == set(KEYS)
+    assert set(out) == set(INTRADAY_KEYS)
     # detection 10:00 at 100; bar at 10:30 opens at 100 + 12*0.1
     assert out["r30"] == pytest.approx(101.2 / 100 - 1)
     assert out["next_open"] == pytest.approx(0.10)
@@ -106,27 +111,31 @@ def test_fill_is_idempotent_and_never_overwrites(store):
         calls.append(symbol)
         return TWO_DAYS
 
-    first = fill_outcomes(store, et(2026, 9, 23, 16, 30), bars_fn=fetch)
+    no_daily = lambda *a: None  # noqa: E731
+
+    first = fill_outcomes(store, et(2026, 9, 23, 16, 30), bars_fn=fetch, daily_fn=no_daily)
     assert first.updated == 1
     before = dict(store.list()[0].outcomes)
 
     # A later run with different bars must not rewrite what was written.
     shifted = TWO_DAYS.assign(Open=TWO_DAYS.Open * 2, Close=TWO_DAYS.Close * 2)
-    fill_outcomes(store, et(2026, 9, 24, 16, 30), bars_fn=lambda *a: shifted)
+    fill_outcomes(store, et(2026, 9, 24, 16, 30), bars_fn=lambda *a: shifted, daily_fn=no_daily)
     after = store.list()[0].outcomes
     for k, v in before.items():
         assert after[k] == v
-    assert {"next_open", "next_close"} <= set(after)
+    assert set(INTRADAY_KEYS) <= set(after)
 
-    # Complete rows are not fetched again.
+    # Once the intraday keys are complete, only daily data is asked for.
     calls.clear()
-    fill_outcomes(store, et(2026, 9, 25, 16, 30), bars_fn=fetch)
+    fill_outcomes(store, et(2026, 9, 25, 16, 30), bars_fn=fetch, daily_fn=no_daily)
     assert calls == []
 
 
 def test_missing_bars_reported(store):
     store.add(cand())
-    r = fill_outcomes(store, et(2026, 9, 23, 16, 30), bars_fn=lambda *a: None)
+    r = fill_outcomes(
+        store, et(2026, 9, 23, 16, 30), bars_fn=lambda *a: None, daily_fn=lambda *a: None
+    )
     assert r.no_bars == ["AMPG"] and r.updated == 0
 
 
