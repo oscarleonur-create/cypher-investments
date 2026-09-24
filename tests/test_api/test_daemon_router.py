@@ -82,6 +82,8 @@ class TestStatus:
             "reconcile",
             "valuation",
             "insiders",
+            "scan",
+            "scan_outcomes",
             "heartbeat",
         } == names
 
