@@ -113,5 +113,6 @@ def build_snapshot(
         ev_to_revenue=(enterprise_value / runrate) if runrate else None,
         source_accession=fundamentals.source_accession,
         period_end=fundamentals.period_end,
+        revenue_yoy=fundamentals.revenue_yoy,
         scenarios=[s for s in built if s is not None],
     )

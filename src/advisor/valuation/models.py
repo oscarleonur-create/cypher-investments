@@ -38,6 +38,10 @@ class Fundamentals(BaseModel):
     fiscal_period: str | None = None
 
     revenue: float | None = None  # the period's consolidated revenue
+    # The same-length period a year earlier, from the same filing's
+    # comparative column. None when the filing carries no comparative (a
+    # first report after an IPO) — never estimated.
+    prior_revenue: float | None = None
     operating_income: float | None = None
     net_income: float | None = None
     cash: float | None = None
@@ -58,6 +62,13 @@ class Fundamentals(BaseModel):
         if self.cash is None:
             return None
         return self.cash + (self.marketable_securities or 0.0) - (self.total_debt or 0.0)
+
+    @property
+    def revenue_yoy(self) -> float | None:
+        """Growth over the comparable period a year earlier, or None."""
+        if not self.revenue or not self.prior_revenue or self.prior_revenue <= 0:
+            return None
+        return self.revenue / self.prior_revenue - 1
 
     @property
     def revenue_runrate(self) -> float | None:
@@ -110,6 +121,10 @@ class ValuationSnapshot(BaseModel):
     ev_to_revenue: float | None
     source_accession: str
     period_end: date
+    # Year-over-year growth of the period's revenue, from the filing's own
+    # comparative column. What the business is delivering, set beside what the
+    # price requires. None when there is no comparative.
+    revenue_yoy: float | None = None
     scenarios: list[ImpliedExpectations] = Field(default_factory=list)
     computed_at: datetime = Field(default_factory=now_et)
 

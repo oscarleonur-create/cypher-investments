@@ -861,7 +861,7 @@ export type ReadingStance = "CONSTRUCTIVE" | "NEUTRAL" | "CAUTIOUS" | "AT_RISK";
 
 export interface ReadingFact {
   id: string;
-  kind: "POSITION" | "VALUATION" | "EVENT" | "NEWS" | "CLAIM";
+  kind: "POSITION" | "VALUATION" | "SCORECARD" | "EVENT" | "NEWS" | "CLAIM";
   text: string;
   date: string | null;
   url: string | null;
@@ -871,6 +871,23 @@ export interface ReadingFact {
 export interface ReadingSentence {
   text: string;
   facts: string[];
+}
+
+export interface ScorecardRow {
+  label: string;
+  value: string;
+  detail: string;
+  source: string;
+  status: "OK" | "TRIPPED" | "UNCHECKABLE" | null;
+  claim: string | null;
+}
+
+/** Deterministic numbers: what the price requires, what the business
+ *  delivers, what analysts expect, and the holder's lines. */
+export interface Scorecard {
+  symbol: string;
+  expectations: ScorecardRow[];
+  thresholds: ScorecardRow[];
 }
 
 /** Model-written, shown only when every number traces to a cited fact. */
@@ -885,6 +902,7 @@ export interface TickerReading {
   problems: string[];
   generated_at: string;
   window_days: number;
+  scorecard: Scorecard | null;
 }
 
 export type AngleStatus = "SUGGESTED" | "CONFIRMED" | "REJECTED";

@@ -15,7 +15,7 @@ defaulted. A valuation built on a guessed input is worse than no valuation.
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 from advisor.valuation.models import Fundamentals, ValuationSnapshot
 
@@ -178,6 +178,36 @@ def _total_debt(xbrl, asof: date) -> tuple[float | None, bool]:
     return None, mentioned
 
 
+# A 52/53-week fiscal year moves the comparable quarter by a day or two: AMD's
+# Q2 2026 ended 2026-06-27 and its Q2 2025 on 2025-06-28.
+_COMPARABLE_SLACK_DAYS = 7
+
+
+def _prior_year_value(xbrl, concepts, start: date | None, end: date) -> float | None:
+    """The same-length period a year before ``start``..``end``, from the
+    filing's comparative column. Undimensioned facts only."""
+    if start is None:
+        return None
+    length = (end - start).days
+    target_end = end - timedelta(days=365)
+    for concept in concepts:
+        df = _frame(xbrl, concept)
+        if df is None or "period_start" not in df.columns or "period_end" not in df.columns:
+            continue
+        for _, row in df.dropna(subset=["numeric_value", "period_start"]).iterrows():
+            try:
+                row_end = date.fromisoformat(str(row["period_end"])[:10])
+                row_start = date.fromisoformat(str(row["period_start"])[:10])
+            except ValueError:
+                continue
+            if (
+                abs((row_end - target_end).days) <= _COMPARABLE_SLACK_DAYS
+                and abs((row_end - row_start).days - length) <= _COMPARABLE_SLACK_DAYS
+            ):
+                return float(row["numeric_value"])
+    return None
+
+
 def fundamentals_from_filing(symbol: str, filing) -> Fundamentals | None:
     """Extract the figures a valuation needs from one filing, or None."""
     try:
@@ -219,6 +249,7 @@ def fundamentals_from_filing(symbol: str, filing) -> Fundamentals | None:
         period_start=start,
         fiscal_period="Q" if str(filing.form).startswith("10-Q") else "FY",
         revenue=revenue,
+        prior_revenue=_prior_year_value(xbrl, REVENUE_CONCEPTS, start, period_end),
         operating_income=_duration_value(xbrl, OPERATING_CONCEPTS, start, period_end),
         net_income=_duration_value(xbrl, NET_INCOME_CONCEPTS, start, period_end),
         cash=_instant_value(xbrl, CASH_CONCEPTS, period_end),

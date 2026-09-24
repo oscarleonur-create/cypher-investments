@@ -2,7 +2,13 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
-import type { ReadingFact, ReadingStance, TickerReading } from "@/lib/types";
+import type {
+  ReadingFact,
+  ReadingStance,
+  Scorecard,
+  ScorecardRow,
+  TickerReading,
+} from "@/lib/types";
 import { cn, fmtEt } from "@/lib/utils";
 import { Card } from "@/components/ui/card";
 
@@ -12,6 +18,59 @@ const STANCE: Record<ReadingStance, { label: string; tone: string }> = {
   CAUTIOUS: { label: "Cautious", tone: "bg-warn/15 text-warn" },
   AT_RISK: { label: "At risk", tone: "bg-neg/15 text-neg" },
 };
+
+const MARK: Record<string, { glyph: string; tone: string; title: string }> = {
+  OK: { glyph: "✓", tone: "text-pos", title: "within the line" },
+  TRIPPED: { glyph: "✗", tone: "text-neg", title: "past the line" },
+  UNCHECKABLE: { glyph: "?", tone: "text-muted", title: "nothing can check this" },
+};
+
+function ScoreRow({ row }: { row: ScorecardRow }) {
+  const mark = row.status ? MARK[row.status] : null;
+  return (
+    <div
+      className="grid grid-cols-[16px_minmax(0,11rem)_minmax(0,7rem)_1fr] items-baseline gap-2 py-0.5"
+      title={row.claim ? `Your claim: ${row.claim}` : row.source}
+    >
+      <span className={cn("text-xs", mark?.tone)} aria-label={mark?.title}>
+        {mark?.glyph ?? ""}
+      </span>
+      <span className="truncate text-xs text-muted">{row.label}</span>
+      <span className="text-sm font-medium tnum">{row.value}</span>
+      <span className="min-w-0 text-xs text-muted">
+        {row.detail}
+        {row.source && <span className="opacity-60"> · {row.source}</span>}
+      </span>
+    </div>
+  );
+}
+
+/** The numbers first. Read from stored filings, valuation, consensus and
+ *  claims — no model writes any of this. */
+function ScorecardTable({ card }: { card: Scorecard }) {
+  return (
+    <div className="mb-3 space-y-3">
+      {card.expectations.length > 0 && (
+        <div>
+          <div className="mb-1 text-[10px] uppercase tracking-wide text-muted">Expectations</div>
+          {card.expectations.map((r) => (
+            <ScoreRow key={r.label} row={r} />
+          ))}
+        </div>
+      )}
+      {card.thresholds.length > 0 && (
+        <div>
+          <div className="mb-1 text-[10px] uppercase tracking-wide text-muted">
+            Your thresholds
+          </div>
+          {card.thresholds.map((r) => (
+            <ScoreRow key={r.label} row={r} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** A citation chip: hover shows the fact the sentence rests on. */
 function Cite({ fact }: { fact: ReadingFact | undefined; id: string }) {
@@ -41,7 +100,10 @@ export function ReadingCard({ symbol }: { symbol: string }) {
   const [refreshing, setRefreshing] = useState(false);
   const [showFacts, setShowFacts] = useState(false);
 
-  if (isLoading || !data || data.status === "NO_FACTS") return null;
+  if (isLoading || !data) return null;
+  const card = data.scorecard;
+  const hasNumbers = Boolean(card && (card.expectations.length || card.thresholds.length));
+  if (data.status === "NO_FACTS" && !hasNumbers) return null;
 
   const refresh = async () => {
     setRefreshing(true);
@@ -77,8 +139,10 @@ export function ReadingCard({ symbol }: { symbol: string }) {
         </button>
       </div>
 
+      {card && hasNumbers && <ScorecardTable card={card} />}
+
       {data.status === "OK" && (
-        <div className="space-y-2 text-sm leading-relaxed">
+        <div className="space-y-2 border-t border-border/50 pt-3 text-sm leading-relaxed">
           {data.sentences.map((s, i) => (
             <p key={i}>
               {s.text}
@@ -109,7 +173,7 @@ export function ReadingCard({ symbol }: { symbol: string }) {
           {showFacts ? "Hide facts" : "Show the facts it was written from"}
         </button>
       )}
-      {(showFacts || data.status !== "OK") && (
+      {(showFacts || data.status === "REJECTED" || data.status === "UNAVAILABLE") && (
         <ol className="mt-2 space-y-1 text-xs text-muted">
           {data.facts.map((f) => (
             <li key={f.id} className="flex gap-2">

@@ -155,6 +155,14 @@ CREATE TABLE IF NOT EXISTS watch_angles (
     PRIMARY KEY (symbol, term)
 );
 
+-- The latest analyst revenue consensus per symbol (valuation.consensus).
+-- One row per symbol: an estimate is only ever read as "as of", never as history.
+CREATE TABLE IF NOT EXISTS consensus_snapshots (
+    symbol      TEXT NOT NULL PRIMARY KEY,
+    payload_json TEXT NOT NULL,
+    fetched_at  TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS daemon_heartbeat (
     job         TEXT NOT NULL PRIMARY KEY,
     last_run_at TEXT,
@@ -664,6 +672,19 @@ class DaemonStore:
             params.append(status)
         sql += " ORDER BY status = 'CONFIRMED' DESC, rowid"
         return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
+
+    def save_consensus(self, symbol: str, payload_json: str) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO consensus_snapshots (symbol, payload_json) VALUES (?, ?)",
+            (symbol.upper(), payload_json),
+        )
+        self._conn.commit()
+
+    def load_consensus(self, symbol: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT payload_json FROM consensus_snapshots WHERE symbol = ?", (symbol.upper(),)
+        ).fetchone()
+        return row["payload_json"] if row else None
 
     def save_reading(self, symbol: str, facts_hash: str, payload_json: str) -> None:
         """Store a reading; a refresh of the same fact set replaces the old one."""
