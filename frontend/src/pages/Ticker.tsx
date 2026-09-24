@@ -11,6 +11,7 @@ import { Card } from "@/components/ui/card";
 import { Stat } from "@/components/common";
 import { AgentPanel } from "@/components/AgentPanel";
 import { TickerDaemonPanels } from "@/components/tickerDaemon";
+import { ReadingCard } from "@/components/ReadingCard";
 import { StoryCard } from "@/components/StoryCard";
 import { ClaimsPanel } from "@/components/ClaimsPanel";
 import {
@@ -125,6 +126,9 @@ export default function Ticker({ quotes }: { quotes: QuotesState }) {
           {/* What the daemon last saw happen to this name, assembled from
               stored rows. Renders nothing when there is no event yet. */}
           <StoryCard symbol={sym} />
+          {/* What the recent facts imply together; model prose behind a
+              numbers-must-trace gate. Renders nothing without events. */}
+          <ReadingCard symbol={sym} />
           {/* Headline white-paper brief — full width */}
           <DeepResearchPanel r={data} />
           {/* On-demand BUY/SELL/INCREASE/DECREASE/HOLD recommendation, checks
