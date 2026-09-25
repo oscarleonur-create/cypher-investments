@@ -4,7 +4,7 @@ Built from the daily sheet, the book, and (optionally) the model's reading.
 Every rule here is explicit so every proposal can be tracked and a rule that
 keeps losing can be found and changed. The user's decisions (2026-09-25):
 the zone is relative (P/S at or below its own two-year median), the risk
-budget is 1–3% of net liq per entry, and the watchlist's names are dual —
+budget is 2–3% of net liq per entry, and the watchlist's names are dual —
 traded short-term and held long — so a proposal carries two legs.
 
 **Position leg** (months). Proposed when the name is in zone *and* something
@@ -14,7 +14,7 @@ on it. In zone with nothing happening
 is IN_ZONE: an acceptable price, no reason to act *today*.
 
 - Stop: two weeks of 2σ daily moves, 2·σ·√10, kept between 8% and 25%.
-- Risk: 1% of net liq; 2% if P/S is in its cheapest quarter of two years.
+- Risk: 2% of net liq; 3% if P/S is in its cheapest quarter of two years.
 - Review a trim above the price at its two-year 80th percentile P/S.
 
 **Trade leg** (hours to the next session). Proposed only on a scanner setup
@@ -23,7 +23,7 @@ is IN_ZONE: an acceptable price, no reason to act *today*.
 - Stop: 1.5 daily σ below entry.
 - Time stop: out by the next session's close (held overnight trades paid on
   net, measured 2026-09-23; longer was never measured).
-- Risk: 1% of net liq.
+- Risk: 2% of net liq.
 
 **Limits.** Total risk at most 3% of net liq. A position leg may not take the
 name past 20% of the book (the book's own concentration limit).
@@ -47,9 +47,11 @@ from pydantic import BaseModel, Field
 
 from advisor.entry.sheet import Sheet
 
-TRADE_RISK = 0.01
-POSITION_RISK = 0.01
-POSITION_RISK_CHEAP = 0.02
+# User decision, 2026-09-25: base risk 2-3% of net liq per entry (raised from
+# 1-3% after 1% sized AMZN/CRDO at one share and META at none on a ~$8k book).
+TRADE_RISK = 0.02
+POSITION_RISK = 0.02
+POSITION_RISK_CHEAP = 0.03
 CONSTRUCTIVE_BONUS = 0.01
 MAX_TOTAL_RISK = 0.03
 BOOK_LIMIT = 0.20  # MechanicsLimits.concentration_pct
@@ -256,11 +258,17 @@ def build_proposal(
                     "(P/S at its 2-year 80th percentile)",
                 ],
             )
-            at_limit = False
-            if sized:
+            at_limit = held and weight >= BOOK_LIMIT
+            if sized and not at_limit:
                 room = max(BOOK_LIMIT - weight, 0.0) * net_liq
                 if room < m.price:
-                    at_limit = True
+                    # Not at the limit: one share is simply larger than the room
+                    # left under it (a $2,000 share on a $7,966 book).
+                    leg.notes.append(
+                        f"one share (${m.price:,.0f}) is more than the ${room:,.0f} left "
+                        "under the 20% book limit"
+                    )
+                    leg.shares, leg.notional = 0, 0.0
                 elif notional > room:
                     capped = math.floor(room / m.price)
                     leg.notes.append(

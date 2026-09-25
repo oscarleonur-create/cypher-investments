@@ -107,12 +107,13 @@ class TestActions:
         assert p.action is Action.ENTER and leg.horizon == "position"
         stop_pct = position_stop_pct(0.02)
         assert leg.stop == pytest.approx(100 * (1 - stop_pct))
-        assert leg.shares == int(NET_LIQ * 0.01 // (100 * stop_pct))
+        assert leg.shares == int(NET_LIQ * 0.02 // (100 * stop_pct))
+        assert leg.risk_pct == 0.02
         assert any("80th percentile" in x for x in leg.exit_rules)
 
-    def test_cheapest_quarter_doubles_the_risk(self):
+    def test_cheapest_quarter_raises_the_risk_to_three(self):
         cheap = zone(pct=0.25, above=ENTRY_CONFIRM_SESSIONS)
-        assert build_proposal(mk(cheap, OUT), net_liq=NET_LIQ).legs[0].risk_pct == 0.02
+        assert build_proposal(mk(cheap, OUT), net_liq=NET_LIQ).legs[0].risk_pct == 0.03
 
     def test_out_of_zone_no_setup_is_none(self):
         assert build_proposal(mk(OUT, OUT), net_liq=NET_LIQ).action is Action.NONE
@@ -126,7 +127,8 @@ class TestActions:
     def test_setup_in_zone_gets_both_legs(self):
         p = build_proposal(mk(IN, IN, candidates=["x"]), net_liq=NET_LIQ)
         assert sorted(leg.horizon for leg in p.legs) == ["position", "trade"]
-        assert p.risk_pct == pytest.approx(0.02)
+        trade = next(leg for leg in p.legs if leg.horizon == "trade")
+        assert p.risk_pct == pytest.approx(0.03) and trade.risk_pct == pytest.approx(0.01)
 
     def test_position_using_the_whole_cap_leaves_no_trade(self):
         cheap = zone(pct=0.1)
@@ -138,11 +140,18 @@ class TestActions:
         assert any("3% cap" in g for g in p.gaps)
 
     def test_a_share_riskier_than_the_budget_is_still_proposed(self):
-        """META at $750 with a 17% stop risks ~$127 a share; 1% of $7,966 is $80."""
-        p = build_proposal(mk(ENTERED, OUT, price=750.0, sigma=0.027), net_liq=7_966.0)
+        """A $2,000 share with a 17% stop risks ~$342; 2% of $7,966 is $159."""
+        p = build_proposal(mk(ENTERED, OUT, price=2000.0, sigma=0.027), net_liq=7_966.0)
         (leg,) = p.legs
         assert p.action is Action.ENTER and leg.shares == 0
-        assert "smallest position exceeds" in leg.notes[0]
+        assert any("smallest position exceeds" in n for n in leg.notes)
+
+    def test_one_share_larger_than_the_room_is_not_being_at_the_limit(self):
+        """Not held, yet one $2,000 share is more than 20% of a $7,966 book."""
+        p = build_proposal(mk(ENTERED, OUT, price=2000.0, sigma=0.005), net_liq=7_966.0)
+        (leg,) = p.legs
+        assert leg.shares == 0 and any("left under the 20%" in n for n in leg.notes)
+        assert not any("already" in b for b in p.blockers)
 
     def test_no_zone_no_setup_cannot_say(self):
         assert build_proposal(mk(None, None), net_liq=NET_LIQ).action is Action.CANNOT_SAY
@@ -201,7 +210,7 @@ class TestLimitsAndBlockers:
 
 class TestTracking:
     def test_score_horizons_and_stops(self):
-        p = build_proposal(mk(zone(pct=0.1), zone(pct=0.1), candidates=["x"]), net_liq=NET_LIQ)
+        p = build_proposal(mk(IN, IN, candidates=["x"]), net_liq=NET_LIQ)
         days = [
             date(2026, 9, 25),
             date(2026, 9, 28),
@@ -314,7 +323,7 @@ class TestRun:
         daemon.close()
         assert asked == ["GO"] and errors == []
         go = next(p for p in proposals if p.symbol == "GO")
-        assert go.stance == "CONSTRUCTIVE" and go.legs[0].risk_pct == pytest.approx(0.02)
+        assert go.stance == "CONSTRUCTIVE" and go.legs[0].risk_pct == pytest.approx(0.03)
 
     def test_reading_failure_keeps_the_deterministic_proposal(self, tmp_path):
         from advisor.daemon.store import DaemonStore
