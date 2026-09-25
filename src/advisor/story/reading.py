@@ -38,10 +38,13 @@ from advisor.daemon.market_calendar import now_et, to_et
 from advisor.daemon.models import Event, EventTier
 from advisor.daemon.store import DaemonStore
 from advisor.daemon.summarize import summarize
+from advisor.story.scorecard import Scorecard, build_scorecard, scorecard_facts
 
 logger = logging.getLogger(__name__)
 
 WINDOW_DAYS = 45
+# The numbers are in the scorecard; prose only connects them.
+MAX_SENTENCES = 2
 MAX_EVENT_FACTS = 20
 # Angles are searched daily. With one shared cap, a day of Grok 4.7 coverage
 # pushed the Benzinga story on SPCX's share unlock out of the reading; each
@@ -109,6 +112,10 @@ class Reading(BaseModel):
     rejected_draft: list[Sentence] = Field(default_factory=list)
     generated_at: datetime = Field(default_factory=now_et)
     window_days: int = WINDOW_DAYS
+    # Rebuilt on every request, so the numbers shown are current even when
+    # the sentences come from cache. The sentences cite the facts they were
+    # written from, which carry their own dates.
+    scorecard: Scorecard | None = None
 
 
 # ── Facts ────────────────────────────────────────────────────────────────
@@ -178,7 +185,13 @@ def _event_text(event: Event) -> str:
     return " ".join(parts)
 
 
-def gather_facts(store: DaemonStore, symbol: str, *, days: int = WINDOW_DAYS) -> list[Fact]:
+def gather_facts(
+    store: DaemonStore,
+    symbol: str,
+    *,
+    days: int = WINDOW_DAYS,
+    scorecard: Scorecard | None = None,
+) -> list[Fact]:
     """Every fact the reading may use, numbered, from stored rows only."""
     symbol = symbol.upper()
     facts: list[Fact] = []
@@ -190,9 +203,15 @@ def gather_facts(store: DaemonStore, symbol: str, *, days: int = WINDOW_DAYS) ->
     position = _position_fact(store, symbol)
     if position:
         add("POSITION", position)
-    valuation = _valuation_fact(store, symbol)
-    if valuation:
-        add("VALUATION", valuation)
+    if scorecard is not None:
+        # The scorecard supersedes the single valuation line: the requirement
+        # now sits beside actual growth, consensus and the holder's lines.
+        for line in scorecard_facts(scorecard):
+            add("SCORECARD", line)
+    else:
+        valuation = _valuation_fact(store, symbol)
+        if valuation:
+            add("VALUATION", valuation)
 
     since = now_et() - timedelta(days=days)
     seen_standing: set[str] = set()
@@ -246,6 +265,10 @@ def _coarse(fact: Fact) -> str:
     the cached reading itself. Bucketing was tried first and thrashes at the
     edges: -22.6% and -22.1% straddle a 5pp boundary.
     """
+    if fact.kind == "SCORECARD" and fact.text.startswith("Threshold Position weight"):
+        # Moves with every price tick; only which side of the limit it is on
+        # is worth a new reading.
+        return re.sub(r":.*?,\s*", ": ", fact.text).split(" (")[0]
     if fact.kind != "POSITION":
         return fact.text
     return "held" if fact.text.startswith("Held") else "not held"
@@ -406,6 +429,15 @@ def tidy(draft: Draft) -> Draft:
     )
 
 
+# Words that describe a crossed line as an uncrossed one. Three live drafts in
+# a row did it: "rozando el umbral" for 25.9% against 25%, "roza el límite"
+# for 20.6% against 20%.
+_SOFTENING = re.compile(
+    r"\b(roza\w*|cerca del?|cercan\w*|se acerca\w*|acerc\w*|casi|aproxim\w*|al borde|"
+    r"near(ly|s|ing)?|approach\w*|close to|almost|edging|brush\w*)\b",
+    re.IGNORECASE,
+)
+
 # Words that put a claim in someone else's mouth.
 _ATTRIBUTION = re.compile(
     r"\b(seg[uú]n|de acuerdo con|reporta\w*|informa\w*|afirma\w*|sostiene\w*|se[nñ]ala\w*|"
@@ -434,8 +466,8 @@ def check(draft: Draft, facts: list[Fact]) -> list[str]:
     """Everything wrong with ``draft``; empty means it may be shown."""
     by_id = {f.id: f for f in facts}
     problems: list[str] = []
-    if not 1 <= len(draft.sentences) <= 4:
-        problems.append(f"write 1 to 4 sentences, not {len(draft.sentences)}")
+    if not 1 <= len(draft.sentences) <= MAX_SENTENCES:
+        problems.append(f"write 1 to {MAX_SENTENCES} sentences, not {len(draft.sentences)}")
     for index, sentence in enumerate(draft.sentences, 1):
         cited = [by_id[i] for i in sentence.facts if i in by_id]
         unknown = [i for i in sentence.facts if i not in by_id]
@@ -449,6 +481,12 @@ def check(draft: Draft, facts: list[Fact]) -> list[str]:
                 f"sentence {index} rests on third-party commentary "
                 f"{[f.id for f in cited if f.kind == 'NEWS']} without saying who said it; "
                 f"attribute it (e.g. 'según Benzinga')"
+            )
+        breached = [f.id for f in cited if f.kind == "SCORECARD" and "BREACHED" in f.text]
+        if breached and (soft := _SOFTENING.search(sentence.text)):
+            problems.append(
+                f"sentence {index} calls a breached threshold {breached} "
+                f"{soft.group(0)!r}; it is past the line, say so"
             )
         if _FORBIDDEN.search(sentence.text):
             problems.append(
@@ -491,7 +529,10 @@ it was sold, raised or spent unless a fact says so.
 8. Keep each number with its own subject and date. A figure computed at one price \
 belongs to that price; do not pair it with a price from another fact.
 9. No words that grade the price: not "only", "just", "cheap", "expensive", "modest".
-10. 2 to 4 sentences. Plain, direct, no hedging filler.
+   A threshold marked BREACHED is past its line: never "near", "approaching", "roza".
+10. 1 or 2 sentences. The holder sees the SCORECARD facts as a table right above your \
+text: never restate its rows. Say what they mean together — which number changes how \
+another should be read — or what the events add that the table cannot show.
 11. Put fact ids only in the "facts" list, never in the sentence text.
 
 stance: CONSTRUCTIVE (facts support the position), NEUTRAL, CAUTIOUS (facts raise the \
@@ -536,12 +577,17 @@ def read_symbol(
     refresh: bool = False,
     complete: Complete | None = None,
     model: str | None = None,
+    consensus_loader=None,
 ) -> Reading:
     """The reading for ``symbol``, from cache unless its facts have changed."""
     symbol = symbol.upper()
-    facts = gather_facts(store, symbol, days=days)
+    loader = {"consensus_loader": consensus_loader} if consensus_loader else {}
+    scorecard = build_scorecard(store, symbol, **loader)
+    facts = gather_facts(store, symbol, days=days, scorecard=scorecard)
     digest = facts_hash(facts)
-    base = dict(symbol=symbol, facts=facts, facts_hash=digest, window_days=days)
+    base = dict(
+        symbol=symbol, facts=facts, facts_hash=digest, window_days=days, scorecard=scorecard
+    )
 
     if not any(f.kind in ("EVENT", "NEWS") for f in facts):
         return Reading(status=ReadingStatus.NO_FACTS, **base)
@@ -551,7 +597,7 @@ def read_symbol(
         if cached is not None:
             reading = Reading.model_validate_json(cached)
             if not position_moved(reading.facts, facts):
-                return reading
+                return reading.model_copy(update={"scorecard": scorecard})
 
     if complete is None:
         configured = _openrouter()
