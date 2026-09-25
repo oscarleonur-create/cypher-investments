@@ -116,6 +116,14 @@ def build_registry() -> JobRegistry:
     )
     reg.register(
         Job(
+            name="entry_proposals",
+            trigger=EveryMinutes(60, during_session_only=True, not_before=time(9, 45)),
+            handler=handlers.run_entry_proposals,
+            description="sized entry proposals per watched name, recorded for tracking",
+        )
+    )
+    reg.register(
+        Job(
             name="scan_outcomes",
             trigger=DailyAt(time(16, 20), grace_hours=6.0),
             handler=handlers.run_scan_outcomes,

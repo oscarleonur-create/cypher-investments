@@ -61,6 +61,7 @@ class Sheet(BaseModel):
     events_week: int = 0
     holding: Holding | None = None
     zone: RelativeZone | None = None  # the entry zone: P/S vs its own two-year median
+    zone_prev: RelativeZone | None = None  # the same, at the previous close: did it cross?
     context: Absolute | None = None  # what the price requires, generic and own margin
     candidates: list[str] = Field(default_factory=list)  # scanner ids for today
     gaps: list[str] = Field(default_factory=list)
@@ -196,6 +197,10 @@ def build_sheet(
         logger.info("sheet: SEC series unavailable for %s: %s", symbol, exc)
     if price:
         sheet.zone = relative_zone(history, series, now.date(), price)
+        clean = [(d, c) for d, c in history if c and c == c and c > 0]
+        if len(clean) >= 2:
+            prev_day, prev_close = clean[-2]
+            sheet.zone_prev = relative_zone(clean[:-1], series, prev_day, prev_close)
     if sheet.zone is None:
         sheet.gaps.append(
             "no entry zone (needs a price and a year or more of SEC revenue and share history)"

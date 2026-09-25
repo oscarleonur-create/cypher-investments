@@ -1,0 +1,312 @@
+"""An entry proposal: what to do with one watched name today, sized and bounded.
+
+Built from the daily sheet, the book, and (optionally) the model's reading.
+Every rule here is explicit so every proposal can be tracked and a rule that
+keeps losing can be found and changed. The user's decisions (2026-09-25):
+the zone is relative (P/S at or below its own two-year median), the risk
+budget is 1–3% of net liq per entry, and the watchlist's names are dual —
+traded short-term and held long — so a proposal carries two legs.
+
+**Position leg** (months). Proposed when the name is in zone *and* something
+happened today: it crossed into the zone after at least five sessions above
+it, it fell 2σ or more while in the zone, or the scanner recorded a setup
+on it. In zone with nothing happening
+is IN_ZONE: an acceptable price, no reason to act *today*.
+
+- Stop: two weeks of 2σ daily moves, 2·σ·√10, kept between 8% and 25%.
+- Risk: 1% of net liq; 2% if P/S is in its cheapest quarter of two years.
+- Review a trim above the price at its two-year 80th percentile P/S.
+
+**Trade leg** (hours to the next session). Proposed only on a scanner setup
+(A, B or C) today — the one short-term edge the user's own history measured.
+
+- Stop: 1.5 daily σ below entry.
+- Time stop: out by the next session's close (held overnight trades paid on
+  net, measured 2026-09-23; longer was never measured).
+- Risk: 1% of net liq.
+
+**Limits.** Total risk at most 3% of net liq. A position leg may not take the
+name past 20% of the book (the book's own concentration limit).
+
+**Blockers** turn a proposal into WAIT: a tier-A event on the name today
+(read it first), or a model reading of AT_RISK. A CONSTRUCTIVE reading adds
+one point of risk to the position leg, within the 3% cap.
+
+Nothing here is a view of what the company is worth. The zone is a
+comparison with the name's own history; the stops are its own volatility;
+the size is the user's own budget.
+"""
+
+from __future__ import annotations
+
+import math
+from datetime import date, datetime
+from enum import StrEnum
+
+from pydantic import BaseModel, Field
+
+from advisor.entry.sheet import Sheet
+
+TRADE_RISK = 0.01
+POSITION_RISK = 0.01
+POSITION_RISK_CHEAP = 0.02
+CONSTRUCTIVE_BONUS = 0.01
+MAX_TOTAL_RISK = 0.03
+BOOK_LIMIT = 0.20  # MechanicsLimits.concentration_pct
+POSITION_STOP_MIN, POSITION_STOP_MAX = 0.08, 0.25
+TRADE_STOP_SIGMAS = 1.5
+DIP_SIGMAS = 2.0
+# An entry into the zone counts only after this many sessions above it, so a
+# price hovering at the median does not fire ENTER every other day.
+ENTRY_CONFIRM_SESSIONS = 5
+
+
+class Action(StrEnum):
+    ENTER = "ENTER"  # not held; at least one leg qualifies
+    ADD = "ADD"  # held; the position leg qualifies within the book limit
+    IN_ZONE = "IN_ZONE"  # acceptable price, nothing happened today
+    WAIT = "WAIT"  # a leg would qualify, but something must be read first
+    NONE = "NONE"  # out of zone and no setup
+    CANNOT_SAY = "CANNOT_SAY"  # no price, or neither a zone nor a setup to judge by
+
+
+class Leg(BaseModel):
+    horizon: str  # "trade" | "position"
+    entry: float
+    stop: float
+    stop_basis: str
+    risk_pct: float
+    shares: int
+    notional: float
+    exit_rules: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class Reason(BaseModel):
+    text: str
+    source: str  # where the fact comes from
+
+
+class Proposal(BaseModel):
+    symbol: str
+    session: date
+    built_at: datetime
+    action: Action
+    price: float | None = None
+    triggers: list[str] = Field(default_factory=list)
+    reasons: list[Reason] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    legs: list[Leg] = Field(default_factory=list)
+    stance: str | None = None  # the model reading's stance, when one was read
+    reading: list[str] = Field(default_factory=list)  # its sentences
+    gaps: list[str] = Field(default_factory=list)
+    net_liq: float | None = None
+    outcomes: dict[str, float | None] = Field(default_factory=dict)
+
+    @property
+    def id(self) -> str:
+        return f"{self.session.isoformat()}:{self.symbol}:{self.action.value}"
+
+    @property
+    def risk_pct(self) -> float:
+        return sum(leg.risk_pct for leg in self.legs)
+
+
+def position_stop_pct(sigma: float | None) -> float | None:
+    if not sigma or sigma <= 0:
+        return None
+    return min(max(2 * sigma * math.sqrt(10), POSITION_STOP_MIN), POSITION_STOP_MAX)
+
+
+def _size(net_liq: float | None, risk: float, entry: float, stop: float) -> tuple[int, float]:
+    if not net_liq or net_liq <= 0 or entry <= stop:
+        return 0, 0.0
+    shares = math.floor(net_liq * risk / (entry - stop))
+    return max(shares, 0), max(shares, 0) * entry
+
+
+def triggers_for(sheet: Sheet) -> list[str]:
+    out = []
+    if sheet.candidates:
+        out.append(f"scanner setup today: {', '.join(sheet.candidates)}")
+    z, prev = sheet.zone, sheet.zone_prev
+    if (
+        z is not None
+        and z.in_zone
+        and prev is not None
+        and not prev.in_zone
+        and z.sessions_above >= ENTRY_CONFIRM_SESSIONS
+    ):
+        out.append(
+            f"entered the zone today after {z.sessions_above} sessions above it: "
+            f"P/S {z.ps_now:.2f}x ≤ 2y median {z.median:.2f}x (was {prev.ps_now:.2f}x)"
+        )
+    m = sheet.move
+    if z is not None and z.in_zone and m is not None and m.z is not None and m.z <= -DIP_SIGMAS:
+        out.append(f"fell {m.day:+.1%} today ({m.z:+.1f}σ) inside the zone")
+    return out
+
+
+def build_proposal(
+    sheet: Sheet,
+    *,
+    net_liq: float | None,
+    reading=None,
+) -> Proposal:
+    """One proposal from one sheet. Pure: the reading, if any, is passed in."""
+    m, z = sheet.move, sheet.zone
+    p = Proposal(
+        symbol=sheet.symbol,
+        session=sheet.built_at.date(),
+        built_at=sheet.built_at,
+        action=Action.CANNOT_SAY,
+        price=m.price if m else None,
+        gaps=list(sheet.gaps),
+        net_liq=net_liq,
+    )
+    if reading is not None and getattr(reading, "stance", None) is not None:
+        p.stance = reading.stance.value
+        p.reading = [s.text for s in reading.sentences]
+    if m is None:
+        p.blockers.append("no price")
+        return p
+    if z is None and not sheet.candidates:
+        return p  # CANNOT_SAY: no zone to judge a position, no setup for a trade
+
+    p.triggers = triggers_for(sheet)
+
+    # Reasons, each with its source.
+    if z is not None:
+        where = "at or below" if z.in_zone else f"{z.distance:+.1%} above"
+        p.reasons.append(
+            Reason(
+                text=(
+                    f"P/S {z.ps_now:.1f}x, {where} its 2-year median {z.median:.1f}x "
+                    f"(percentile {z.percentile:.0%}); zone top ${z.top:,.2f}"
+                ),
+                source="SEC revenue and diluted shares as known each day; yfinance closes",
+            )
+        )
+    c = sheet.context
+    if c is not None and c.delivered is not None:
+        p.reasons.append(
+            Reason(
+                text=f"revenue growing {c.delivered:+.1%} YoY"
+                + (f"; {c.consensus_label} implies {c.consensus:+.1%}/yr" if c.consensus else ""),
+                source="latest filing XBRL; yfinance consensus",
+            )
+        )
+    if sheet.events_today:
+        p.reasons.append(
+            Reason(
+                text=f"{len(sheet.events_today)} event(s) since the previous close",
+                source="event stream",
+            )
+        )
+
+    # Blockers.
+    if any(e.tier == "A" for e in sheet.events_today):
+        p.blockers.append("a tier-A event on this name today: read it before entering")
+    if p.stance == "AT_RISK":
+        p.blockers.append("the reading of the recent facts is AT_RISK")
+
+    weight = sheet.holding.weight if sheet.holding else 0.0
+    held = sheet.holding is not None
+    sigma = m.sigma
+    sized = bool(net_liq and net_liq > 0)
+
+    def unfilled_note(leg: Leg) -> None:
+        # Whether to enter does not depend on whether the book can size it.
+        # A leg that rounds to zero shares is still proposed, with the reason.
+        if not sized or leg.shares > 0:
+            return
+        one = leg.entry - leg.stop
+        budget = (net_liq or 0) * leg.risk_pct
+        leg.notes.append(
+            f"one share risks ${one:,.0f}, above the {leg.risk_pct:.0%} budget of "
+            f"${budget:,.0f}: the smallest position exceeds it"
+        )
+
+    # Position leg.
+    position_ok = z is not None and z.in_zone and bool(p.triggers)
+    if position_ok:
+        stop_pct = position_stop_pct(sigma)
+        if stop_pct is None:
+            p.gaps.append("no volatility estimate: position stop cannot be set")
+        else:
+            risk = POSITION_RISK_CHEAP if z.percentile <= 0.25 else POSITION_RISK
+            if p.stance == "CONSTRUCTIVE":
+                risk += CONSTRUCTIVE_BONUS
+            risk = min(risk, MAX_TOTAL_RISK)
+            stop = m.price * (1 - stop_pct)
+            shares, notional = _size(net_liq, risk, m.price, stop)
+            leg = Leg(
+                horizon="position",
+                entry=m.price,
+                stop=stop,
+                stop_basis=(
+                    f"2·σ·√10 = {stop_pct:.1%} below entry (σ {sigma:.2%}/day), kept in 8–25%"
+                ),
+                risk_pct=risk,
+                shares=shares,
+                notional=notional,
+                exit_rules=[
+                    f"stop at ${stop:,.2f}",
+                    f"review a trim above ${z.p80_price:,.2f} "
+                    "(P/S at its 2-year 80th percentile)",
+                ],
+            )
+            at_limit = False
+            if sized:
+                room = max(BOOK_LIMIT - weight, 0.0) * net_liq
+                if room < m.price:
+                    at_limit = True
+                elif notional > room:
+                    capped = math.floor(room / m.price)
+                    leg.notes.append(
+                        f"capped from {shares} to {capped} shares by the 20% book limit"
+                    )
+                    leg.shares, leg.notional = capped, capped * m.price
+            if at_limit:
+                p.blockers.append(f"already {weight:.1%} of the book, at the 20% limit")
+            else:
+                unfilled_note(leg)
+                p.legs.append(leg)
+
+    # Trade leg.
+    if sheet.candidates and sigma:
+        stop = m.price * (1 - TRADE_STOP_SIGMAS * sigma)
+        used = sum(leg.risk_pct for leg in p.legs)
+        risk = min(TRADE_RISK, MAX_TOTAL_RISK - used)
+        if risk > 0:
+            shares, notional = _size(net_liq, risk, m.price, stop)
+            leg = Leg(
+                horizon="trade",
+                entry=m.price,
+                stop=stop,
+                stop_basis=f"{TRADE_STOP_SIGMAS}·σ = {TRADE_STOP_SIGMAS * sigma:.1%} below entry",
+                risk_pct=risk,
+                shares=shares,
+                notional=notional,
+                exit_rules=[f"stop at ${stop:,.2f}", "out by the next session's close"],
+            )
+            unfilled_note(leg)
+            p.legs.append(leg)
+        else:
+            p.gaps.append("no risk budget left for a trade leg (the 3% cap is used)")
+    elif sheet.candidates:
+        p.gaps.append("no volatility estimate: trade stop cannot be set")
+
+    if not sized:
+        p.gaps.append("net liq unknown: legs are not sized")
+
+    # Action.
+    if p.legs and p.blockers:
+        p.action = Action.WAIT
+    elif p.legs:
+        p.action = Action.ADD if held else Action.ENTER
+    elif z is not None and z.in_zone:
+        p.action = Action.WAIT if p.blockers else Action.IN_ZONE
+    elif z is not None or sheet.candidates:
+        p.action = Action.NONE
+    return p
