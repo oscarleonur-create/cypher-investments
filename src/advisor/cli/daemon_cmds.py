@@ -322,6 +322,38 @@ def sources_cmd(
         store.close()
 
 
+@app.command("reading")
+def reading_cmd(
+    symbol: Annotated[str, typer.Argument(help="Ticker")],
+    days: Annotated[int, typer.Option("--days", help="Window of events to read")] = 45,
+    refresh: Annotated[bool, typer.Option("--refresh", help="Ignore the cached reading")] = False,
+    language: Annotated[str, typer.Option("--language", help="Language to write in")] = "Spanish",
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """What the recent facts on one ticker imply together — model-written, fact-checked."""
+    from advisor.story.reading import read_symbol
+
+    store = _store()
+    try:
+        reading = read_symbol(store, symbol, days=days, refresh=refresh, language=language)
+    finally:
+        store.close()
+    if output == "json":
+        output_json(reading.model_dump(mode="json"))
+        return
+    console.print(f"[bold]{reading.symbol}[/bold]  {reading.status.value}", end="")
+    if reading.stance:
+        console.print(f"  ·  stance [bold]{reading.stance.value}[/bold]", end="")
+    console.print(f"  ·  {len(reading.facts)} facts, last {reading.window_days} days")
+    for sentence in reading.sentences:
+        console.print(f"  {sentence.text} [dim]{' '.join(sentence.facts)}[/dim]")
+    for problem in reading.problems:
+        console.print(f"  [yellow]{problem}[/yellow]")
+    console.print()
+    for fact in reading.facts:
+        console.print(f"  [dim]{fact.id}[/dim] {fact.text}", overflow="fold")
+
+
 @app.command("backfill-leads")
 def backfill_leads_cmd(
     output: Annotated[str, typer.Option("--output", "-o")] = "table",

@@ -10,6 +10,7 @@ import type {
   Story,
   StructuredThesis,
   SymbolDaemonDetail,
+  TickerReading,
   ThesisCoverage,
   BayesianOverrides,
   BayesianPriceResult,
@@ -134,6 +135,8 @@ export const api = {
     ),
   daemonSymbol: (symbol: string) =>
     get<SymbolDaemonDetail>(`/api/daemon/symbol/${symbol}`),
+  daemonReading: (symbol: string, refresh = false) =>
+    get<TickerReading>(`/api/daemon/symbol/${symbol}/reading?refresh=${refresh}`),
   daemonReconcile: () => post<ReconcileReport>("/api/daemon/reconcile"),
   daemonRun: (job: string) => post<JobRunResult>(`/api/daemon/run/${job}`),
   daemonCoverage: () =>

@@ -176,6 +176,30 @@ async def sources(
         store.close()
 
 
+@router.get("/symbol/{symbol}/reading")
+def symbol_reading(
+    symbol: str,
+    days: int = Query(45, ge=7, le=365),
+    refresh: bool = False,
+) -> dict:
+    """What the recent facts on one name imply together.
+
+    Model-written, and shown only if every number in it traces to a cited
+    fact. Cached per fact set, so an unchanged ticker costs no model call.
+
+    Plain ``def`` on purpose: a model call takes ~10s and FastAPI runs sync
+    handlers in its threadpool. As ``async def`` it blocked every other
+    request for the duration.
+    """
+    from advisor.story.reading import read_symbol
+
+    store = _store()
+    try:
+        return read_symbol(store, symbol, days=days, refresh=refresh).model_dump(mode="json")
+    finally:
+        store.close()
+
+
 @router.get("/symbol/{symbol}")
 async def symbol_detail(symbol: str, days: int = Query(45, ge=7, le=365)) -> dict:
     """Everything the daemon holds on one name: filings, news, factors, events.

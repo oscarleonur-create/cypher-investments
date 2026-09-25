@@ -111,9 +111,19 @@ _PAR_VALUE = re.compile(r",?\s*par value \$[\d.,]+ per share,?", re.IGNORECASE)
 # Scraped-page furniture that arrives inside article bodies.
 _JUNK_LINE = re.compile(
     r"^(#|!\[|\[|logo\b|author'?s avatar|article'?s main image|advertisement|"
-    r"sign (in|up)|subscribe|share this|image source)",
+    r"sign (in|up)|subscribe|share this|image source)|"
+    # A quote widget: Fool's SPCX page opened "Space Exploration Technologies
+    # Stock Quote ... $2.1TMarket cap calculated using publicly traded shares".
+    r"\bstock quote\b|market cap calculated|"
+    # An image caption: "Close-up of the SpaceX logo on a white surface, with
+    # a blurred, colorful stock chart background."
+    r"\blogo\b.*\b(background|displayed|surface|screen)\b",
     re.IGNORECASE,
 )
+
+# The article's own headline. On a scraped page everything above it is
+# furniture — ticker tape, the hero-image caption, a dateline.
+_HEADLINE = re.compile(r"^# .+$", re.MULTILINE)
 
 # Words after which a period does not end a sentence. Only matters before a
 # capital: "Alphabet Inc. (NASDAQ", "Co. LLC", "No. 227". Suffixes written
@@ -239,14 +249,19 @@ def article_lead(text: str | None) -> str | None:
 
     Tavily returns page text, not an abstract: a GuruFocus body opened with
     "Logo Logo # <headline> Author's Avatar Article's Main Image" before its
-    first real sentence. Only lines long enough to be prose survive.
+    first real sentence, and Benzinga's with index quotes and the caption of
+    its hero image. When the page has an H1, reading starts below it; either
+    way only lines long enough to be prose, and not furniture, survive.
     """
     if not text:
         return None
+    headline = _HEADLINE.search(text)
+    if headline and text[headline.end() :].strip():
+        text = text[headline.end() :]
     lines = []
     for raw in re.split(r"\n+", text):
         line = raw.strip()
-        if len(line) < 40 or _JUNK_LINE.match(line):
+        if len(line) < 40 or _JUNK_LINE.search(line):
             continue
         lines.append(line)
     body = re.sub(r"\[\.\.\.\]|\[…\]", " ", " ".join(lines))

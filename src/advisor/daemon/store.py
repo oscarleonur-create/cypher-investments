@@ -132,6 +132,17 @@ CREATE INDEX IF NOT EXISTS idx_decisions_subject
     ON decisions(subject_id, decided_at DESC);
 CREATE INDEX IF NOT EXISTS idx_decisions_symbol ON decisions(symbol, decided_at DESC);
 
+-- A model-written reading, keyed by the exact fact set it was written from, so
+-- the model runs again only when a fact changes. Rejected drafts are cached
+-- too: the same facts would be rejected the same way.
+CREATE TABLE IF NOT EXISTS ticker_readings (
+    symbol      TEXT NOT NULL,
+    facts_hash  TEXT NOT NULL,
+    payload_json TEXT NOT NULL,          -- story.reading.Reading
+    created_at  TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (symbol, facts_hash)
+);
+
 CREATE TABLE IF NOT EXISTS daemon_heartbeat (
     job         TEXT NOT NULL PRIMARY KEY,
     last_run_at TEXT,
@@ -600,6 +611,23 @@ class DaemonStore:
         )
         self._conn.commit()
         return cur.rowcount > 0
+
+    def save_reading(self, symbol: str, facts_hash: str, payload_json: str) -> None:
+        """Store a reading; a refresh of the same fact set replaces the old one."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO ticker_readings (symbol, facts_hash, payload_json) "
+            "VALUES (?, ?, ?)",
+            (symbol.upper(), facts_hash, payload_json),
+        )
+        self._conn.commit()
+
+    def load_reading(self, symbol: str, facts_hash: str) -> str | None:
+        """The stored reading for exactly this fact set, or None."""
+        row = self._conn.execute(
+            "SELECT payload_json FROM ticker_readings WHERE symbol = ? AND facts_hash = ?",
+            (symbol.upper(), facts_hash),
+        ).fetchone()
+        return row["payload_json"] if row else None
 
     def latest_source_item_at(self, symbol: str, tier: str = "PRIMARY"):
         """When the newest archived item of a tier was published, or None.

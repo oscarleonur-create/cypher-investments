@@ -856,3 +856,33 @@ export interface Rationale {
   steps: ReasonStep[];
   proposed: ProposedAction | null;
 }
+
+export type ReadingStance = "CONSTRUCTIVE" | "NEUTRAL" | "CAUTIOUS" | "AT_RISK";
+
+export interface ReadingFact {
+  id: string;
+  kind: "POSITION" | "VALUATION" | "EVENT" | "NEWS" | "CLAIM";
+  text: string;
+  date: string | null;
+  url: string | null;
+  source: string | null;
+}
+
+export interface ReadingSentence {
+  text: string;
+  facts: string[];
+}
+
+/** Model-written, shown only when every number traces to a cited fact. */
+export interface TickerReading {
+  symbol: string;
+  status: "OK" | "REJECTED" | "NO_FACTS" | "UNAVAILABLE";
+  stance: ReadingStance | null;
+  sentences: ReadingSentence[];
+  facts: ReadingFact[];
+  facts_hash: string;
+  model: string | null;
+  problems: string[];
+  generated_at: string;
+  window_days: number;
+}

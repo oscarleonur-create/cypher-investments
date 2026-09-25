@@ -11,6 +11,7 @@ import { Card } from "@/components/ui/card";
 import { Stat } from "@/components/common";
 import { AgentPanel } from "@/components/AgentPanel";
 import { TickerDaemonPanels } from "@/components/tickerDaemon";
+import { ReadingCard } from "@/components/ReadingCard";
 import { StoryCard } from "@/components/StoryCard";
 import { ClaimsPanel } from "@/components/ClaimsPanel";
 import {
@@ -103,6 +104,12 @@ export default function Ticker({ quotes }: { quotes: QuotesState }) {
       {/* Live price chart + fundamentals overlay; renders nothing until a
           report is cached for this ticker (the endpoint 404s without one). */}
       <PriceChartPanel symbol={sym} quotes={quotes} />
+
+      {/* What the recent facts imply together; model prose behind a
+          numbers-must-trace gate. Outside the research block on purpose: it
+          reads the daemon's store, and SPCX — the largest holding — had no
+          cached research, so inside it the reading never showed. */}
+      <ReadingCard symbol={sym} />
 
       {/* Interactive, tool-using research agent — always available on a ticker
           page (it can work even before a full report has been built). */}
