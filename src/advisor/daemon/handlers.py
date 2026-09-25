@@ -79,11 +79,45 @@ async def run_review(ctx: JobContext) -> JobResult:
     # polling in the hope of finding something. The query is the question we
     # actually have, and a credit is only spent when something happened.
     explained = await _explain_todays_movers(ctx)
+    angles = _scan_book_angles(ctx)
     detail = f"{result.summary()}; prior session {since.isoformat()}"
     if explained:
         detail += f"; explained {', '.join(explained)}"
+    if angles:
+        detail += f"; {angles}"
     logger.info("review: %s", detail)
     return JobResult(job="review", ok=True, detail=detail, events_emitted=result.new)
+
+
+def _scan_book_angles(ctx: JobContext) -> str:
+    """Search the holder's confirmed angles, largest position first. Never raises.
+
+    The one scheduled news pull in the daemon; see ``news/angles.py`` for why
+    it exists and the budget that bounds it.
+    """
+    from advisor.news.angles import scan_angles
+
+    try:
+        book = ctx.store.load_latest_book()
+        if book is None or not book.net_liq:
+            return ""
+        weight: dict[str, float] = {}
+        for position in book.positions:
+            key = position.underlying.upper()
+            weight[key] = weight.get(key, 0.0) + abs(position.signed_notional)
+        symbols = sorted(weight, key=weight.get, reverse=True)
+        scan = scan_angles(ctx.store, symbols, company_names={s: _company_name(s) for s in symbols})
+        for problem in scan.errors:
+            logger.warning("review: angle search failed: %s", problem)
+        if not scan.queries:
+            return ""
+        note = f"angles: {scan.queries} queries, {len(scan.events)} new"
+        if scan.skipped_for_budget:
+            note += f", {len(scan.skipped_for_budget)} over budget"
+        return note
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("review: angle scan failed: %s", exc)
+        return ""
 
 
 # Event kinds that mean "something happened to this name that I cannot

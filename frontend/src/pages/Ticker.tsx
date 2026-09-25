@@ -12,6 +12,7 @@ import { Stat } from "@/components/common";
 import { AgentPanel } from "@/components/AgentPanel";
 import { TickerDaemonPanels } from "@/components/tickerDaemon";
 import { ReadingCard } from "@/components/ReadingCard";
+import { AnglesPanel } from "@/components/AnglesPanel";
 import { StoryCard } from "@/components/StoryCard";
 import { ClaimsPanel } from "@/components/ClaimsPanel";
 import {
@@ -110,6 +111,7 @@ export default function Ticker({ quotes }: { quotes: QuotesState }) {
           reads the daemon's store, and SPCX — the largest holding — had no
           cached research, so inside it the reading never showed. */}
       <ReadingCard symbol={sym} />
+      <AnglesPanel symbol={sym} />
 
       {/* Interactive, tool-using research agent — always available on a ticker
           page (it can work even before a full report has been built). */}

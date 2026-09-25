@@ -23,8 +23,8 @@ from datetime import datetime, timezone
 
 import httpx
 
-from advisor.news.entities import resolve_entity
-from advisor.news.models import SourceItem, SourceTier
+from advisor.news.entities import mentions, resolve_entity
+from advisor.news.models import EntityMatch, MatchMethod, SourceItem, SourceTier
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,7 @@ def search_news(
     *,
     company_name: str | None = None,
     days: int = DEFAULT_LOOKBACK_DAYS,
+    aliases: list[str] | None = None,
     max_results: int = 6,
 ) -> list[SourceItem]:
     """Dated news for ``symbol``, entity-resolved and score-filtered.
@@ -105,6 +106,10 @@ def search_news(
         title = str(row.get("title") or "")
         body = f"{title} {row.get('content') or ''}"
         entity = resolve_entity(symbol, text=body, company_name=company_name)
+        if not entity.resolved and any(mentions(body, term) for term in aliases or []):
+            # "SpaceXAI Releases Grok 4.7" names neither SpaceX's registered
+            # name nor its ticker; the holder's confirmed angle is the link.
+            entity = EntityMatch(symbol=symbol.upper(), method=MatchMethod.ALIAS)
         if not entity.resolved:
             unresolved += 1
             continue

@@ -139,3 +139,15 @@ def company_name_for(symbol: str) -> str | None:
     except Exception as exc:  # noqa: BLE001
         logger.debug("entities: name lookup failed for %s: %s", symbol, exc)
         return None
+
+
+def mentions(text: str, term: str) -> bool:
+    """Whether ``text`` names ``term`` as a word.
+
+    Case-sensitive when the term has capitals, so the angle "Grok" does not
+    match the verb "grok"; a lowercase term matches any case.
+    """
+    if not term.strip():
+        return False
+    flags = 0 if any(c.isupper() for c in term) else re.IGNORECASE
+    return bool(re.search(rf"(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])", text, flags))

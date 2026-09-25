@@ -143,6 +143,18 @@ CREATE TABLE IF NOT EXISTS ticker_readings (
     PRIMARY KEY (symbol, facts_hash)
 );
 
+-- Products and segments the holder confirmed stand for part of a company
+-- ("Grok" for SPCX). Suggestions are written from the holder's claims and
+-- never overwrite a decision; only CONFIRMED rows are ever searched.
+CREATE TABLE IF NOT EXISTS watch_angles (
+    symbol      TEXT NOT NULL,
+    term        TEXT NOT NULL,
+    status      TEXT NOT NULL,           -- SUGGESTED | CONFIRMED | REJECTED
+    source      TEXT,                    -- claim id it was suggested from, or 'manual'
+    updated_at  TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (symbol, term)
+);
+
 CREATE TABLE IF NOT EXISTS daemon_heartbeat (
     job         TEXT NOT NULL PRIMARY KEY,
     last_run_at TEXT,
@@ -598,7 +610,7 @@ class DaemonStore:
         rows = self._conn.execute(
             "SELECT * FROM events WHERE json_extract(payload_json, '$.lead') IS NULL "
             "AND (json_extract(payload_json, '$.accession') IS NOT NULL "
-            "OR kind = 'NEWS_CONTEXT')"
+            "OR kind IN ('NEWS_CONTEXT', 'NEWS_ANGLE'))"
         ).fetchall()
         return [self._row_to_event(r) for r in rows]
 
@@ -611,6 +623,47 @@ class DaemonStore:
         )
         self._conn.commit()
         return cur.rowcount > 0
+
+    def add_angle(self, symbol: str, term: str, status: str, *, source: str | None) -> bool:
+        """Record an angle if the symbol has none by that term. False when it exists.
+
+        Matching is case-insensitive, so a suggestion of "grok" cannot shadow a
+        rejected "Grok" and resurrect it.
+        """
+        exists = self._conn.execute(
+            "SELECT 1 FROM watch_angles WHERE symbol = ? AND lower(term) = lower(?)",
+            (symbol.upper(), term),
+        ).fetchone()
+        if exists:
+            return False
+        self._conn.execute(
+            "INSERT INTO watch_angles (symbol, term, status, source) VALUES (?, ?, ?, ?)",
+            (symbol.upper(), term.strip(), status, source),
+        )
+        self._conn.commit()
+        return True
+
+    def set_angle_status(self, symbol: str, term: str, status: str) -> bool:
+        """The holder's decision on an angle, adding it when it was never suggested."""
+        cur = self._conn.execute(
+            "UPDATE watch_angles SET status = ?, updated_at = datetime('now') "
+            "WHERE symbol = ? AND lower(term) = lower(?)",
+            (status, symbol.upper(), term),
+        )
+        self._conn.commit()
+        if cur.rowcount:
+            return True
+        return self.add_angle(symbol, term, status, source="manual")
+
+    def list_angles(self, symbol: str, *, status: str | None = None) -> list[dict]:
+        """Angles for one symbol, confirmed first, then in the order they arrived."""
+        sql = "SELECT symbol, term, status, source, updated_at FROM watch_angles WHERE symbol = ?"
+        params: list = [symbol.upper()]
+        if status:
+            sql += " AND status = ?"
+            params.append(status)
+        sql += " ORDER BY status = 'CONFIRMED' DESC, rowid"
+        return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
 
     def save_reading(self, symbol: str, facts_hash: str, payload_json: str) -> None:
         """Store a reading; a refresh of the same fact set replaces the old one."""

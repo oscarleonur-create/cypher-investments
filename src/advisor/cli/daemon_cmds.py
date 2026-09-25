@@ -354,6 +354,71 @@ def reading_cmd(
         console.print(f"  [dim]{fact.id}[/dim] {fact.text}", overflow="fold")
 
 
+@app.command("angles")
+def angles_cmd(
+    symbol: Annotated[str, typer.Argument(help="Ticker")],
+    confirm: Annotated[
+        Optional[list[str]], typer.Option("--confirm", help="Search this term daily")
+    ] = None,
+    reject: Annotated[
+        Optional[list[str]], typer.Option("--reject", help="Never suggest it")
+    ] = None,
+    scan: Annotated[bool, typer.Option("--scan", help="Search confirmed angles now")] = False,
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Products and segments a holding is a bet on — suggested from your claims, confirmed by you.
+
+    Only confirmed angles are searched: daily by the review job, or now with --scan.
+    """
+    from advisor.daemon.handlers import _company_name
+    from advisor.news.angles import AngleStatus, refresh_suggestions, scan_angles
+
+    sym = symbol.upper()
+    store = _store()
+    try:
+        refresh_suggestions(store, sym, company_name=_company_name(sym))
+        for term in confirm or []:
+            store.set_angle_status(sym, term, AngleStatus.CONFIRMED.value)
+        for term in reject or []:
+            store.set_angle_status(sym, term, AngleStatus.REJECTED.value)
+        result = None
+        if scan:
+            result = scan_angles(store, [sym], company_names={sym: _company_name(sym)})
+        angles = store.list_angles(sym)
+    finally:
+        store.close()
+
+    if output == "json":
+        payload: dict = {"symbol": sym, "angles": angles}
+        if result is not None:
+            payload["scan"] = {
+                "queries": result.queries,
+                "items_stored": result.items_stored,
+                "events": [e.payload for e in result.events],
+                "errors": result.errors,
+            }
+        output_json(payload)
+        return
+    colour = {"CONFIRMED": "green", "SUGGESTED": "yellow", "REJECTED": "dim"}
+    for angle in angles:
+        c = colour.get(angle["status"], "white")
+        console.print(
+            f"  [{c}]{angle['status']:<9}[/{c}] {angle['term']}  [dim]{angle['source'] or ''}[/dim]"
+        )
+    if result is not None:
+        console.print(
+            f"\nscan: {result.queries} queries, {result.items_stored} new items, "
+            f"{len(result.events)} new events"
+        )
+        from rich.markup import escape
+
+        for event in result.events:
+            # Escaped: rich reads "[xAI]" as a style tag and prints nothing.
+            console.print(escape(f"  [{event.payload['angle']}] {event.payload['title']}"))
+        for error in result.errors:
+            console.print(f"  [red]{error}[/red]")
+
+
 @app.command("backfill-leads")
 def backfill_leads_cmd(
     output: Annotated[str, typer.Option("--output", "-o")] = "table",

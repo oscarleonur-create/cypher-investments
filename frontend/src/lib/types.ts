@@ -886,3 +886,14 @@ export interface TickerReading {
   generated_at: string;
   window_days: number;
 }
+
+export type AngleStatus = "SUGGESTED" | "CONFIRMED" | "REJECTED";
+
+/** A product or segment the holder confirmed stands for part of a company. */
+export interface WatchAngle {
+  symbol: string;
+  term: string;
+  status: AngleStatus;
+  source: string | null;
+  updated_at: string;
+}

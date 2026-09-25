@@ -176,6 +176,38 @@ async def sources(
         store.close()
 
 
+class AngleDecision(BaseModel):
+    term: str = Field(min_length=2, max_length=60)
+    status: str = Field(pattern="^(CONFIRMED|REJECTED|SUGGESTED)$")
+
+
+@router.get("/symbol/{symbol}/angles")
+def symbol_angles(symbol: str) -> dict:
+    """The holding's angles, with fresh suggestions from its claims."""
+    from advisor.daemon.handlers import _company_name
+    from advisor.news.angles import refresh_suggestions
+
+    sym = symbol.upper()
+    store = _store()
+    try:
+        refresh_suggestions(store, sym, company_name=_company_name(sym))
+        return {"symbol": sym, "angles": store.list_angles(sym)}
+    finally:
+        store.close()
+
+
+@router.post("/symbol/{symbol}/angles")
+def decide_angle(symbol: str, decision: AngleDecision) -> dict:
+    """Confirm, reject, or add an angle. Only confirmed angles are ever searched."""
+    sym = symbol.upper()
+    store = _store()
+    try:
+        store.set_angle_status(sym, decision.term.strip(), decision.status)
+        return {"symbol": sym, "angles": store.list_angles(sym)}
+    finally:
+        store.close()
+
+
 @router.get("/symbol/{symbol}/reading")
 def symbol_reading(
     symbol: str,
