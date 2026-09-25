@@ -143,6 +143,9 @@ def research_symbols(book: BookSnapshot, **kwargs) -> tuple[list[str], list[str]
     book before the watchlist.
     """
     universe, errors = watched_universe(book, **kwargs)
-    held = [s.upper() for s in book.symbols]
-    rest = [s for s in universe.all_symbols if s not in held]
+    size: dict[str, float] = {}
+    for p in book.positions:
+        size[p.underlying.upper()] = size.get(p.underlying.upper(), 0.0) + p.notional
+    held = sorted(size, key=lambda s: (-size[s], s))
+    rest = [s for s in universe.all_symbols if s not in size]
     return held + rest, errors

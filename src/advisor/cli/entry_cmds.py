@@ -73,18 +73,18 @@ def entry_sheet(
         )
         return
 
-    table = Table(title="Entry sheet")
+    table = Table(title="Entry sheet — zone: P/S at or below its own 2-year median")
     for col in (
         "symbol",
         "price",
         "day",
-        "σ",
+        "z",
         "5d",
         "20d",
         "events",
-        "requires",
-        "delivered",
-        "consensus",
+        "P/S",
+        "2y median",
+        "pctl",
         "zone top",
         "in zone",
         "held",
@@ -100,13 +100,11 @@ def entry_sheet(
             "—" if m is None else _pct(m.d5),
             "—" if m is None else _pct(m.d20),
             f"{len(s.events_today)} ({s.events_week}/7d)",
-            "—" if z is None else _pct(z.required, sign=False),
-            "—" if z is None else _pct(z.delivered),
-            "—" if z is None else _pct(z.consensus),
-            "—" if z is None or z.top is None else f"{z.top:,.2f}",
-            "—"
-            if z is None or z.in_zone is None
-            else ("yes" if z.in_zone else f"no ({_pct(z.distance)})"),
+            "—" if z is None else f"{z.ps_now:.1f}x",
+            "—" if z is None else f"{z.median:.1f}x",
+            "—" if z is None else f"{z.percentile:.0%}",
+            "—" if z is None else f"{z.top:,.2f}",
+            "—" if z is None else ("yes" if z.in_zone else f"no ({_pct(z.distance)})"),
             "—" if s.holding is None else f"{s.holding.weight * 100:.1f}%",
         )
     console.print(table)
@@ -115,14 +113,20 @@ def entry_sheet(
         lines = []
         for e in s.events_today[:5]:
             lines.append(f"  {e.ts.strftime('%m-%d %H:%M')} [{e.tier}] {e.text[:110]}")
-        if s.zone:
-            sc = s.zone.scenario
-            lines.append(
-                f"  zone: {sc.terminal_multiple:g}x FCF, {sc.fcf_margin:.0%} margin, "
-                f"{sc.years}y; line drawn at {s.zone.reference_label or '—'}"
-                + (f" = {_pct(s.zone.reference, sign=False)}" if s.zone.reference else "")
+        c = s.context
+        if c:
+            own = (
+                f"{_pct(c.required_own, sign=False)} at its own {c.own_margin:.1%} FCF margin"
+                if c.required_own is not None and c.own_margin is not None
+                else "undefined at its own margin"
             )
-            for note in s.zone.notes:
+            lines.append(
+                f"  requires (10y revenue CAGR): {own}; "
+                f"{_pct(c.required_generic, sign=False)} at the generic "
+                f"{c.generic.fcf_margin:.0%} — delivers {_pct(c.delivered)} YoY"
+                + (f", {c.consensus_label} implies {_pct(c.consensus)}/yr" if c.consensus else "")
+            )
+            for note in c.notes:
                 lines.append(f"  note: {note}")
         for gap in s.gaps:
             lines.append(f"  gap: {gap}")

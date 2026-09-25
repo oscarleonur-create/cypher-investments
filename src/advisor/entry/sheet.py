@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 
 from advisor.daemon import market_calendar as mc
 from advisor.daemon.store import DaemonStore
-from advisor.entry.zone import Zone, build_zone
+from advisor.entry.zone import Absolute, RelativeZone, absolute_context, relative_zone
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,8 @@ class Sheet(BaseModel):
     events_today: list[EventLine] = Field(default_factory=list)  # since the previous close
     events_week: int = 0
     holding: Holding | None = None
-    zone: Zone | None = None
+    zone: RelativeZone | None = None  # the entry zone: P/S vs its own two-year median
+    context: Absolute | None = None  # what the price requires, generic and own margin
     candidates: list[str] = Field(default_factory=list)  # scanner ids for today
     gaps: list[str] = Field(default_factory=list)
 
@@ -109,13 +110,16 @@ def move_from_closes(closes: list[tuple[date, float]], today: date) -> Move | No
 
 
 def daily_closes(symbol: str) -> list[tuple[date, float]]:
-    """About six months of daily closes. [] on failure. Today's row is live in session."""
+    """Three years of daily closes: two for the zone's median, one of slack.
+
+    [] on failure. Today's row is live during the session.
+    """
     try:
         import yfinance as yf
 
         df = yf.download(
             symbol,
-            period="6mo",
+            period="3y",
             interval="1d",
             progress=False,
             auto_adjust=False,
@@ -146,16 +150,19 @@ def build_sheet(
     *,
     closes: Callable[[str], list[tuple[date, float]]] = daily_closes,
     consensus_loader: Callable | None = None,
+    series_loader: Callable | None = None,
+    margin_loader: Callable | None = None,
     scanner_store=None,
 ) -> Sheet:
-    """Everything stored and one price download, for one name. Never raises on gaps."""
+    """Everything stored plus prices and SEC series, for one name. Never raises on gaps."""
     from datetime import timedelta
 
     symbol = symbol.upper()
     now = mc.to_et(now)
     sheet = Sheet(symbol=symbol, built_at=now)
 
-    sheet.move = move_from_closes(closes(symbol), now.date())
+    history = closes(symbol)
+    sheet.move = move_from_closes(history, now.date())
     if sheet.move is None:
         sheet.gaps.append("no price history")
 
@@ -178,6 +185,22 @@ def build_sheet(
                 unrealized=(sum(p.unrealized_pnl for p in held) / basis) if basis else 0.0,
             )
 
+    price = sheet.move.price if sheet.move else None
+
+    if series_loader is None:
+        from advisor.valuation.history import load_series as series_loader
+    series = None
+    try:
+        series = series_loader(symbol)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("sheet: SEC series unavailable for %s: %s", symbol, exc)
+    if price:
+        sheet.zone = relative_zone(history, series, now.date(), price)
+    if sheet.zone is None:
+        sheet.gaps.append(
+            "no entry zone (needs a price and a year or more of SEC revenue and share history)"
+        )
+
     snapshot = store.load_latest_valuation(symbol)
     if snapshot is None:
         sheet.gaps.append("no valuation (implied expectations never computed for this name)")
@@ -193,8 +216,14 @@ def build_sheet(
             logger.info("sheet: consensus unavailable for %s: %s", symbol, exc)
         if consensus is None:
             sheet.gaps.append("no consensus")
-        price = sheet.move.price if sheet.move else snapshot.price
-        sheet.zone = build_zone(snapshot, price, consensus)
+        if margin_loader is None:
+            from advisor.entry.zone import ttm_fcf_margin as margin_loader
+        sheet.context = absolute_context(
+            snapshot,
+            price or snapshot.price,
+            own_margin=margin_loader(symbol),
+            consensus=consensus,
+        )
 
     if store.load_sensitivity(symbol) is None:
         sheet.gaps.append("no factor estimate (market vs own move cannot be split)")

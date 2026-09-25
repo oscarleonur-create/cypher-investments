@@ -1,34 +1,104 @@
-"""The entry zone, as growth: the price below which it asks for less than is delivered.
+"""The entry zone: is the price cheaper than this name usually is?
 
-``valuation.implied`` answers "what growth does this price require?". This
-runs the same arithmetic the other way — "what price requires exactly this
-growth?" — so a zone can be drawn in the one unit the project trusts:
+**The zone is relative.** Today's price-to-sales against the name's own last
+two years, and "in the zone" means at or below its median — the user's choice
+on 2026-09-25. Revenue and share counts are those known on each past day
+(``valuation.history``), so the comparison is like for like.
 
-    at $516.13 (2026-09-13) AMD required +11.2%/yr for a decade; it
-    delivered +50.1% year on year. The zone top is the price at which the
-    requirement equals the lower of delivered growth and the consensus.
+It is relative because the absolute alternative failed live. The first
+version drew the zone at the price where the 10-year revenue growth the price
+requires (under the generic 25x FCF, 25% margin scenario) fell to the growth
+the company delivers. Every Swing name came out "in zone", with tops of
+$1,407 for AMZN and $10,269 for AMD: AMZN "required" -6.0% growth because the
+scenario assumed a 25% free-cash-flow margin against a real one of -0.3%
+(AI capex), INTC 25% against 5.0%. A comparison of a name with itself cancels
+that assumption, because it sits on both sides.
 
-The user accepted this framing on 2026-09-25 knowing what it is: the closest
-the system comes to a fair value. It stays arithmetic and falsifiable because
-its assumptions are printed beside it — the scenario (terminal multiple, free
-cash flow margin, horizon) and which reference growth drew the line. Change
-the assumption and the line moves; the proposal says so rather than hiding it.
+What the relative zone cannot say: whether the name is cheap *for a reason*.
+A business that got worse deserves a lower multiple; the zone flags the
+multiple, the reading and the events have to judge the reason.
 
-**What it cannot tell:** whether the reference growth will last. For a
-company growing 50% a year the zone is almost always "in", because a decade
-at 11% asks far less than this year's 50%. The zone measures how demanding a
-price is, not how durable a business is; the reading has to weigh durability.
+**The absolute requirement stays as context**, recomputed with the company's
+own trailing free-cash-flow margin instead of the generic one, and printed
+with that assumption. When the margin is negative the requirement is
+undefined and the sheet says so rather than showing a number.
 """
 
 from __future__ import annotations
 
-from datetime import timedelta
+import logging
+import statistics
+from datetime import date, timedelta
 
 from pydantic import BaseModel, Field
 
+from advisor.valuation.history import Series, as_of
 from advisor.valuation.models import ValuationSnapshot
 
-LADDER_STEPS: tuple[float, ...] = (0.0, -0.05, -0.10, -0.15, -0.20)
+logger = logging.getLogger(__name__)
+
+WINDOW_DAYS = 730  # two years
+MIN_OBSERVATIONS = 250  # about a year of sessions; less is not a median worth trusting
+
+
+class RelativeZone(BaseModel):
+    price: float
+    ps_now: float
+    median: float
+    percentile: float  # share of the window's sessions with P/S at or below today's
+    top: float  # the price at which today's P/S equals the window median
+    window_start: date
+    window_end: date
+    observations: int
+    basis: str = "price / sales on trailing-12-month revenue and diluted shares, as known each day"
+
+    @property
+    def in_zone(self) -> bool:
+        return self.ps_now <= self.median
+
+    @property
+    def distance(self) -> float:
+        """Price vs the zone top: +8% means 8% above it, negative means inside."""
+        return self.price / self.top - 1
+
+
+def relative_zone(
+    closes: list[tuple[date, float]], series: Series | None, today: date, price: float
+) -> RelativeZone | None:
+    """Today's P/S against its own two-year history. None when history is too thin."""
+    if series is None or not price or price <= 0:
+        return None
+    start = today - timedelta(days=WINDOW_DAYS)
+    if series.broken_after is not None:
+        # A different capital structure before this: its prices are not
+        # comparable. What remains must still clear MIN_OBSERVATIONS.
+        start = max(start, series.broken_after + timedelta(days=1))
+    history: list[float] = []
+    for day, px in closes:
+        if day < start or day > today or not px or px <= 0:
+            continue
+        rev, sh = as_of(series.revenue_ttm, day), as_of(series.shares, day)
+        if rev is None or sh is None or rev.value <= 0:
+            continue
+        history.append(px * sh.value / rev.value)
+    rev_now, sh_now = as_of(series.revenue_ttm, today), as_of(series.shares, today)
+    if len(history) < MIN_OBSERVATIONS or rev_now is None or sh_now is None or rev_now.value <= 0:
+        return None
+    ps_now = price * sh_now.value / rev_now.value
+    median = statistics.median(history)
+    return RelativeZone(
+        price=price,
+        ps_now=ps_now,
+        median=median,
+        percentile=sum(v <= ps_now for v in history) / len(history),
+        top=median * rev_now.value / sh_now.value,
+        window_start=start,
+        window_end=today,
+        observations=len(history),
+    )
+
+
+# ── Absolute context ──────────────────────────────────────────────────────
 
 
 class Scenario(BaseModel):
@@ -37,45 +107,27 @@ class Scenario(BaseModel):
     years: int
 
 
-class Rung(BaseModel):
+class Absolute(BaseModel):
+    """What the price requires, at the generic and at the company's own margin."""
+
     price: float
-    change: float  # vs the current price
-    required: float  # 10-year revenue CAGR the price requires
-
-
-class Zone(BaseModel):
-    price: float  # the price everything is measured at
-    required: float  # what that price requires
-    scenario: Scenario
+    generic: Scenario
+    required_generic: float | None = None
+    own_margin: float | None = None  # trailing free-cash-flow margin
+    required_own: float | None = None
     delivered: float | None = None  # revenue YoY, latest filing
-    delivered_source: str = ""
     consensus: float | None = None  # annualised growth, run-rate -> last consensus year
     consensus_label: str = ""
-    reference: float | None = None  # the lower of the two: the growth the line is drawn at
-    reference_label: str = ""
-    top: float | None = None  # below this price, required <= reference
-    ladder: list[Rung] = Field(default_factory=list)
     stale: bool = False
     notes: list[str] = Field(default_factory=list)
-
-    @property
-    def in_zone(self) -> bool | None:
-        if self.top is None:
-            return None
-        return self.price <= self.top
-
-    @property
-    def distance(self) -> float | None:
-        """How far the price is above the zone top (negative: already inside)."""
-        if self.top is None or self.top <= 0:
-            return None
-        return self.price / self.top - 1
 
 
 def required_at(snapshot: ValuationSnapshot, price: float, scenario: Scenario) -> float | None:
     """Revenue CAGR a price requires, from a stored snapshot's balance sheet."""
     runrate = snapshot.revenue_runrate
     if not runrate or runrate <= 0 or price <= 0 or snapshot.shares_outstanding <= 0:
+        return None
+    if scenario.fcf_margin <= 0 or scenario.terminal_multiple <= 0:
         return None
     ev = snapshot.shares_outstanding * price - (snapshot.net_cash or 0.0)
     if ev <= 0:
@@ -84,23 +136,8 @@ def required_at(snapshot: ValuationSnapshot, price: float, scenario: Scenario) -
     return (revenue / runrate) ** (1 / scenario.years) - 1
 
 
-def price_for(snapshot: ValuationSnapshot, growth: float, scenario: Scenario) -> float | None:
-    """The price at which the snapshot requires exactly ``growth``. The inverse."""
-    runrate = snapshot.revenue_runrate
-    if not runrate or runrate <= 0 or snapshot.shares_outstanding <= 0 or growth <= -1:
-        return None
-    revenue = runrate * (1 + growth) ** scenario.years
-    ev = revenue * scenario.terminal_multiple * scenario.fcf_margin
-    price = (ev + (snapshot.net_cash or 0.0)) / snapshot.shares_outstanding
-    return price if price > 0 else None
-
-
 def consensus_growth(snapshot: ValuationSnapshot, consensus) -> tuple[float | None, str]:
-    """Annualised growth from the run-rate to the furthest consensus year.
-
-    One number comparable to a CAGR, rather than the provider's single-year
-    growth, whose base year may not be the run-rate the valuation uses.
-    """
+    """Annualised growth from the run-rate to the furthest consensus year."""
     if consensus is None or not consensus.years or not snapshot.revenue_runrate:
         return None, ""
     last = consensus.years[-1]
@@ -112,49 +149,52 @@ def consensus_growth(snapshot: ValuationSnapshot, consensus) -> tuple[float | No
     return growth, f"consensus {last.label} (${last.avg / 1e9:,.1f}bn{analysts})"
 
 
-def build_zone(
-    snapshot: ValuationSnapshot | None, price: float | None, consensus=None
-) -> Zone | None:
-    """The zone at ``price``. None when there is no valuation to draw it from."""
+def absolute_context(
+    snapshot: ValuationSnapshot | None,
+    price: float | None,
+    *,
+    own_margin: float | None = None,
+    consensus=None,
+) -> Absolute | None:
     if snapshot is None or not price or price <= 0:
         return None
     base = snapshot.base_case()
     if base is None:
         return None
-    scenario = Scenario(
+    generic = Scenario(
         terminal_multiple=base.terminal_multiple, fcf_margin=base.fcf_margin, years=base.years
     )
-    required = required_at(snapshot, price, scenario)
-    if required is None:
-        return None
-
-    zone = Zone(price=price, required=required, scenario=scenario, stale=snapshot.is_stale())
-    if snapshot.revenue_yoy is not None:
-        zone.delivered = snapshot.revenue_yoy
-        zone.delivered_source = f"revenue YoY, period ending {snapshot.period_end}"
-    zone.consensus, zone.consensus_label = consensus_growth(snapshot, consensus)
-
-    refs = [
-        (g, label)
-        for g, label in (
-            (zone.delivered, "delivered"),
-            (zone.consensus, "consensus"),
+    ctx = Absolute(price=price, generic=generic, stale=snapshot.is_stale())
+    ctx.required_generic = required_at(snapshot, price, generic)
+    ctx.own_margin = own_margin
+    if own_margin is None:
+        ctx.notes.append("own free-cash-flow margin unavailable")
+    elif own_margin <= 0:
+        ctx.notes.append(
+            f"trailing free cash flow is negative ({own_margin:+.1%} of revenue): "
+            "a requirement at the company's own margin is undefined"
         )
-        if g is not None
-    ]
-    if refs:
-        # The lower of the two: a price is in the zone only when it asks for
-        # less than both what the company delivers and what analysts expect.
-        zone.reference, zone.reference_label = min(refs, key=lambda r: r[0])
-        zone.top = price_for(snapshot, zone.reference, scenario)
     else:
-        zone.notes.append("no delivered growth or consensus to draw a zone against")
+        own = generic.model_copy(update={"fcf_margin": own_margin})
+        ctx.required_own = required_at(snapshot, price, own)
+    ctx.delivered = snapshot.revenue_yoy
+    ctx.consensus, ctx.consensus_label = consensus_growth(snapshot, consensus)
+    if ctx.stale:
+        ctx.notes.append(f"the filing behind this is stale (period ending {snapshot.period_end})")
+    return ctx
 
-    for step in LADDER_STEPS:
-        p = price * (1 + step)
-        r = required_at(snapshot, p, scenario)
-        if r is not None:
-            zone.ladder.append(Rung(price=p, change=step, required=r))
-    if zone.stale:
-        zone.notes.append(f"the filing behind this is stale (period ending {snapshot.period_end})")
-    return zone
+
+def ttm_fcf_margin(symbol: str) -> float | None:
+    """Trailing four quarters of free cash flow over revenue, from yfinance. None on failure."""
+    try:
+        import yfinance as yf
+
+        t = yf.Ticker(symbol)
+        fcf = t.quarterly_cashflow.loc["Free Cash Flow"].dropna().sort_index().iloc[-4:]
+        rev = t.quarterly_income_stmt.loc["Total Revenue"].dropna().sort_index().iloc[-4:]
+    except Exception as exc:  # noqa: BLE001
+        logger.info("zone: no FCF margin for %s: %s", symbol, exc)
+        return None
+    if len(fcf) < 4 or len(rev) < 4 or float(rev.sum()) <= 0:
+        return None
+    return float(fcf.sum()) / float(rev.sum())
