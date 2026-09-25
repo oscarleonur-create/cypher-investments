@@ -64,6 +64,10 @@ class Sheet(BaseModel):
     zone_prev: RelativeZone | None = None  # the same, at the previous close: did it cross?
     context: Absolute | None = None  # what the price requires, generic and own margin
     candidates: list[str] = Field(default_factory=list)  # scanner ids for today
+    # The user's long-term thesis on this name, if one is written: "intact"
+    # (no rule broken or standing), "broken" (listing which), or None.
+    thesis: str | None = None
+    thesis_broken: list[str] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
 
     @property
@@ -142,6 +146,60 @@ def _event_line(event) -> EventLine:
     if payload.get("lead"):
         text += f" — {payload['lead']}"
     return EventLine(ts=event.ts, kind=event.kind, tier=event.tier.value, text=text[:300])
+
+
+THESIS_LOOKBACK_DAYS = 90
+
+
+def thesis_status(store, symbol: str, book, now: datetime) -> tuple[str | None, list[str]]:
+    """Is the user's thesis intact enough to deserve more risk? Pure over stored rows.
+
+    Not the action card's reading. The card looks at *this week's* events: a
+    rule broken ten days ago reads "untested" there, which is right for an
+    alert and wrong here. AAOI's 6.7% at-the-market raise on 2026-09-06 broke
+    the user's 5% dilution rule; by 09-25 the card said "your rules are
+    intact", and an entry would have taken a bonus for a thesis the user's own
+    rule had broken.
+
+    So a rule counts as broken if any event in the last 90 days tripped it, or
+    the current state violates it — unless the user has since recorded a
+    decision on that rule. Returns:
+
+        ("intact", [])         a thesis, nothing tripped            → more risk
+        ("answered", [...])    tripped, and the user has answered   → no bonus
+        ("broken", [...])      tripped, never answered              → wait
+        (None, [])             no thesis written
+    """
+    from datetime import timedelta
+
+    from advisor.thesis.match import evaluate_claim
+    from advisor.thesis.repo import load_thesis
+    from advisor.thesis.state import evaluate_against_state
+
+    thesis = load_thesis(store, symbol)
+    if thesis is None or not thesis.claims:
+        return None, []
+    events = store.recent_events(
+        symbol=symbol, since=now - timedelta(days=THESIS_LOOKBACK_DAYS), limit=5000
+    )
+    decided = store.latest_decisions(symbol)
+    broken, answered = [], []
+    for claim in thesis.claims:
+        if not claim.monitored or thesis.blocked.get(claim.id or ""):
+            continue
+        tripped = any(
+            r is not None and r.tripped for r in (evaluate_claim(claim, e) for e in events)
+        )
+        if not tripped:
+            standing = evaluate_against_state(store, symbol, claim, book)
+            tripped = standing is not None and standing.tripped
+        if tripped:
+            (answered if claim.id and claim.id in decided else broken).append(claim.text)
+    if broken:
+        return "broken", broken
+    if answered:
+        return "answered", answered
+    return "intact", []
 
 
 def build_sheet(
@@ -232,6 +290,13 @@ def build_sheet(
 
     if store.load_sensitivity(symbol) is None:
         sheet.gaps.append("no factor estimate (market vs own move cannot be split)")
+
+    if book is not None and store.load_claims(symbol):
+        try:
+            sheet.thesis, sheet.thesis_broken = thesis_status(store, symbol, book, now)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("sheet: thesis status unavailable for %s: %s", symbol, exc)
+            sheet.gaps.append("thesis written but its status could not be read")
 
     if scanner_store is not None:
         sheet.candidates = [

@@ -25,12 +25,18 @@ is IN_ZONE: an acceptable price, no reason to act *today*.
   net, measured 2026-09-23; longer was never measured).
 - Risk: 2% of net liq.
 
-**Limits.** Total risk at most 3% of net liq. A position leg may not take the
-name past 20% of the book (the book's own concentration limit).
+**Thesis.** Where the user has written a long-term thesis and none of its
+rules is broken or standing, the position leg gets one more point of risk
+and the total cap rises to 4%. Where a rule is broken or standing, the
+proposal waits: the user's own rule says something is wrong.
+
+**Limits.** Total risk at most 3% of net liq (4% with an intact thesis). A
+position leg may not take the name past 20% of the book (the book's own
+concentration limit).
 
 **Blockers** turn a proposal into WAIT: a tier-A event on the name today
 (read it first), or a model reading of AT_RISK. A CONSTRUCTIVE reading adds
-one point of risk to the position leg, within the 3% cap.
+one point of risk to the position leg, within the cap.
 
 Nothing here is a view of what the company is worth. The zone is a
 comparison with the name's own history; the stops are its own volatility;
@@ -54,6 +60,10 @@ POSITION_RISK = 0.02
 POSITION_RISK_CHEAP = 0.03
 CONSTRUCTIVE_BONUS = 0.01
 MAX_TOTAL_RISK = 0.03
+# User decision, 2026-09-25: more risk where a long-term thesis is written and
+# intact (no rule broken or standing) — one point more, up to 4% in total.
+THESIS_BONUS = 0.01
+MAX_TOTAL_RISK_THESIS = 0.04
 BOOK_LIMIT = 0.20  # MechanicsLimits.concentration_pct
 POSITION_STOP_MIN, POSITION_STOP_MAX = 0.08, 0.25
 TRADE_STOP_SIGMAS = 1.5
@@ -211,6 +221,18 @@ def build_proposal(
         p.blockers.append("a tier-A event on this name today: read it before entering")
     if p.stance == "AT_RISK":
         p.blockers.append("the reading of the recent facts is AT_RISK")
+    if sheet.thesis == "broken":
+        p.blockers.append(
+            "a rule of your thesis is broken or standing: " + "; ".join(sheet.thesis_broken[:3])
+        )
+    elif sheet.thesis == "intact":
+        p.reasons.append(
+            Reason(
+                text="your long-term thesis is written and intact",
+                source="thesis claims (action card)",
+            )
+        )
+    cap = MAX_TOTAL_RISK_THESIS if sheet.thesis == "intact" else MAX_TOTAL_RISK
 
     weight = sheet.holding.weight if sheet.holding else 0.0
     held = sheet.holding is not None
@@ -239,7 +261,9 @@ def build_proposal(
             risk = POSITION_RISK_CHEAP if z.percentile <= 0.25 else POSITION_RISK
             if p.stance == "CONSTRUCTIVE":
                 risk += CONSTRUCTIVE_BONUS
-            risk = min(risk, MAX_TOTAL_RISK)
+            if sheet.thesis == "intact":
+                risk += THESIS_BONUS
+            risk = min(risk, cap)
             stop = m.price * (1 - stop_pct)
             shares, notional = _size(net_liq, risk, m.price, stop)
             leg = Leg(
@@ -285,7 +309,7 @@ def build_proposal(
     if sheet.candidates and sigma:
         stop = m.price * (1 - TRADE_STOP_SIGMAS * sigma)
         used = sum(leg.risk_pct for leg in p.legs)
-        risk = min(TRADE_RISK, MAX_TOTAL_RISK - used)
+        risk = min(TRADE_RISK, cap - used)
         if risk > 0:
             shares, notional = _size(net_liq, risk, m.price, stop)
             leg = Leg(
@@ -301,7 +325,7 @@ def build_proposal(
             unfilled_note(leg)
             p.legs.append(leg)
         else:
-            p.gaps.append("no risk budget left for a trade leg (the 3% cap is used)")
+            p.gaps.append(f"no risk budget left for a trade leg (the {cap:.0%} cap is used)")
     elif sheet.candidates:
         p.gaps.append("no volatility estimate: trade stop cannot be set")
 

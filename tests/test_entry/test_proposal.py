@@ -167,6 +167,36 @@ class TestActions:
         assert build_proposal(mk(ENTERED, OUT, holding=held), net_liq=NET_LIQ).action is Action.ADD
 
 
+class TestThesis:
+    def with_thesis(self, status, broken=()):
+        s = mk(ENTERED, OUT)
+        s.thesis, s.thesis_broken = status, list(broken)
+        return s
+
+    def test_intact_thesis_adds_a_point_and_raises_the_cap(self):
+        p = build_proposal(self.with_thesis("intact"), net_liq=NET_LIQ)
+        assert p.legs[0].risk_pct == pytest.approx(0.03)
+        assert any("thesis" in r.text for r in p.reasons)
+
+    def test_intact_thesis_cap_is_four_percent(self):
+        s = self.with_thesis("intact")
+        s.zone = zone(pct=0.1, above=ENTRY_CONFIRM_SESSIONS)  # cheapest quarter: 3% base
+        s.candidates = ["x"]
+        p = build_proposal(s, net_liq=NET_LIQ, reading=reading("CONSTRUCTIVE"))
+        assert p.risk_pct == pytest.approx(0.04)  # 3 + 1 + 1 capped at 4, no trade room
+
+    def test_broken_thesis_waits_and_names_the_rule(self):
+        p = build_proposal(
+            self.with_thesis("broken", ["Una emisión sobre 5% rompe la tesis"]), net_liq=NET_LIQ
+        )
+        assert p.action is Action.WAIT and "emisión" in p.blockers[0]
+
+    def test_no_thesis_keeps_the_three_percent_cap(self):
+        s = mk(zone(pct=0.1, above=ENTRY_CONFIRM_SESSIONS), OUT, candidates=["x"])
+        p = build_proposal(s, net_liq=NET_LIQ, reading=reading("CONSTRUCTIVE"))
+        assert p.risk_pct == pytest.approx(0.03)
+
+
 class TestLimitsAndBlockers:
     def test_tier_a_event_turns_enter_into_wait(self):
         ev = EventLine(ts=NOW, kind="FILING_DILUTION", tier="A", text="424B5")
