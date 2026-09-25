@@ -120,19 +120,30 @@ def snapshot(**kw):
 
 
 class TestAbsolute:
-    def test_negative_own_margin_is_undefined_not_a_number(self):
+    def test_negative_own_margin_is_left_out_with_the_reason(self):
         """AMZN: -0.3% trailing FCF from AI capex."""
         ctx = absolute_context(snapshot(), 100.0, own_margin=-0.003)
-        assert ctx.required_own is None and "negative" in ctx.notes[0]
-        assert ctx.required_generic is not None
+        assert [label for label, _, _ in ctx.readings] == ["generic"]
+        assert any("burning cash" in n for n in ctx.notes)
 
-    def test_own_margin_changes_the_requirement(self):
+    def test_lower_own_margin_widens_the_range_upward(self):
         ctx = absolute_context(snapshot(), 100.0, own_margin=0.10)
-        assert ctx.required_own > ctx.required_generic
+        assert len(ctx.readings) == 2 and ctx.high > ctx.low
 
-    def test_unknown_margin_is_said(self):
+    def test_stored_margins_are_used_and_live_one_ignored(self):
+        snap = snapshot(
+            margin_trailing=0.18,
+            margin_trailing_label="t4q",
+            margin_median=0.327,
+            margin_median_label="FY2023–FY2025 median",
+        )
+        ctx = absolute_context(snap, 100.0, own_margin=0.99)
+        margins = sorted(m for _, m, _ in ctx.readings)
+        assert margins == [0.18, 0.25, 0.327]
+
+    def test_unknown_margins_are_said(self):
         ctx = absolute_context(snapshot(), 100.0, own_margin=None)
-        assert ctx.required_own is None and "unavailable" in ctx.notes[0]
+        assert sum("unavailable" in n for n in ctx.notes) == 2
 
     def test_no_snapshot(self):
         assert absolute_context(None, 100.0) is None

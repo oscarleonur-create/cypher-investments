@@ -109,11 +109,25 @@ def shift_event(previous: ValuationSnapshot | None, current: ValuationSnapshot) 
 
 
 async def refresh_valuations(
-    store: DaemonStore, symbols: list[str], prices: dict[str, float], *, asof: date | None = None
+    store: DaemonStore,
+    symbols: list[str],
+    prices: dict[str, float],
+    *,
+    asof: date | None = None,
+    trailing_loader=None,
+    median_loader=None,
 ) -> ValuationResult:
-    """Recompute implied expectations for each symbol and emit any shifts."""
-    from advisor.valuation.fundamentals import latest_fundamentals
+    """Recompute implied expectations for each symbol and emit any shifts.
 
+    The scenarios stay generic. Beside them the snapshot records the
+    company's own trailing and three-year median FCF margins, so required
+    growth can be shown as a range (``valuation.margins``).
+    """
+    from advisor.valuation.fundamentals import latest_fundamentals
+    from advisor.valuation.margins import load_median_margin, load_trailing_margin
+
+    trailing_loader = trailing_loader or load_trailing_margin
+    median_loader = median_loader or load_median_margin
     result = ValuationResult()
     today = asof or date.today()
 
@@ -133,6 +147,12 @@ async def refresh_valuations(
             continue
 
         snapshot = build_snapshot(fundamentals, price, asof=today)
+        if snapshot is not None:
+            trailing, median = trailing_loader(symbol), median_loader(symbol)
+            snapshot.margin_trailing = trailing.margin
+            snapshot.margin_trailing_label = trailing.label
+            snapshot.margin_median = median.margin
+            snapshot.margin_median_label = median.label
         if snapshot is None:
             result.skipped[symbol] = f"missing {', '.join(fundamentals.missing)}"
             continue

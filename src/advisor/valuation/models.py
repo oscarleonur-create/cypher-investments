@@ -126,6 +126,13 @@ class ValuationSnapshot(BaseModel):
     # price requires. None when there is no comparative.
     revenue_yoy: float | None = None
     scenarios: list[ImpliedExpectations] = Field(default_factory=list)
+    # The company's own free-cash-flow margins, recorded beside the generic
+    # scenarios so required growth can be shown as a range across them
+    # (``valuation.margins``). The scenarios themselves stay generic.
+    margin_trailing: float | None = None
+    margin_trailing_label: str = ""
+    margin_median: float | None = None
+    margin_median_label: str = ""
     computed_at: datetime = Field(default_factory=now_et)
 
     # Past this, the filing behind the valuation is old enough that the

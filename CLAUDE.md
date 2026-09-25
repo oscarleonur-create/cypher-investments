@@ -168,6 +168,15 @@ this symbol*.
   failed live: AMZN "required" -6.0% growth against a real FCF margin of
   -0.3%. The absolute requirement is shown only as context, at the
   company's own trailing margin, and "undefined" when that is negative.
+- **Required growth is a range, never one number (user decision,
+  2026-09-25).** It moves more with the assumed FCF margin than with anything
+  else: META required -0.4%, +2.3% or +5.7% a year at its 3-year median
+  (32.7%), the generic 25% and its trailing (18.0%) margins. The scorecard
+  shows every margin the company offers, each labeled; a margin at or below
+  zero is named and left out. The snapshot's base case stays generic, so
+  thesis rules keep testing the same quantity. Nothing margin-sensitive may
+  size a position: the model's CONSTRUCTIVE stance, which leans on these
+  rows, adds no risk.
 - **Never publish a fair value.** This project reports what a price requires,
   never what a business is worth. The first is arithmetic and falsifiable; the
   second is an opinion wearing a number.
