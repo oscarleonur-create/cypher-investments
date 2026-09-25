@@ -49,6 +49,7 @@ class NewsItem:
     published_at: datetime  # always timezone-aware UTC
     provider: str | None = None
     url: str | None = None
+    summary: str | None = None  # the publisher's own abstract, when it ships one
 
     def age_hours(self, now: datetime | None = None) -> float:
         return ((now or datetime.now(timezone.utc)) - self.published_at).total_seconds() / 3600
@@ -123,6 +124,7 @@ def news_items(symbol: str, max_age_hours: float = 48.0, limit: int = 5) -> list
             url=(content.get("canonicalUrl") or {}).get("url")
             if isinstance(content.get("canonicalUrl"), dict)
             else content.get("link"),
+            summary=str(content.get("summary") or content.get("description") or "").strip() or None,
         )
         if item.age_hours(now) > max_age_hours:
             continue

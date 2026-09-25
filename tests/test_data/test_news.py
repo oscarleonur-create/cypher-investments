@@ -181,6 +181,31 @@ class TestProvenance:
         assert item.provider == "Reuters"
         assert item.url == "https://example.com/a"
 
+    @pytest.mark.parametrize(
+        "extra, expected",
+        [
+            (
+                {"summary": "  FN's data-center growth outpaces AAOI.  "},
+                "FN's data-center growth outpaces AAOI.",
+            ),
+            ({"summary": "", "description": "From the description."}, "From the description."),
+            ({"summary": None}, None),
+            ({}, None),
+        ],
+    )
+    def test_the_publishers_abstract_is_kept(self, monkeypatch, extra, expected):
+        """yfinance ships a one-sentence abstract per headline; it was being discarded."""
+        import yfinance as yf
+
+        raw = nested("headline", datetime.now(timezone.utc).isoformat(), **extra)
+
+        class One:
+            def __init__(self, symbol):
+                self.news = [raw]
+
+        monkeypatch.setattr(yf, "Ticker", One)
+        assert news_items("AAOI")[0].summary == expected
+
     def test_age_hours_is_computed_against_an_explicit_now(self):
         item = NewsItem(title="t", published_at=NOW - timedelta(hours=3))
         assert item.age_hours(NOW) == pytest.approx(3.0)

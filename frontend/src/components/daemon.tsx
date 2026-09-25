@@ -84,9 +84,19 @@ function eventDetail(event: DaemonEvent): string | null {
   return event.summary || null;
 }
 
+/** What a filing or article actually says, in its own words. Clamped to two
+ *  lines; the full lead is on hover. */
+export function Lead({ text }: { text: string }) {
+  return (
+    <p className="mt-0.5 line-clamp-2 text-xs text-text/80" title={text}>
+      {text}
+    </p>
+  );
+}
+
 export function EventRow({ event }: { event: DaemonEvent }) {
   const detail = eventDetail(event);
-  const payload = event.payload as { url?: string; accepted_at?: string };
+  const payload = event.payload as { url?: string; accepted_at?: string; lead?: string | null };
   const url = payload.url;
   // The time that matters is when the thing *happened*, not when the daemon
   // noticed it. A 424B5 accepted on 21 Aug must not read as today because
@@ -106,6 +116,7 @@ export function EventRow({ event }: { event: DaemonEvent }) {
           </span>
         </div>
         {detail && <div className="text-xs text-muted tnum">{detail}</div>}
+        {payload.lead && <Lead text={payload.lead} />}
         {url && (
           <a
             href={url}
@@ -200,6 +211,7 @@ export function SourceRow({ item }: { item: SourceItem }) {
           {" · "}
           {item.provider}
         </div>
+        {item.lead && <Lead text={item.lead} />}
       </div>
     </div>
   );

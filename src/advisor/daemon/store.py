@@ -551,6 +551,56 @@ class DaemonStore:
             ).fetchall()
         return [SourceItem.model_validate_json(r["payload_json"]) for r in rows]
 
+    def source_items_without_summary(self, doc_prefix: str) -> list:
+        """Archived items of a form family whose ``summary`` was never read."""
+        from advisor.news.models import SourceItem
+
+        rows = self._conn.execute(
+            "SELECT payload_json FROM source_items "
+            "WHERE json_extract(payload_json, '$.doc_type') LIKE ? "
+            "AND json_extract(payload_json, '$.summary') IS NULL",
+            (f"{doc_prefix}%",),
+        ).fetchall()
+        return [SourceItem.model_validate_json(r["payload_json"]) for r in rows]
+
+    def fill_source_summary(self, dedup_key: str, summary: str) -> bool:
+        """Set an item's summary if it has none. Never overwrites what was read."""
+        cur = self._conn.execute(
+            "UPDATE source_items SET payload_json = json_set(payload_json, '$.summary', ?) "
+            "WHERE dedup_key = ? AND json_extract(payload_json, '$.summary') IS NULL",
+            (summary, dedup_key),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def get_source_item(self, dedup_key: str):
+        """One archived item by its dedup key, or None."""
+        from advisor.news.models import SourceItem
+
+        row = self._conn.execute(
+            "SELECT payload_json FROM source_items WHERE dedup_key = ?", (dedup_key,)
+        ).fetchone()
+        return SourceItem.model_validate_json(row["payload_json"]) if row else None
+
+    def events_without_lead(self) -> list[Event]:
+        """Filing and news events that point at a source item but carry no lead."""
+        rows = self._conn.execute(
+            "SELECT * FROM events WHERE json_extract(payload_json, '$.lead') IS NULL "
+            "AND (json_extract(payload_json, '$.accession') IS NOT NULL "
+            "OR kind = 'NEWS_CONTEXT')"
+        ).fetchall()
+        return [self._row_to_event(r) for r in rows]
+
+    def fill_event_lead(self, event_id: str, lead: str) -> bool:
+        """Attach a lead to an event that has none. Nothing else in it changes."""
+        cur = self._conn.execute(
+            "UPDATE events SET payload_json = json_set(payload_json, '$.lead', ?) "
+            "WHERE id = ? AND json_extract(payload_json, '$.lead') IS NULL",
+            (lead, event_id),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
     def latest_source_item_at(self, symbol: str, tier: str = "PRIMARY"):
         """When the newest archived item of a tier was published, or None.
 

@@ -45,6 +45,7 @@ def recent_context(
                 published_at=item.published_at,
                 entity=entity,
                 doc_type="NEWS",
+                summary=item.summary,
             )
         )
         if len(out) >= limit:

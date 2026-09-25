@@ -33,7 +33,8 @@ from advisor.news.classify import (
 )
 from advisor.news.enrich import extract_offering_size, offering_size_for
 from advisor.news.foreign import classify_headline, is_proposal
-from advisor.news.models import SourceItem, SourceTier, capped_tier
+from advisor.news.lead import lead_for
+from advisor.news.models import SourceItem, SourceTier, capped_tier, url_key
 from advisor.news.offering import classify_offering, offering_shape_for
 from advisor.valuation.interim import headline_figures, interim_for_accession
 
@@ -97,6 +98,9 @@ def _event_for_filing(item: SourceItem, *, market_caps: dict[str, float]) -> Eve
         "provider": item.provider,
         "match": item.entity.method.value,
     }
+    lead = lead_for(item)
+    if lead:
+        payload["lead"] = lead
 
     # A 424B does not say what it is offering; the cover page does. AMD's
     # August supplement sold $4.75bn of senior notes — leverage, with not one
@@ -340,6 +344,59 @@ async def explain_symbol(
     return items
 
 
+@dataclass
+class LeadBackfill:
+    items_read: int = 0
+    items_filled: int = 0
+    events_filled: int = 0
+    errors: list[str] = field(default_factory=list)
+
+
+def _read_eight_k_lead(item: SourceItem) -> str | None:
+    """Fetch one archived 8-K from EDGAR and extract its lead."""
+    from advisor.news.edgar import _client_ready
+    from advisor.news.lead import eight_k_lead
+
+    _client_ready()
+    from edgar import find
+
+    return eight_k_lead(find(item.accession), item.item_codes)
+
+
+def backfill_leads(store: DaemonStore, *, read_lead=_read_eight_k_lead) -> LeadBackfill:
+    """Give already-archived filings and their events the lead ingest now records.
+
+    Events are deduplicated on their source, so a filing ingested before leads
+    existed is never emitted again and would stay blank forever. This reads
+    each such 8-K once, stores the lead on the item, then copies the lead onto
+    every event that points at an item that has one. Both writes fill only
+    what is empty, so a second run changes nothing.
+    """
+    result = LeadBackfill()
+    for item in store.source_items_without_summary("8-K"):
+        if not item.accession:
+            continue
+        result.items_read += 1
+        try:
+            lead = read_lead(item)
+        except Exception as exc:  # noqa: BLE001
+            result.errors.append(f"{item.accession}: {exc}")
+            continue
+        if lead and store.fill_source_summary(item.dedup_key(), lead):
+            result.items_filled += 1
+
+    for event in store.events_without_lead():
+        payload = event.payload or {}
+        key = payload.get("accession")
+        if not key and payload.get("url"):
+            key = url_key(str(payload["url"]))
+        item = store.get_source_item(key) if key else None
+        lead = lead_for(item) if item else None
+        if lead and store.fill_event_lead(event.id, lead):
+            result.events_filled += 1
+    return result
+
+
 def context_events(items: list[SourceItem], *, reason: str) -> list[Event]:
     """Tier C context rows so an explanation is visible beside its trigger."""
     events = []
@@ -361,6 +418,7 @@ def context_events(items: list[SourceItem], *, reason: str) -> list[Event]:
                     "match": item.entity.method.value,
                     "confidence": item.entity.confidence,
                     "explains": reason,
+                    "lead": lead_for(item),
                 },
             )
         )

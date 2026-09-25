@@ -9,7 +9,7 @@ import pytest
 from advisor.daemon.market_calendar import MARKET_TZ, now_et
 from advisor.daemon.models import EventTier
 from advisor.daemon.store import DaemonStore
-from advisor.news.ingest import _event_for_filing, context_events
+from advisor.news.ingest import _event_for_filing, backfill_leads, context_events
 from advisor.news.models import (
     MAX_EVENT_TIER,
     EntityMatch,
@@ -239,3 +239,109 @@ class TestPerSymbolWatermark:
             )
         )
         assert store.latest_source_item_at("AAOI", tier="PRIMARY") is None
+
+
+class TestLeads:
+    """A filing event says what the filing is, not just what kind it is."""
+
+    HOUSTON = (
+        "On August 31, 2026, Applied Optoelectronics, Inc. entered into two separate lease "
+        "agreements with Hightower Phase II Owner, LLC for two industrial buildings to be "
+        "constructed in Houston, Texas."
+    )
+
+    def eight_k(self, **kw) -> SourceItem:
+        return item(
+            doc_type="8-K",
+            item_codes=["1.01", "2.03", "9.01"],
+            accession="0001683168-26-006862",
+            title="8-K: APPLIED OPTOELECTRONICS, INC. entered a material definitive agreement",
+            **kw,
+        )
+
+    def test_an_8k_event_carries_its_lead(self):
+        event = _event_for_filing(self.eight_k(summary=self.HOUSTON), market_caps={})
+        assert event.payload["lead"] == self.HOUSTON
+
+    def test_no_summary_means_no_lead_key(self):
+        event = _event_for_filing(self.eight_k(), market_caps={})
+        assert "lead" not in event.payload
+
+    def test_the_lead_does_not_change_classification(self):
+        """The 8-K lead must never be read by the 6-K headline classifier."""
+        with_lead = _event_for_filing(
+            self.eight_k(summary="Nebius announces convertible notes offering."), market_caps={}
+        )
+        without = _event_for_filing(self.eight_k(), market_caps={})
+        assert with_lead.kind == without.kind == "FILING_MATERIAL_AGREEMENT"
+        assert with_lead.tier == without.tier
+
+    def test_a_news_context_event_carries_the_publishers_abstract(self):
+        news = item(
+            tier=SourceTier.UNTAGGED,
+            accession=None,
+            doc_type="NEWS",
+            url="https://news/aaoi",
+            summary="Applied Optoelectronics faces supply constraints despite surging 800G demand.",
+        )
+        (event,) = context_events([news], reason="STOP_BREACHED")
+        assert event.payload["lead"].startswith("Applied Optoelectronics faces supply")
+
+
+class TestBackfillLeads:
+    HOUSTON = TestLeads.HOUSTON
+
+    def archive(self, store, **kw):
+        filing = TestLeads().eight_k(**kw)
+        store.save_source_item(filing)
+        store.emit(_event_for_filing(filing, market_caps={}))
+        return filing
+
+    def test_an_archived_8k_and_its_event_get_the_lead(self, store):
+        self.archive(store)
+        result = backfill_leads(store, read_lead=lambda _i: self.HOUSTON)
+        assert (result.items_read, result.items_filled, result.events_filled) == (1, 1, 1)
+        (event,) = store.recent_events()
+        assert event.payload["lead"] == self.HOUSTON
+        # Nothing else in the event moved.
+        assert event.payload["kind"] == "MATERIAL_AGREEMENT"
+        assert store.get_source_item("0001683168-26-006862").summary == self.HOUSTON
+
+    def test_a_second_run_is_a_no_op(self, store):
+        self.archive(store)
+        backfill_leads(store, read_lead=lambda _i: self.HOUSTON)
+        calls = []
+        again = backfill_leads(store, read_lead=lambda i: calls.append(i) or "different")
+        assert calls == []
+        assert (again.items_filled, again.events_filled) == (0, 0)
+        assert store.recent_events()[0].payload["lead"] == self.HOUSTON
+
+    def test_an_existing_summary_is_never_overwritten(self, store):
+        self.archive(store, summary=self.HOUSTON)
+        result = backfill_leads(store, read_lead=lambda _i: "overwritten")
+        assert result.items_read == 0
+        assert store.get_source_item("0001683168-26-006862").summary == self.HOUSTON
+
+    def test_edgar_failing_is_reported_not_raised(self, store):
+        self.archive(store)
+
+        def boom(_item):
+            raise TimeoutError("EDGAR timed out")
+
+        result = backfill_leads(store, read_lead=boom)
+        assert result.items_filled == 0
+        assert "EDGAR timed out" in result.errors[0]
+        assert "lead" not in store.recent_events()[0].payload
+
+    def test_an_unreadable_filing_leaves_the_event_alone(self, store):
+        self.archive(store)
+        result = backfill_leads(store, read_lead=lambda _i: None)
+        assert (result.items_filled, result.events_filled) == (0, 0)
+
+    def test_an_event_whose_item_was_never_archived_is_skipped(self, store):
+        store.emit(_event_for_filing(TestLeads().eight_k(), market_caps={}))
+        assert backfill_leads(store, read_lead=lambda _i: self.HOUSTON).events_filled == 0
+
+    def test_empty_store(self, store):
+        result = backfill_leads(store, read_lead=lambda _i: self.HOUSTON)
+        assert (result.items_read, result.events_filled, result.errors) == (0, 0, [])

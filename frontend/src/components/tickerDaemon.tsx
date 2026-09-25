@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { cn, fmtEt, fmtNum } from "@/lib/utils";
 import { Section } from "@/components/common";
-import { EventRow, SourceBadge } from "@/components/daemon";
+import { EventRow, Lead, SourceBadge } from "@/components/daemon";
 
 /** What the daemon holds on one name: filings and news on a clock, the factor
  *  fit, and this symbol's share of each book-level bet. */
@@ -39,6 +39,7 @@ export function TickerDaemonPanels({ symbol }: { symbol: string }) {
                   {row.doc_type && ` · ${row.doc_type}`}
                   {row.item_codes.length > 0 && ` [${row.item_codes.join(", ")}]`}
                 </div>
+                {row.lead && <Lead text={row.lead} />}
               </div>
             </div>
           ))}

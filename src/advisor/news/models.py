@@ -23,6 +23,11 @@ from advisor.daemon.market_calendar import now_et
 from advisor.daemon.models import EventTier
 
 
+def url_key(url: str) -> str:
+    """The dedup key of an item identified by its URL."""
+    return hashlib.sha256(url.encode()).hexdigest()[:32]
+
+
 class SourceTier(StrEnum):
     """How much a source's word is worth."""
 
@@ -118,4 +123,4 @@ class SourceItem(BaseModel):
         """
         if self.accession:
             return self.accession
-        return hashlib.sha256(self.url.encode()).hexdigest()[:32]
+        return url_key(self.url)

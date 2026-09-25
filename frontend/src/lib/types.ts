@@ -583,6 +583,8 @@ export interface SourceItem {
   accession: string | null;
   match: string;
   confidence: number;
+  /** The filer's or publisher's own opening words; null when unreadable. */
+  lead: string | null;
 }
 
 export interface ReconcileFinding {
@@ -630,6 +632,8 @@ export interface SymbolDaemonDetail {
     doc_type: string | null;
     item_codes: string[];
     match: string;
+    /** The filer's or publisher's own opening words; null when unreadable. */
+    lead: string | null;
   }[];
   events: DaemonEvent[];
 }
