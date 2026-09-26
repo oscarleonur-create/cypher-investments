@@ -502,6 +502,64 @@ def _with_scanner_store(db_path, fn, now):
         store.close()
 
 
+async def run_learning_sweep(ctx: JobContext) -> JobResult:
+    """Monthly, evenings: search the thresholds over the replay; file survivors as PENDING.
+
+    Proposes only. Nothing here changes a rule: every transition past PENDING
+    is the user's (``advisor learn shadow|activate|reject``). Long — about
+    forty minutes over the broad universe — and entirely off the event loop.
+    """
+    import asyncio
+
+    def _run(db_path, now):
+        import sqlite3
+        from datetime import timedelta
+
+        from advisor.daemon.store import DaemonStore
+        from advisor.daemon.universe import research_symbols
+        from advisor.learning.actuator import ChangeStore
+        from advisor.learning.sweep import file_proposals, sweep
+        from advisor.learning.universe import replay_universe
+
+        store = DaemonStore(db_path)
+        try:
+            book = store.load_latest_book()
+            own = research_symbols(book)[0] if book is not None else []
+        finally:
+            store.close()
+        from advisor.learning.actuator import active_entry_params, active_session_thresholds
+
+        symbols, _ = replay_universe(own)
+        end = now.date()
+        conn = sqlite3.connect(str(db_path))
+        try:
+            base_p, base_t = active_entry_params(conn), active_session_thresholds(conn)
+        finally:
+            conn.close()
+        result = sweep(
+            symbols,
+            end - timedelta(days=730),
+            end,
+            base_params=base_p,
+            base_thresholds=base_t,
+        )
+        conn = sqlite3.connect(str(db_path))
+        try:
+            file_proposals(result, ChangeStore(conn))
+        finally:
+            conn.close()
+        return result
+
+    result = await asyncio.to_thread(_run, ctx.store.db_path, ctx.now)
+    survived = [v for v in result.verdicts if v.proposed is not None]
+    detail = (
+        f"{result.used}/{result.symbols} symbols; {len(result.verdicts)} thresholds searched; "
+        f"{len(survived)} survived; filed PENDING: {', '.join(result.proposed) or 'none'}"
+    )
+    logger.info("learning_sweep: %s", detail)
+    return JobResult(job="learning_sweep", ok=True, detail=detail)
+
+
 async def run_heartbeat(ctx: JobContext) -> JobResult:
     """Liveness tick — proves the supervisor loop is running between jobs.
 

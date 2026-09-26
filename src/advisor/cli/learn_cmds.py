@@ -560,3 +560,100 @@ def retire_cmd(
 ) -> None:
     """Roll back an active or shadowed change: the code's value returns."""
     _transition(change_id, "retire", note, output)
+
+
+@app.command("sweep")
+def sweep_cmd(
+    years: Annotated[float, typer.Option("--years", help="Replay window, ending today")] = 2.0,
+    symbols: Annotated[
+        Optional[str],
+        typer.Option("--symbols", help="Comma-separated; default the broad universe"),
+    ] = None,
+    target: Annotated[
+        Optional[list[str]], typer.Option("--target", help="Repeatable, e.g. 'trade stop'")
+    ] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Report, file no proposals")] = False,
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Search each threshold's grid over the replay; file what survives walk-forward (PENDING)."""
+    from datetime import timedelta
+
+    from advisor.daemon.market_calendar import now_et
+    from advisor.learning.actuator import ChangeStore
+    from advisor.learning.sweep import file_proposals, sweep
+    from advisor.learning.universe import replay_universe
+
+    if symbols:
+        universe = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    else:
+        universe, _ = replay_universe(_book_symbols())
+    from advisor.learning.actuator import active_entry_params, active_session_thresholds
+
+    end = now_et().date()
+    start = end - timedelta(days=int(365 * years))
+    conn = _db()
+    try:
+        base_p, base_t = active_entry_params(conn), active_session_thresholds(conn)
+    finally:
+        conn.close()
+    result = sweep(
+        universe,
+        start,
+        end,
+        only=set(target) if target else None,
+        base_params=base_p,
+        base_thresholds=base_t,
+        progress=None if output == "json" else lambda m: console.print(f"[dim]{m}[/dim]"),
+    )
+    if not dry_run:
+        conn = _db()
+        try:
+            file_proposals(result, ChangeStore(conn))
+        finally:
+            conn.close()
+    rows = [
+        {
+            "target": v.target,
+            "param": v.param,
+            "current": v.current,
+            "proposed": v.proposed,
+            "reason": v.reason,
+            "evidence": v.evidence,
+        }
+        for v in result.verdicts
+    ]
+    if output == "json":
+        output_json(
+            {
+                "symbols": result.symbols,
+                "used": result.used,
+                "verdicts": rows,
+                "filed": result.proposed,
+                "skipped": result.skipped,
+                "dry_run": dry_run,
+            }
+        )
+        return
+    table = Table(title=f"Sweep over {result.used}/{result.symbols} symbols")
+    for col in ("target", "param", "current", "proposed", "why", "OOS Δ", "wins", "tried"):
+        table.add_column(col)
+    for v in result.verdicts:
+        ev = v.evidence
+        delta = ev.get("pooled_oos_delta")
+        table.add_row(
+            v.target,
+            v.param,
+            str(v.current),
+            "—" if v.proposed is None else str(v.proposed),
+            v.reason,
+            "—" if delta is None else f"{delta:+.2%}",
+            str(ev.get("wins", "—")),
+            str(ev.get("variants_tested", "—")),
+        )
+    console.print(table)
+    if result.proposed:
+        console.print(f"filed PENDING: {', '.join(result.proposed)} — see `advisor learn changes`")
+    for s in result.skipped:
+        console.print(f"[dim]not filed: {s}[/dim]")
+    if dry_run:
+        console.print("[dim]dry run: nothing filed[/dim]")
