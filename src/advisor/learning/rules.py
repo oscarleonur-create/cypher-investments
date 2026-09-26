@@ -56,6 +56,7 @@ class Origin(StrEnum):
 
     LIVE = "live"
     REPLAY = "replay"
+    SHADOW = "shadow"  # a challenger run beside the live rules; acted on by nobody
 
 
 class RuleStamp(BaseModel):
