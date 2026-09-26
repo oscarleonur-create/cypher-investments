@@ -247,3 +247,82 @@ def _coverage_start(conn: sqlite3.Connection):
     ]
     firsts = [f for f in firsts if f]
     return date.fromisoformat(min(firsts)) if firsts else None
+
+
+@app.command("report")
+def report(
+    ruleset: Annotated[
+        Optional[str],
+        typer.Option("--ruleset", help="scanner.session | scanner.premarket | entry"),
+    ] = None,
+    horizon: Annotated[
+        Optional[list[str]], typer.Option("--horizon", help="Repeatable; default all")
+    ] = None,
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """What each rule version has earned against its names' own drift, and calibration."""
+    from advisor.learning.evaluate import (
+        Baselines,
+        chance_edges,
+        evaluate,
+        load_live,
+        stance_calibration,
+        stop_calibration,
+        yahoo_closes,
+    )
+    from advisor.research.config import get_settings
+
+    records = load_live(get_settings().db_path)
+    if ruleset:
+        records = [r for r in records if r.ruleset == ruleset]
+    baselines = Baselines(yahoo_closes())
+    cells = evaluate(records, baselines, tuple(horizon) if horizon else None)
+    stops = stop_calibration(records)
+    stances = stance_calibration(records, baselines)
+    chance = chance_edges(cells)
+    if output == "json":
+        output_json(
+            {
+                "records": len(records),
+                "cells": [c.as_dict() for c in cells],
+                "edges_expected_by_chance": chance,
+                "stop_calibration": stops,
+                "stance_calibration": stances,
+            }
+        )
+        return
+
+    def pct(x):
+        return "—" if x is None else f"{x:+.2%}"
+
+    table = Table(title=f"What the rules earned ({len(records)} records)")
+    cols = ("ruleset", "version", "group", "h", "n", "sess", "mean", "vs own drift", "95% CI")
+    for col in (*cols, "tail", "verdict"):
+        table.add_column(col)
+    for c in cells:
+        table.add_row(
+            c.ruleset,
+            c.version,
+            c.group,
+            c.horizon,
+            str(c.n),
+            str(c.sessions),
+            pct(c.mean),
+            pct(c.excess),
+            f"{pct(c.ci[0])} … {pct(c.ci[1])}" if c.ci else "—",
+            pct(c.tail),
+            c.verdict.value,
+        )
+    console.print(table)
+    edges = sum(c.verdict.value == "EDGE" for c in cells)
+    console.print(
+        f"[dim]{edges} EDGE verdicts; about {chance:.1f} would appear by chance across the cells "
+        "with enough data. UNDETERMINED is the honest default.[/dim]"
+    )
+    for s in stops:
+        console.print(
+            f"stops ({s['leg']}): touched {s['observed']:.0%} of {s['n']} vs {s['expected']:.0%} "
+            f"implied by σ — {s['finding']}"
+        )
+    for prompt, s in stances.items():
+        console.print(f"stances (prompt {prompt}, {s['horizon']}): {s['finding']}")
