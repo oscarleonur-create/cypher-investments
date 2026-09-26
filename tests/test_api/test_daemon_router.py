@@ -85,6 +85,8 @@ class TestStatus:
             "scan",
             "premarket_scan",
             "entry_proposals",
+            "distress_premarket",
+            "distress_midday",
             "scan_outcomes",
             "heartbeat",
         } == names
