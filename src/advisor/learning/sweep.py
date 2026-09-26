@@ -13,9 +13,11 @@ What makes a proposal earn its place:
   Records whose outcome window crosses into the stretch being judged are
   purged from the choosing, so the future never leaks through a 20-session
   return that ends inside it.
-- **Most of the time, not once.** The chosen value must beat the current one
-  by ``MIN_EFFECT`` in at least ``MIN_WINS`` of the judged stretches, and over
-  all of them together.
+- **Most of the time, not once, and not by noise.** The chosen value must
+  beat the current one by ``MIN_EFFECT`` in at least ``MIN_WINS`` of the
+  judged stretches, over all of them together, and with an interval clear of
+  zero: a paired bootstrap over blocks of sessions (the same blocks for both
+  values), so a 0.2% edge from noise across 35 variants does not pass.
 - **Not a spike.** At least one neighbour on the grid must also beat the
   current value over the whole replay: a lone peak is usually noise fitted.
 - **Not bought with the tail.** The worst decile may not be more than
@@ -194,6 +196,34 @@ def _mean(vals):
     return statistics.fmean(vals) if vals else None
 
 
+def paired_delta_ci(
+    a: list[tuple[date, float]], b: list[tuple[date, float]], block: int, iters: int = 2000
+) -> tuple[float, float] | None:
+    """Interval of mean(a) - mean(b), resampling the same blocks of sessions for both."""
+    import random
+
+    days = sorted({d for d, _ in a} | {d for d, _ in b})
+    block = max(1, block)
+    groups = [set(days[i : i + block]) for i in range(0, len(days), block)]
+    by_a = [[x for d, x in a if d in g] for g in groups]
+    by_b = [[x for d, x in b if d in g] for g in groups]
+    keep = [i for i in range(len(groups)) if by_a[i] or by_b[i]]
+    if len(keep) < 2:
+        return None
+    rng = random.Random(0)
+    deltas = []
+    for _ in range(iters):
+        pick = [rng.choice(keep) for _ in keep]
+        xa = [x for i in pick for x in by_a[i]]
+        xb = [x for i in pick for x in by_b[i]]
+        if xa and xb:
+            deltas.append(statistics.fmean(xa) - statistics.fmean(xb))
+    if len(deltas) < iters // 2:
+        return None
+    deltas.sort()
+    return deltas[int(0.025 * len(deltas))], deltas[int(0.975 * len(deltas)) - 1]
+
+
 def _p10(vals):
     if len(vals) < 10:
         return None
@@ -209,8 +239,10 @@ def walk_forward(target: Target, current, by_value: dict, sessions: list[date]) 
     bounds = [days[min(k * size, len(days) - 1)] for k in range(FOLDS)] + [days[-1] + timedelta(1)]
     index = {d: n for n, d in enumerate(days)}
 
-    def in_fold(k):
+    def in_fold(k, dated: bool = False):
         lo, hi = bounds[k], bounds[k + 1]
+        if dated:
+            return {v: [(d, x) for d, x in recs if lo <= d < hi] for v, recs in by_value.items()}
         return {v: [x for d, x in recs if lo <= d < hi] for v, recs in by_value.items()}
 
     def before(k):
@@ -281,6 +313,19 @@ def walk_forward(target: Target, current, by_value: dict, sessions: list[date]) 
             current,
             None,
             "not better over all judged stretches",
+            evidence,
+        )
+    dated_mode = [p for k in range(1, FOLDS) for p in in_fold(k, dated=True).get(mode, [])]
+    dated_cur = [p for k in range(1, FOLDS) for p in in_fold(k, dated=True).get(current, [])]
+    ci = paired_delta_ci(dated_mode, dated_cur, target.horizon)
+    evidence["pooled_oos_ci"] = list(ci) if ci else None
+    if ci is None or ci[0] <= 0:
+        return Verdict(
+            target.name,
+            target.param,
+            current,
+            None,
+            "the out-of-sample gain is within noise (interval includes zero)",
             evidence,
         )
     tail_mode, tail_cur = _p10(pooled_mode), _p10(pooled_cur)
