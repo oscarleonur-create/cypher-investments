@@ -213,3 +213,22 @@ def test_the_grid_and_the_baseline_are_the_rules_in_force():
     assert t.grid == (1.0, 1.5, 2.0, 2.5, 3.0)
     assert _current(t, active) == 2.0
     assert _current(t) == current_params().trade_stop_sigmas
+
+
+def test_a_small_edge_buried_in_noise_is_not_proposed():
+    # 2.5 beats 2.0 by 0.3% on average, but each record moves ±5%: the point
+    # estimate can clear MIN_EFFECT in two stretches while the interval
+    # straddles zero. It must not be proposed.
+    by = records({1.0: 0.0, 1.5: 0.002, 2.0: 0.0, 2.5: 0.003, 3.0: 0.002}, noise=0.05, seed=3)
+    v = walk_forward(T, 2.0, by, sessions_of(by))
+    assert v.proposed is None
+
+
+def test_paired_interval_uses_the_same_blocks():
+    from advisor.learning.sweep import paired_delta_ci
+
+    a = [(d, 0.01) for d in DAYS]
+    b = [(d, 0.0) for d in DAYS]
+    lo, hi = paired_delta_ci(a, b, block=5)
+    assert lo == pytest.approx(0.01) and hi == pytest.approx(0.01)
+    assert paired_delta_ci(a[:1], b[:1], block=5) is None
