@@ -387,9 +387,65 @@ async def run_scan_outcomes(ctx: JobContext) -> JobResult:
         lambda store, _now: sync_fills(store, sessions),
         ctx.now,
     )
-    detail = f"{result.summary()}; {taken} newly taken from broker fills"
+    tracked = await asyncio.to_thread(_track_proposals, ctx.store.db_path, ctx.now, sessions)
+    detail = f"{result.summary()}; {taken} newly taken from broker fills; {tracked}"
     logger.info("scan_outcomes: %s", detail)
     return JobResult(job="scan_outcomes", ok=True, detail=detail)
+
+
+def _track_proposals(db_path, now, sessions) -> str:
+    """Outcomes and broker fills for entry proposals, in one worker thread."""
+    from advisor.entry.store import EntryStore
+    from advisor.entry.track import fill_proposal_outcomes, sync_proposal_fills
+    from advisor.scanner.store import ScannerStore
+
+    entries, scanner = EntryStore(db_path), ScannerStore(db_path)
+    try:
+        result = fill_proposal_outcomes(entries, now)
+        taken = sync_proposal_fills(entries, scanner, sessions)
+        return f"{result.summary()}, {taken} taken"
+    finally:
+        entries.close()
+        scanner.close()
+
+
+async def run_entry_proposals(ctx: JobContext) -> JobResult:
+    """Hourly in session: a sized proposal per watched name, recorded for tracking.
+
+    Measurement and decision support only: nothing is emitted to the event
+    stream and nothing is ordered. The model is asked only where a decision
+    is on the table (see ``entry.run``).
+    """
+    import asyncio
+
+    def _run(db_path, now):
+        from advisor.daemon.store import DaemonStore
+        from advisor.entry.run import propose_all
+        from advisor.entry.store import EntryStore
+        from advisor.scanner.store import ScannerStore
+
+        entries, scanner = EntryStore(db_path), ScannerStore(db_path)
+        daemon = DaemonStore(db_path)
+        try:
+            return propose_all(daemon, now, entry_store=entries, scanner_store=scanner)
+        finally:
+            entries.close()
+            scanner.close()
+            daemon.close()
+
+    proposals, errors = await asyncio.to_thread(_run, ctx.store.db_path, ctx.now)
+    acts = [
+        f"{p.symbol} {p.action.value}"
+        for p in proposals
+        if p.action.value in ("ENTER", "ADD", "WAIT")
+    ]
+    detail = f"{len(proposals)} proposals" + (
+        f": {', '.join(acts)}" if acts else ", none to act on"
+    )
+    if errors:
+        detail += f"; {len(errors)} error(s): {errors[0]}"
+    logger.info("entry_proposals: %s", detail)
+    return JobResult(job="entry_proposals", ok=bool(proposals) or not errors, detail=detail)
 
 
 def _with_scanner_store(db_path, fn, now):

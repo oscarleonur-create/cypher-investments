@@ -47,9 +47,15 @@ class RelativeZone(BaseModel):
     median: float
     percentile: float  # share of the window's sessions with P/S at or below today's
     top: float  # the price at which today's P/S equals the window median
+    p25_price: float  # the price at the window's 25th percentile P/S (cheap for this name)
+    p80_price: float  # ... 80th percentile (rich for this name): where to review a trim
     window_start: date
     window_end: date
     observations: int
+    # Consecutive sessions before today with P/S above the median. A price
+    # hovering at the median flips in and out daily (AMZN 3.6x vs 3.6x on
+    # 2026-09-22); an entry into the zone only counts after a real stay out.
+    sessions_above: int = 0
     basis: str = "price / sales on trailing-12-month revenue and diluted shares, as known each day"
 
     @property
@@ -86,15 +92,25 @@ def relative_zone(
         return None
     ps_now = price * sh_now.value / rev_now.value
     median = statistics.median(history)
+    cuts = statistics.quantiles(history, n=20, method="inclusive")  # 5% steps
+    per_share = rev_now.value / sh_now.value
+    streak = 0
+    for value in reversed(history[:-1]):
+        if value <= median:
+            break
+        streak += 1
     return RelativeZone(
         price=price,
         ps_now=ps_now,
         median=median,
         percentile=sum(v <= ps_now for v in history) / len(history),
-        top=median * rev_now.value / sh_now.value,
+        top=median * per_share,
+        p25_price=cuts[4] * per_share,
+        p80_price=cuts[15] * per_share,
         window_start=start,
         window_end=today,
         observations=len(history),
+        sessions_above=streak,
     )
 
 

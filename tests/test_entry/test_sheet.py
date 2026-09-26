@@ -146,6 +146,79 @@ class TestSheet:
         assert s.holding.unrealized == pytest.approx(0.25)
 
 
+class TestThesisStatus:
+    """A rule broken ten days ago still counts, unless the user answered it."""
+
+    def setup(self, store, *, days_ago=19, pct=0.067):
+        from advisor.thesis.models import Claim, ClaimKind, Comparator, Trigger
+
+        store.save_book(BookSnapshot(net_liq=10_000, positions=[pos("AAOI", 10, 100)]))
+        claim = Claim(
+            kind=ClaimKind.INVALIDATION,
+            text="Any equity raise above 5% of market cap breaks the story",
+            trigger=Trigger(
+                event_kinds=["FILING_DILUTION"],
+                field="dilution_pct",
+                comparator=Comparator.ABOVE,
+                threshold=0.05,
+            ),
+        )
+        store.save_claim("AAOI", claim)
+        store.emit(
+            Event(
+                source=EventSource.EDGAR,
+                kind="FILING_DILUTION",
+                tier=EventTier.A,
+                symbol="AAOI",
+                ts=NOW - timedelta(days=days_ago),
+                payload={"dilution_pct": pct},
+                dedup_key="atm",
+            )
+        )
+        return claim
+
+    def test_old_break_the_weekly_card_calls_untested_is_broken(self, store):
+        from advisor.entry.sheet import thesis_status
+
+        self.setup(store)
+        status, rules = thesis_status(store, "AAOI", store.load_latest_book(), NOW)
+        assert status == "broken" and "5%" in rules[0]
+
+    def test_under_the_threshold_is_intact(self, store):
+        from advisor.entry.sheet import thesis_status
+
+        self.setup(store, pct=0.03)
+        assert thesis_status(store, "AAOI", store.load_latest_book(), NOW) == ("intact", [])
+
+    def test_beyond_ninety_days_no_longer_counts(self, store):
+        from advisor.entry.sheet import thesis_status
+
+        self.setup(store, days_ago=120)
+        assert thesis_status(store, "AAOI", store.load_latest_book(), NOW)[0] == "intact"
+
+    def test_answered_break_is_not_a_blocker(self, store):
+        from advisor.action.decisions import Decision, SubjectKind, Verdict
+        from advisor.entry.sheet import thesis_status
+
+        claim = self.setup(store)
+        store.record_decision(
+            Decision(
+                symbol="AAOI",
+                subject_kind=SubjectKind.CLAIM,
+                subject_id=claim.id,
+                verdict=Verdict.ACKNOWLEDGED,
+            )
+        )
+        status, _ = thesis_status(store, "AAOI", store.load_latest_book(), NOW)
+        assert status == "answered"
+
+    def test_no_thesis(self, store):
+        from advisor.entry.sheet import thesis_status
+
+        store.save_book(BookSnapshot(net_liq=10_000))
+        assert thesis_status(store, "MSFT", store.load_latest_book(), NOW) == (None, [])
+
+
 def pos(sym, qty, px):
     return Position(
         account="a", symbol=sym, underlying=sym, instrument="Equity", quantity=qty, close_price=px

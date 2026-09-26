@@ -54,6 +54,7 @@ class TestRegistry:
             "insiders",
             "scan",
             "premarket_scan",
+            "entry_proposals",
             "scan_outcomes",
             "heartbeat",
         }
