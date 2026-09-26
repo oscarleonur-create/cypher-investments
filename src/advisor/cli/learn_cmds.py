@@ -139,7 +139,7 @@ def trades(
         bool, typer.Option("--sync/--no-sync", help="Rebuild from the broker history first")
     ] = False,
     book: Annotated[
-        Optional[str], typer.Option("--book", help="short | long | unclassified")
+        Optional[str], typer.Option("--book", help="quick | hold | unclassified")
     ] = None,
     show: Annotated[int, typer.Option("--show", help="List the last N trades")] = 0,
     output: Annotated[str, typer.Option("--output", "-o")] = "table",

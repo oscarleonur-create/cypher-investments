@@ -13,8 +13,9 @@ outcome yet.
 
 Books are kept apart (the user's two strategies are never analysed together):
 
-    short         closed on the entry session or the next one
-    long          held more than five sessions
+    quick         closed on the entry session or the next one (not a short sale:
+                  every trade has its own direction, and these were all buys)
+    hold          held more than five sessions
     unclassified  anything between, and every multi-leg option trade — the
                   user's rule does not say which book a three-day hold is,
                   and guessing would contaminate both
@@ -42,16 +43,16 @@ logger = logging.getLogger(__name__)
 
 OPEN_ACTIONS = frozenset({"Buy to Open", "Sell to Open"})
 CLOSE_ACTIONS = frozenset({"Sell to Close", "Buy to Close"})
-SHORT_MAX_SESSIONS = 1  # closed on the entry session or the next
-LONG_MIN_SESSIONS = 6  # more than five sessions: over a trading week
+QUICK_MAX_SESSIONS = 1  # closed on the entry session or the next
+HOLD_MIN_SESSIONS = 6  # more than five sessions: over a trading week
 OPTION_MULTIPLIER = 100.0
 # Rebuilt from here every time, so a long hold's entry is never cut off.
 HISTORY_START = date(2024, 1, 1)
 
 
 class Book(StrEnum):
-    SHORT = "short"
-    LONG = "long"
+    QUICK = "quick"  # closed by the next session: the trading book, NOT a short sale
+    HOLD = "hold"  # held more than five sessions: the long-term book
     UNCLASSIFIED = "unclassified"
 
 
@@ -137,10 +138,10 @@ def _next_session(day: date) -> date:
 def classify(t: Trade) -> Book:
     if t.multi_leg or t.sessions_held is None:
         return Book.UNCLASSIFIED
-    if t.sessions_held <= SHORT_MAX_SESSIONS:
-        return Book.SHORT
-    if t.sessions_held >= LONG_MIN_SESSIONS:
-        return Book.LONG
+    if t.sessions_held <= QUICK_MAX_SESSIONS:
+        return Book.QUICK
+    if t.sessions_held >= HOLD_MIN_SESSIONS:
+        return Book.HOLD
     return Book.UNCLASSIFIED
 
 

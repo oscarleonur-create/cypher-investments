@@ -53,7 +53,7 @@ class TestEpisodes:
         )
         assert t.closed and t.direction == "long"
         assert t.pnl == pytest.approx(50) and t.ret == pytest.approx(0.05)
-        assert t.sessions_held == 0 and t.book is Book.SHORT
+        assert t.sessions_held == 0 and t.book is Book.QUICK
 
     def test_scaling_in_and_out_is_one_trade(self):
         fills = [
@@ -135,11 +135,11 @@ class TestBooks:
     @pytest.mark.parametrize(
         "exit_day,book",
         [
-            (MON, Book.SHORT),  # same session
-            (TUE, Book.SHORT),  # next session
+            (MON, Book.QUICK),  # same session
+            (TUE, Book.QUICK),  # next session
             (WED, Book.UNCLASSIFIED),  # two sessions: neither rule says
             (date(2026, 9, 28), Book.UNCLASSIFIED),  # five sessions
-            (date(2026, 9, 29), Book.LONG),  # six: over a trading week
+            (date(2026, 9, 29), Book.HOLD),  # six: over a trading week
         ],
     )
     def test_boundaries(self, exit_day, book):
@@ -293,7 +293,7 @@ class TestReview:
             ex("Sell to Close", 1, 11, at(MON, 15)),
         ]
         rows = {r["book"]: r for r in review(round_trips(fills))}
-        assert rows["short"]["n"] == 1
+        assert rows["quick"]["n"] == 1
         assert rows["spread legs"]["pnl"] == pytest.approx(100 - 50)
         assert "mean_ret" not in rows["spread legs"]
 
@@ -359,5 +359,5 @@ class TestStoreAndSync:
         ]
         for t in round_trips(fills):
             store.upsert(t)
-        assert [t.underlying for t in store.list(book="short")] == ["A"]
+        assert [t.underlying for t in store.list(book="quick")] == ["A"]
         assert [t.underlying for t in store.list(since=TUE)] == ["B"]
