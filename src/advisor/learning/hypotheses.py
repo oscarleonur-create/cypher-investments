@@ -54,6 +54,33 @@ CANDIDATE_FEATURES = {
 }  # fmt: skip
 FEATURES = PROPOSAL_FEATURES | CANDIDATE_FEATURES
 OPS = ("<", "<=", ">", ">=", "==", "!=")
+# What each feature means and in what units. The first live round proposed
+# "ps_percentile >= 80" (it runs 0-1) and "sigma >= 3" (a daily volatility of
+# ~0.02, not a move in sigmas): without units a model guesses the scale.
+MEANINGS = {
+    "ps_percentile": "share of the last 2y sessions with P/S at or below today's (0-1)",
+    "zone_distance": "today's P/S vs its 2y median, as a fraction (-0.2 = 20% below)",
+    "in_zone": "P/S at or below its 2y median (true/false)",
+    "prev_in_zone": "the same at the previous close",
+    "sessions_above": "sessions the P/S spent above the median before today",
+    "ps": "price / trailing sales", "ps_median": "2y median P/S",
+    "zone_observations": "sessions of P/S history behind the zone",
+    "sigma": "daily volatility of returns, a fraction (0.02 = 2%/day)",
+    "move_z": "today's move in units of that daily volatility",
+    "day": "today's return, a fraction", "d5": "5-session return", "d20": "20-session return",
+    "price": "price in dollars", "setups": "scanner setups today, e.g. 'setup A~daily'",
+    "events_today": "events since the previous close", "tier_a_today": "tier-A events today",
+    "events_week": "events in 7 days", "held": "already held (true/false)",
+    "weight": "share of the book held (0-1)", "thesis": "'intact', 'broken' or none",
+    "delivered_growth": "revenue growth YoY, a fraction",
+    "consensus_growth": "consensus growth per year, a fraction",
+    "required_low": "lowest growth the price requires (reverse DCF), a fraction",
+    "required_high": "highest growth the price requires, a fraction",
+    "change": "move vs previous close at detection, a fraction",
+    "gap": "open vs previous close, a fraction", "rvol": "volume vs usual pace (1 = normal)",
+    "market_cap": "dollars", "peer_move": "median move of its peers today, a fraction",
+    "news_checked": "news was looked up (true/false)", "has_catalyst": "news found (true/false)",
+}  # fmt: skip
 
 
 class Status(StrEnum):
@@ -91,7 +118,8 @@ hypotheses, each of the form: within GROUP, records whose FEATURE OP VALUE do
 BETTER or WORSE at HORIZON than the rest of GROUP.
 
 Rules:
-- Use only groups listed in the input and only the allowed feature names.
+- Use only a group's own listed features, on the scale shown (p5 … median …
+  p95): a value outside that range selects nothing and is thrown out.
 - Each hypothesis must be testable on those features; no outside knowledge,
   no tickers, no dates, no news.
 - Prefer hypotheses that would change a threshold the system already has.
@@ -104,10 +132,46 @@ def prompt_version() -> str:
     return hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest()[:12]
 
 
-def summary_for_model(cells: list, calibration: list, groups: dict[str, int]) -> str:
+def feature_ranges(records: list[Record]) -> dict[str, dict[str, str]]:
+    """{group: {feature: 'p5 … median … p95' or the values seen}} for features present."""
+    by: dict[str, dict[str, list]] = {}
+    for r in records:
+        feats = (r.extra or {}).get("features") or {}
+        for k, v in feats.items():
+            if k in FEATURES and v is not None:
+                by.setdefault(r.group, {}).setdefault(k, []).append(v)
+    out: dict[str, dict[str, str]] = {}
+    for group, feats in by.items():
+        for k, vals in feats.items():
+            if len(vals) < MIN_N:
+                continue
+            nums = [
+                float(v) for v in vals if isinstance(v, int | float) and not isinstance(v, bool)
+            ]
+            if len(nums) == len(vals):
+                nums.sort()
+                q = [nums[int(p * (len(nums) - 1))] for p in (0.05, 0.5, 0.95)]
+                out.setdefault(group, {})[k] = f"{q[0]:.4g} … {q[1]:.4g} … {q[2]:.4g}"
+            else:
+                seen = sorted({str(v) for v in vals})[:6]
+                out.setdefault(group, {})[k] = "values: " + ", ".join(seen)
+    return out
+
+
+def summary_for_model(
+    cells: list, calibration: list, groups: dict[str, int], ranges: dict | None = None
+) -> str:
     """Numbers only, rounded, per group: what the model may reason from."""
     lines = ["GROUPS (records): " + ", ".join(f"{g} ({n})" for g, n in sorted(groups.items()))]
-    lines.append("ALLOWED FEATURES: " + ", ".join(sorted(FEATURES)))
+    ranges = ranges or {}
+    lines.append("FEATURES BY GROUP (p5 … median … p95; use only these, on these scales):")
+    for group in sorted(groups):
+        feats = ranges.get(group)
+        if not feats:
+            lines.append(f"  {group}: none recorded — do not propose on this group")
+            continue
+        for k, rng in sorted(feats.items()):
+            lines.append(f"  {group} | {k} | {MEANINGS.get(k, '')} | {rng}")
     lines.append("CELLS (group | origin | horizon | n | independent windows | excess | verdict):")
     for c in cells:
         ex = "n/a" if c.excess is None else f"{c.excess:+.2%}"
@@ -140,7 +204,7 @@ def _matches(value, op: str, target) -> bool | None:
 
 
 def validate(h: Hypothesis, groups: set[str]) -> str | None:
-    """Why the hypothesis cannot be tested, or None."""
+    """Why the hypothesis cannot be tested at all, or None."""
     if h.feature not in FEATURES:
         return f"feature {h.feature!r} is not recorded"
     if h.group not in groups:
@@ -188,7 +252,25 @@ def examine(h: Hypothesis, records: list[Record], baselines: Baselines) -> Findi
         }
 
     a, b = side(match), side(rest)
-    if min(a["n"], b["n"]) < MIN_N or a["ci"] is None or b["ci"] is None:
+    in_group = sum(1 for r in records if r.group == h.group)
+    if not match and not rest:
+        return Finding(
+            status=Status.INVALID,
+            reason=f"{h.feature} is not recorded for {h.group} ({in_group} records)",
+        )
+    if min(a["n"], b["n"]) < MIN_N:
+        # A condition that leaves one side (nearly) empty asks nothing: usually a
+        # wrong scale, e.g. a 0-1 percentile compared with 80.
+        return Finding(
+            status=Status.INVALID,
+            reason=(
+                f"the condition splits {h.group} into {a['n']} matching and {b['n']} not; "
+                f"each side needs {MIN_N}"
+            ),
+            matching=a,
+            rest=b,
+        )
+    if a["ci"] is None or b["ci"] is None:
         return Finding(
             status=Status.INCONCLUSIVE, reason="too little data on a side", matching=a, rest=b
         )
@@ -291,7 +373,8 @@ def generate_and_test(
     groups: dict[str, int] = {}
     for r in records:
         groups[r.group] = groups.get(r.group, 0) + 1
-    draft = complete(SYSTEM_PROMPT, summary_for_model(cells, calibration, groups))
+    ranges = feature_ranges(records)
+    draft = complete(SYSTEM_PROMPT, summary_for_model(cells, calibration, groups, ranges))
     out = []
     for h in draft.hypotheses[:MAX_HYPOTHESES]:
         result = examine(h, records, baselines)

@@ -90,8 +90,8 @@ class TestExamine:
         r = examine(
             hyp(feature="thesis", op="==", value="intact"), recs(0.01, 0.0), Baselines(flat)
         )
-        # every record matches: nothing to compare against
-        assert r.status is Status.INCONCLUSIVE and r.rest["n"] == 0
+        # every record matches: nothing to compare against, so nothing was asked
+        assert r.status is Status.INVALID and "0 not" in r.reason
 
     def test_records_without_the_feature_are_left_out(self):
         rs = recs(0.01, 0.0)
@@ -157,5 +157,30 @@ class TestRound:
 
 
 def test_summary_lists_groups_features_and_cells():
-    s = summary_for_model([], [], {"action ENTER": 10})
-    assert "action ENTER (10)" in s and "ps_percentile" in s
+    s = summary_for_model(
+        [], [], {"action ENTER": 10, "setup C~daily": 5},
+        {"action ENTER": {"ps_percentile": "0.1 … 0.5 … 0.9"}},
+    )  # fmt: skip
+    assert "action ENTER (10)" in s
+    assert "action ENTER | ps_percentile | share of the last 2y" in s and "0.1 … 0.5 … 0.9" in s
+    assert "setup C~daily: none recorded" in s
+
+
+class TestTheFirstLiveRound:
+    """The mistakes the model made on the first real round (2026-09-26), now INVALID."""
+
+    def test_a_feature_this_group_does_not_record(self):
+        # rvol is a scanner candidate field; proposals never carry it.
+        r = examine(hyp(feature="rvol", op=">=", value=2.0), recs(0.01, 0.0), Baselines(flat))
+        assert r.status is Status.INVALID and "not recorded for action ENTER" in r.reason
+
+    def test_a_percentile_on_the_wrong_scale(self):
+        r = examine(hyp(op=">=", value=80.0), recs(0.01, 0.0), Baselines(flat))
+        assert r.status is Status.INVALID and "0 matching" in r.reason
+
+    def test_ranges_show_the_scale(self):
+        from advisor.learning.hypotheses import feature_ranges
+
+        ranges = feature_ranges(recs(0.01, 0.0))
+        assert ranges["action ENTER"]["ps_percentile"].startswith("0.1")
+        assert ranges["action ENTER"]["thesis"] == "values: intact"
