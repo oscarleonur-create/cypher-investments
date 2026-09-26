@@ -47,6 +47,12 @@ six points with the assumed margin (META -0.4% to +5.7% on 2026-09-25), too
 fragile to size a position on (user decision, 2026-09-25). AT_RISK still
 blocks, because waiting is the cautious direction.
 
+**Held names** are judged for their exit as well (``entry.exits``): EXIT
+past the stop from the purchase price or on a filing that ends the case,
+TRIM above the book limit, REVIEW for a broken thesis rule, a rich P/S or
+an auditor change, HOLD otherwise. The strongest call replaces the entry
+action. Every action but NONE, IN_ZONE and CANNOT_SAY carries its reasons.
+
 Nothing here is a view of what the company is worth. The zone is a
 comparison with the name's own history; the stops are its own volatility;
 the size is the user's own budget.
@@ -90,6 +96,16 @@ class Action(StrEnum):
     WAIT = "WAIT"  # a leg would qualify, but something must be read first
     NONE = "NONE"  # out of zone and no setup
     CANNOT_SAY = "CANNOT_SAY"  # no price, or neither a zone nor a setup to judge by
+    # Held names (``entry.exits``): the strongest exit call wins; none is HOLD.
+    EXIT = "EXIT"  # sell all: past its stop, or a filing that ends the case
+    TRIM = "TRIM"  # sell part: above the 20% book limit
+    REVIEW = "REVIEW"  # answer it: a broken thesis rule, rich P/S, an auditor change
+    HOLD = "HOLD"  # held, no exit call; the reasons say where it stands
+
+
+# Actions that ask the user to do something, or to hold on purpose: each must
+# carry at least one reason with its source (user decision, 2026-09-26).
+NEEDS_RATIONALE = frozenset({"ENTER", "ADD", "WAIT", "EXIT", "TRIM", "REVIEW", "HOLD"})
 
 
 class Leg(BaseModel):
@@ -123,6 +139,8 @@ class Proposal(BaseModel):
     reading: list[str] = Field(default_factory=list)  # its sentences
     gaps: list[str] = Field(default_factory=list)
     net_liq: float | None = None
+    # entry.exits.ExitCall, dumped: why, evidence, would_change, shares. Held names only.
+    exits: list[dict] = Field(default_factory=list)
     outcomes: dict[str, float | None] = Field(default_factory=dict)
 
     @property
@@ -193,7 +211,9 @@ def build_proposal(
         p.blockers.append("no price")
         return p
     if z is None and not sheet.candidates:
-        return p  # CANNOT_SAY: no zone to judge a position, no setup for a trade
+        # CANNOT_SAY for an entry: no zone to judge a position, no setup for a
+        # trade. A held name is still judged for its exit.
+        return _held(p, sheet, net_liq) if sheet.holding is not None else p
 
     p.triggers = triggers_for(sheet)
 
@@ -367,4 +387,39 @@ def build_proposal(
         p.action = Action.WAIT if p.blockers else Action.IN_ZONE
     elif z is not None or sheet.candidates:
         p.action = Action.NONE
+    return _held(p, sheet, net_liq) if held else p
+
+
+def _held(p: Proposal, sheet: Sheet, net_liq: float | None) -> Proposal:
+    """A held name: the strongest exit call replaces the entry action; none is HOLD.
+
+    An ADD survives only when no exit call fires: adding to a name the rules
+    say to sell or to question is the one contradiction a proposal must not
+    carry. A WAIT on an ADD stays WAIT (its blocker already says why).
+    """
+    from advisor.entry.exits import exit_calls, strongest
+
+    calls, position, gaps = exit_calls(sheet, net_liq=net_liq)
+    if any("thesis" in r.source for r in p.reasons):
+        # The entry side already said the thesis is intact; say it once.
+        position = [r for r in position if "thesis" not in r.source]
+    p.exits = [c.model_dump() for c in calls]
+    p.gaps.extend(gaps)
+    top = strongest(calls)
+    if top is not None:
+        p.action = Action(top)
+        p.legs = []
+        p.blockers = [b for b in p.blockers if not b.startswith("a rule of your thesis")]
+        p.reasons = (
+            [Reason(text=c.why, source=f"exit rule: {c.rule}") for c in calls]
+            + position
+            + p.reasons
+        )
+    elif p.action not in (Action.ADD, Action.WAIT):
+        if not position and not p.reasons:
+            return p  # nothing to say about it: no cost, no volatility, no zone
+        p.action = Action.HOLD
+        p.reasons = position + p.reasons
+    else:
+        p.reasons = p.reasons + position
     return p

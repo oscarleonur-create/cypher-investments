@@ -45,12 +45,14 @@ class EventLine(BaseModel):
     kind: str
     tier: str
     text: str
+    items: list[str] = Field(default_factory=list)  # 8-K item codes, filings only
 
 
 class Holding(BaseModel):
     quantity: float
     weight: float  # of net liq
     unrealized: float  # fraction of cost
+    cost: float | None = None  # average purchase price per share
 
 
 class Sheet(BaseModel):
@@ -59,6 +61,8 @@ class Sheet(BaseModel):
     move: Move | None = None
     events_today: list[EventLine] = Field(default_factory=list)  # since the previous close
     events_week: int = 0
+    # Filings on this name in the last FILINGS_LOOKBACK_DAYS: what an exit reads.
+    filings: list[EventLine] = Field(default_factory=list)
     holding: Holding | None = None
     zone: RelativeZone | None = None  # the entry zone: P/S vs its own two-year median
     zone_prev: RelativeZone | None = None  # the same, at the previous close: did it cross?
@@ -149,10 +153,19 @@ def _event_line(event) -> EventLine:
     text = summarize(event) or event.kind.replace("_", " ").lower()
     if payload.get("lead"):
         text += f" — {payload['lead']}"
-    return EventLine(ts=event.ts, kind=event.kind, tier=event.tier.value, text=text[:300])
+    return EventLine(
+        ts=event.ts,
+        kind=event.kind,
+        tier=event.tier.value,
+        text=text[:300],
+        items=[str(i) for i in payload.get("items") or []],
+    )
 
 
 THESIS_LOOKBACK_DAYS = 90
+# An exit-grade filing keeps asking for two weeks, not only on the day it lands:
+# a weekend or a missed session must not bury a bankruptcy notice.
+FILINGS_LOOKBACK_DAYS = 14
 
 
 def thesis_status(store, symbol: str, book, now: datetime) -> tuple[str | None, list[str]]:
@@ -255,6 +268,13 @@ def build_sheet(
     sheet.events_week = len(
         store.recent_events(symbol=symbol, since=now - timedelta(days=7), limit=500)
     )
+    sheet.filings = [
+        _event_line(e)
+        for e in store.recent_events(
+            symbol=symbol, since=now - timedelta(days=FILINGS_LOOKBACK_DAYS), limit=500
+        )
+        if e.kind.startswith("FILING_")
+    ]
 
     book = store.load_latest_book()
     if book is not None:
@@ -265,6 +285,7 @@ def build_sheet(
                 quantity=sum(p.quantity for p in held),
                 weight=sum(p.notional for p in held) / book.net_liq,
                 unrealized=(sum(p.unrealized_pnl for p in held) / basis) if basis else 0.0,
+                cost=(basis / qty) if (qty := sum(p.quantity for p in held)) and basis else None,
             )
 
     price = sheet.move.price if sheet.move else None

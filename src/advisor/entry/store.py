@@ -13,7 +13,7 @@ import sqlite3
 from datetime import date
 from pathlib import Path
 
-from advisor.entry.proposal import Proposal
+from advisor.entry.proposal import NEEDS_RATIONALE, Proposal
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS entry_proposals (
@@ -42,6 +42,9 @@ class EntryStore:
         self._conn.close()
 
     def add(self, p: Proposal) -> bool:
+        """Record a proposal once per id. One without a rationale is refused."""
+        if p.action.value in NEEDS_RATIONALE and not p.reasons:
+            raise ValueError(f"{p.id}: an action without a rationale is not recorded")
         cur = self._conn.execute(
             "INSERT OR IGNORE INTO entry_proposals (id, session, symbol, action, payload_json) "
             "VALUES (?, ?, ?, ?, ?)",
