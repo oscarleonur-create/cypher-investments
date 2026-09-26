@@ -13,6 +13,7 @@ import sqlite3
 from datetime import date
 from pathlib import Path
 
+from advisor.learning import store as rule_versions
 from advisor.scanner.models import Candidate, Phase, Setup, TradeDecision, candidate_id
 
 _SCHEMA = """\
@@ -51,6 +52,7 @@ class ScannerStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
+        rule_versions.ensure_schema(self._conn)
         self._conn.commit()
 
     def close(self) -> None:
@@ -74,8 +76,11 @@ class ScannerStore:
                 c.model_dump_json(),
             ),
         )
+        new = cur.rowcount > 0
+        if new:
+            rule_versions.register(self._conn, c.rules)
         self._conn.commit()
-        return cur.rowcount > 0
+        return new
 
     def exists(
         self, session: date, setup: Setup, symbol: str, phase: Phase = Phase.SESSION

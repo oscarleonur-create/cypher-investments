@@ -54,13 +54,16 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from advisor.entry.ruleset import entry_rules
 from advisor.entry.sheet import Sheet
+from advisor.learning.rules import Origin, RuleStamp
 
 # User decision, 2026-09-25: base risk 2-3% of net liq per entry (raised from
 # 1-3% after 1% sized AMZN/CRDO at one share and META at none on a ~$8k book).
 TRADE_RISK = 0.02
 POSITION_RISK = 0.02
 POSITION_RISK_CHEAP = 0.03
+CHEAP_PERCENTILE = 0.25  # "cheap": P/S in the cheapest quarter of its two years
 MAX_TOTAL_RISK = 0.03
 # User decision, 2026-09-25: more risk where a long-term thesis is written and
 # intact (no rule broken or standing) — one point more, up to 4% in total.
@@ -68,6 +71,9 @@ THESIS_BONUS = 0.01
 MAX_TOTAL_RISK_THESIS = 0.04
 BOOK_LIMIT = 0.20  # MechanicsLimits.concentration_pct
 POSITION_STOP_MIN, POSITION_STOP_MAX = 0.08, 0.25
+# The position stop is two weeks of 2σ daily moves: 2·σ·√10.
+POSITION_STOP_SIGMAS = 2.0
+POSITION_STOP_SESSIONS = 10
 TRADE_STOP_SIGMAS = 1.5
 DIP_SIGMAS = 2.0
 # An entry into the zone counts only after this many sessions above it, so a
@@ -115,6 +121,11 @@ class Proposal(BaseModel):
     reading: list[str] = Field(default_factory=list)  # its sentences
     gaps: list[str] = Field(default_factory=list)
     net_liq: float | None = None
+    # What it was decided on, as numbers, and by which rules: what a review
+    # groups by and a replay compares against. None on pre-registry rows.
+    features: dict[str, float | int | bool | str | None] = Field(default_factory=dict)
+    rules: RuleStamp | None = None
+    origin: Origin = Origin.LIVE
     outcomes: dict[str, float | None] = Field(default_factory=dict)
 
     @property
@@ -129,7 +140,8 @@ class Proposal(BaseModel):
 def position_stop_pct(sigma: float | None) -> float | None:
     if not sigma or sigma <= 0:
         return None
-    return min(max(2 * sigma * math.sqrt(10), POSITION_STOP_MIN), POSITION_STOP_MAX)
+    pct = POSITION_STOP_SIGMAS * sigma * math.sqrt(POSITION_STOP_SESSIONS)
+    return min(max(pct, POSITION_STOP_MIN), POSITION_STOP_MAX)
 
 
 def _size(net_liq: float | None, risk: float, entry: float, stop: float) -> tuple[int, float]:
@@ -161,6 +173,45 @@ def triggers_for(sheet: Sheet) -> list[str]:
     return out
 
 
+def features_of(sheet: Sheet) -> dict[str, float | int | bool | str | None]:
+    """The inputs a proposal is decided on, as numbers. Pure.
+
+    The reasons tell the user the same things in prose; these are what a
+    review groups by and a replay compares. Only what the sheet held — nothing
+    derived from the decision itself, so a feature can never explain the
+    outcome by restating the action.
+    """
+    m, z, prev, c = sheet.move, sheet.zone, sheet.zone_prev, sheet.context
+    setups = sorted({cid.split(":")[1] for cid in sheet.candidates if cid.count(":") >= 2})
+    return {
+        "price": m.price if m else None,
+        "day": m.day if m else None,
+        "d5": m.d5 if m else None,
+        "d20": m.d20 if m else None,
+        "sigma": m.sigma if m else None,
+        "move_z": m.z if m else None,
+        "in_zone": z.in_zone if z else None,
+        "prev_in_zone": prev.in_zone if prev else None,
+        "ps": z.ps_now if z else None,
+        "ps_median": z.median if z else None,
+        "ps_percentile": z.percentile if z else None,
+        "zone_distance": z.distance if z else None,
+        "sessions_above": z.sessions_above if z else None,
+        "zone_observations": z.observations if z else None,
+        "setups": ",".join(setups) or None,
+        "events_today": len(sheet.events_today),
+        "tier_a_today": sum(e.tier == "A" for e in sheet.events_today),
+        "events_week": sheet.events_week,
+        "held": sheet.holding is not None,
+        "weight": sheet.holding.weight if sheet.holding else 0.0,
+        "thesis": sheet.thesis,
+        "delivered_growth": c.delivered if c else None,
+        "consensus_growth": c.consensus if c else None,
+        "required_low": c.low if c else None,
+        "required_high": c.high if c else None,
+    }
+
+
 def build_proposal(
     sheet: Sheet,
     *,
@@ -177,6 +228,8 @@ def build_proposal(
         price=m.price if m else None,
         gaps=list(sheet.gaps),
         net_liq=net_liq,
+        features=features_of(sheet),
+        rules=entry_rules(),
     )
     if reading is not None and getattr(reading, "stance", None) is not None:
         p.stance = reading.stance.value
@@ -260,7 +313,7 @@ def build_proposal(
         if stop_pct is None:
             p.gaps.append("no volatility estimate: position stop cannot be set")
         else:
-            risk = POSITION_RISK_CHEAP if z.percentile <= 0.25 else POSITION_RISK
+            risk = POSITION_RISK_CHEAP if z.percentile <= CHEAP_PERCENTILE else POSITION_RISK
             if sheet.thesis == "intact":
                 risk += THESIS_BONUS
             risk = min(risk, cap)
@@ -271,7 +324,9 @@ def build_proposal(
                 entry=m.price,
                 stop=stop,
                 stop_basis=(
-                    f"2·σ·√10 = {stop_pct:.1%} below entry (σ {sigma:.2%}/day), kept in 8–25%"
+                    f"{POSITION_STOP_SIGMAS:g}·σ·√{POSITION_STOP_SESSIONS} = {stop_pct:.1%} "
+                    f"below entry (σ {sigma:.2%}/day), kept in "
+                    f"{POSITION_STOP_MIN * 100:.0f}–{POSITION_STOP_MAX:.0%}"
                 ),
                 risk_pct=risk,
                 shares=shares,

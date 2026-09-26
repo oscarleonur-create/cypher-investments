@@ -7,6 +7,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from advisor.learning.rules import Origin, RuleStamp
+
 
 class Setup(StrEnum):
     CATALYST_GAP = "A"  # gap up on fresh news, heavy volume — with the move
@@ -86,6 +88,7 @@ class Candidate(BaseModel):
     change: float | None
     gap: float | None = None  # open vs prev close
     rvol: float | None = None  # volume vs the pace expected by now
+    volume: float | None = None  # shares traded so far in the session, when seen
     sigma: float | None = None  # |change| in units of 60-session daily vol
     market_cap: float | None = None
     peers: list[str] = Field(default_factory=list)  # C: most-correlated industry peers
@@ -95,6 +98,10 @@ class Candidate(BaseModel):
     premarket_volume: float | None = None  # premarket only: shares traded 04:00-now
     catalysts: list[CatalystItem] = Field(default_factory=list)
     news_checked: bool = False  # False: nobody looked, which is not "no news"
+    # The rules that found it. None on rows written before stamps existed:
+    # those are grouped apart, never assumed to match the current rules.
+    rules: RuleStamp | None = None
+    origin: Origin = Origin.LIVE
     outcomes: dict[str, float | None] = Field(default_factory=dict)
 
     @property

@@ -14,6 +14,7 @@ from datetime import date
 from pathlib import Path
 
 from advisor.entry.proposal import Proposal
+from advisor.learning import store as rule_versions
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS entry_proposals (
@@ -36,6 +37,7 @@ class EntryStore:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
+        rule_versions.ensure_schema(self._conn)
         self._conn.commit()
 
     def close(self) -> None:
@@ -47,8 +49,11 @@ class EntryStore:
             "VALUES (?, ?, ?, ?, ?)",
             (p.id, p.session.isoformat(), p.symbol, p.action.value, p.model_dump_json()),
         )
+        new = cur.rowcount > 0
+        if new:
+            rule_versions.register(self._conn, p.rules)
         self._conn.commit()
-        return cur.rowcount > 0
+        return new
 
     def list(
         self, *, session: date | None = None, since: date | None = None, limit: int = 5000
