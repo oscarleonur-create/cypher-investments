@@ -15,6 +15,7 @@ from advisor.valuation.history import (
     quarter_key,
     quarterly_points,
     ttm,
+    yahoo_rows,
 )
 
 
@@ -184,3 +185,52 @@ class TestBreaks:
 
     def test_no_revenue_no_series(self):
         assert build_series("x", [[]], [q("CY2025Q1", None, "2025-03-31", 10)], []) is None
+
+
+class TestYahooRows:
+    """NBIS files IFRS; the SEC series is empty and Yahoo is the fallback."""
+
+    # Yahoo's NBIS figures on 2026-09-25, $M.
+    QUARTERS = {
+        date(2025, 6, 30): 105.1,
+        date(2025, 9, 30): 146.1,
+        date(2025, 12, 31): 227.7,
+        date(2026, 3, 31): 399.0,
+        date(2026, 6, 30): 582.3,
+    }
+    ANNUAL = {date(2025, 12, 31): 529.8, date(2024, 12, 31): 91.5}
+
+    def test_the_quarter_off_the_left_edge_is_derived(self):
+        rows = yahoo_rows(self.QUARTERS, self.ANNUAL)
+        q1 = [r for r in rows if r["frame"] == "CY2025Q1"]
+        assert len(q1) == 1
+        assert q1[0]["val"] == pytest.approx(529.8 - 105.1 - 146.1 - 227.7)
+        assert q1[0]["end"] == "2025-03-31"
+
+    def test_a_year_with_two_missing_quarters_is_not_guessed(self):
+        rows = yahoo_rows(self.QUARTERS, self.ANNUAL)
+        assert not any(r["frame"].startswith("CY2024") for r in rows)
+
+    def test_ttm_from_yahoo(self):
+        rows = yahoo_rows(self.QUARTERS, self.ANNUAL)
+        points = ttm(quarterly_points(rows))
+        assert [p.end for p in points] == [
+            date(2025, 12, 31),
+            date(2026, 3, 31),
+            date(2026, 6, 30),
+        ]
+        assert points[0].value == pytest.approx(529.8)
+        assert points[-1].value == pytest.approx(146.1 + 227.7 + 399.0 + 582.3)
+
+    def test_a_negative_derived_quarter_is_a_gap(self):
+        rows = yahoo_rows(self.QUARTERS, {date(2025, 12, 31): 400.0})
+        assert not any(r["frame"] == "CY2025Q1" for r in rows)
+
+    def test_nothing_in_nothing_out(self):
+        assert yahoo_rows({}, {}) == []
+
+    def test_series_names_its_source(self):
+        rows = yahoo_rows(self.QUARTERS, self.ANNUAL)
+        shares = yahoo_rows({d: 250.0 for d in self.QUARTERS}, {})
+        s = build_series("nbis", [rows], shares, [], source="yfinance statements")
+        assert s.source == "yfinance statements" and s.symbol == "NBIS"

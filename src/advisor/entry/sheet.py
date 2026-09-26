@@ -261,7 +261,7 @@ def build_sheet(
             sheet.zone_prev = relative_zone(clean[:-1], series, prev_day, prev_close)
     if sheet.zone is None:
         sheet.gaps.append(
-            "no entry zone (needs a price and a year or more of SEC revenue and share history)"
+            "no entry zone (needs a price and six months of recent revenue and share history)"
         )
 
     snapshot = store.load_latest_valuation(symbol)
