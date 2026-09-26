@@ -215,3 +215,10 @@ this symbol*.
 - Branch per feature: `feature/<slug>`, off `main`.
 - `market_calendar.py` holidays and early closes are hardcoded through 2027 and
   need an annual refresh.
+- **Every rule constant is versioned.** A constant added to a scanner or entry
+  rule module must be declared in that package's `ruleset.py` with its kind —
+  `threshold` (the learning loop may propose a change), `decided` (a limit the
+  user set; never searched) or `model` (how something is measured) — or listed
+  in `NOT_RULES` with the reason. `tests/test_learning/test_declared.py` fails
+  otherwise. Every candidate and proposal carries the resulting `rules` stamp;
+  `advisor learn rules` lists the versions and what each produced.

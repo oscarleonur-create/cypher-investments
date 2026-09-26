@@ -15,6 +15,7 @@ from advisor.daemon import market_calendar as mc
 from advisor.scanner import detect as rules
 from advisor.scanner import sources
 from advisor.scanner.models import Candidate, CatalystItem, Mover, Setup
+from advisor.scanner.ruleset import session_rules
 from advisor.scanner.store import ScannerStore
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,7 @@ def run_scan(
 
     since = catalyst_window_start(now)
     spent = store.news_checked_count(session)
+    stamp = session_rules(thresholds)
     for m in movers:
         for setup, z in rules.detect(m, now, sigma.get(m.symbol), thresholds):
             if store.exists(session, setup, m.symbol):
@@ -127,10 +129,12 @@ def run_scan(
                 change=rules.change(m),
                 gap=rules.gap(m),
                 rvol=rules.relative_volume(m, now),
+                volume=m.volume,
                 sigma=z,
                 market_cap=m.market_cap,
                 peers=peers,
                 peer_move=moved,
+                rules=stamp,
             )
             if check_news and (news_budget is None or spent < news_budget):
                 items, checked = fetch_catalysts(m.symbol, m.name, since)
