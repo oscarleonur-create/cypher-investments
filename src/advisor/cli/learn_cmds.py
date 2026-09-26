@@ -296,7 +296,7 @@ def report(
         return "—" if x is None else f"{x:+.2%}"
 
     table = Table(title=f"What the rules earned ({len(records)} records)")
-    cols = ("ruleset", "version", "group", "h", "n", "sess", "mean", "vs own drift", "95% CI")
+    cols = ("ruleset", "version", "group", "h", "n", "sess", "indep", "mean", "vs drift", "95% CI")
     for col in (*cols, "tail", "verdict"):
         table.add_column(col)
     for c in cells:
@@ -307,6 +307,7 @@ def report(
             c.horizon,
             str(c.n),
             str(c.sessions),
+            str(c.windows),
             pct(c.mean),
             pct(c.excess),
             f"{pct(c.ci[0])} … {pct(c.ci[1])}" if c.ci else "—",

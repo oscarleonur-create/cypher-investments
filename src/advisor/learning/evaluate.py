@@ -4,9 +4,14 @@ A loop that learns from noise is worse than no loop: it will change a rule
 because of three lucky sessions and call it improvement. So every figure here
 is built to resist that:
 
-- **Clustered by session.** Twenty candidates on one Tuesday are one market
-  day, not twenty observations. Confidence intervals bootstrap *sessions*,
-  and every cell reports how many distinct sessions it rests on.
+- **Clustered by session, blocked by horizon.** Twenty candidates on one
+  Tuesday are one market day, not twenty observations. And a 20-session
+  return recorded on Monday shares 19 of its 20 days with Tuesday's: over a
+  horizon of k sessions, consecutive days are not independent either.
+  Intervals therefore resample *blocks of k consecutive sessions*, and a
+  verdict needs ``MIN_SESSIONS`` independent windows, not sessions — two
+  years hold about eight independent 60-session windows, and the report
+  says so instead of pretending to 400.
 - **Against the name's own drift.** "ENTER averaged +3% in 20 sessions" means
   nothing in a market where the same names averaged +3% on any day. Each
   record is scored as its return minus its symbol's average return over the
@@ -152,22 +157,32 @@ class Baselines:
 # ── Statistics ───────────────────────────────────────────────────────────
 
 
-def cluster_ci(
-    values: list[tuple[date, float]], *, iters: int = BOOTSTRAP, seed: int = 0
-) -> tuple[float, float] | None:
-    """Percentile interval of the mean, resampling whole sessions. Deterministic."""
+def blocks_of(values: list[tuple[date, float]], block: int = 1) -> list[list[float]]:
+    """Values grouped into runs of ``block`` consecutive recorded sessions."""
     by_session: dict[date, list[float]] = defaultdict(list)
     for day, v in values:
         by_session[day].append(v)
-    sessions = list(by_session)
-    if len(sessions) < 2:
+    days = sorted(by_session)
+    block = max(1, block)
+    out: list[list[float]] = []
+    for i in range(0, len(days), block):
+        out.append([v for d in days[i : i + block] for v in by_session[d]])
+    return out
+
+
+def cluster_ci(
+    values: list[tuple[date, float]], *, block: int = 1, iters: int = BOOTSTRAP, seed: int = 0
+) -> tuple[float, float] | None:
+    """Percentile interval of the mean, resampling blocks of ``block`` sessions. Deterministic."""
+    groups = blocks_of(values, block)
+    if len(groups) < 2:
         return None
     rng = random.Random(seed)
     means = []
     for _ in range(iters):
         pool: list[float] = []
-        for _ in sessions:
-            pool.extend(by_session[rng.choice(sessions)])
+        for _ in groups:
+            pool.extend(rng.choice(groups))
         means.append(statistics.fmean(pool))
     means.sort()
     lo = means[int((1 - CONFIDENCE) / 2 * iters)]
@@ -175,9 +190,10 @@ def cluster_ci(
     return lo, hi
 
 
-def verdict(n: int, sessions: int, ci: tuple[float, float] | None) -> tuple[Verdict, str]:
-    if n < MIN_N or sessions < MIN_SESSIONS:
-        return Verdict.UNDETERMINED, f"too little data ({n} records, {sessions} sessions)"
+def verdict(n: int, windows: int, ci: tuple[float, float] | None) -> tuple[Verdict, str]:
+    """``windows``: independent blocks of sessions (sessions themselves at a one-day horizon)."""
+    if n < MIN_N or windows < MIN_SESSIONS:
+        return Verdict.UNDETERMINED, f"too little data ({n} records, {windows} independent windows)"
     if ci is None:
         return Verdict.UNDETERMINED, "no interval"
     if ci[0] > MIN_EFFECT:
@@ -196,6 +212,7 @@ class Cell:
     origin: str
     n: int
     sessions: int
+    windows: int  # independent blocks of `horizon` sessions the excess rests on
     mean: float | None
     median: float | None
     hit: float | None
@@ -239,11 +256,11 @@ def evaluate(
                     continue
                 base_vals.append(b)
                 excess.append((r.session, r.outcomes[horizon] - b))
-            ex_sessions = len({d for d, _ in excess})
-            # Resampling three sessions gives an interval that looks precise and
-            # is not: below MIN_SESSIONS no interval is shown at all.
-            ci = cluster_ci(excess) if ex_sessions >= MIN_SESSIONS else None
-            v, why = verdict(len(excess), ex_sessions, ci)
+            windows = len(blocks_of(excess, k))
+            # Resampling three windows gives an interval that looks precise and
+            # is not: below MIN_SESSIONS independent windows no interval is shown.
+            ci = cluster_ci(excess, block=k) if windows >= MIN_SESSIONS else None
+            v, why = verdict(len(excess), windows, ci)
             tail_key = TAIL_FOR.get(horizon)
             tails = [
                 r.outcomes[tail_key]
@@ -259,6 +276,7 @@ def evaluate(
                     origin=origin,
                     n=len(have),
                     sessions=len({r.session for r in have}),
+                    windows=windows,
                     mean=statistics.fmean(rets),
                     median=statistics.median(rets),
                     hit=sum(x > 0 for x in rets) / len(rets),
@@ -361,11 +379,11 @@ def stance_calibration(records: list[Record], baselines: Baselines, horizon: str
         by[(r.extra.get("reading_prompt"), stance)].append((r.session, ret - b))
     prompts: dict[str | None, dict] = defaultdict(dict)
     for (prompt, stance), vals in by.items():
-        n_sessions = len({d for d, _ in vals})
-        ci = cluster_ci(vals) if n_sessions >= MIN_SESSIONS else None
+        windows = len(blocks_of(vals, k))
+        ci = cluster_ci(vals, block=k) if windows >= MIN_SESSIONS else None
         prompts[prompt][stance] = {
             "n": len(vals),
-            "sessions": n_sessions,
+            "windows": windows,
             "excess": statistics.fmean(v for _, v in vals),
             "ci": list(ci) if ci else None,
         }

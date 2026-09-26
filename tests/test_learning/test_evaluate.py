@@ -97,6 +97,13 @@ class TestInterval:
     def test_one_session_has_no_interval(self):
         assert cluster_ci([(START, 0.1), (START, 0.2)]) is None
 
+    def test_blocks_group_consecutive_sessions(self):
+        from advisor.learning.evaluate import blocks_of
+
+        vals = [(d, 1.0) for d in days(10)] + [(days(10)[0], 2.0)]
+        groups = blocks_of(vals, 4)
+        assert [len(g) for g in groups] == [5, 4, 2]
+
     def test_many_records_on_one_day_count_as_one_day(self):
         # 100 records on one session plus 11 on others: the interval must be
         # as wide as twelve sessions allow, not as narrow as 111 records would.
@@ -113,7 +120,7 @@ class TestVerdict:
 
     def test_enough_records_on_too_few_sessions(self):
         v, why = verdict(100, MIN_SESSIONS - 1, (0.01, 0.02))
-        assert v is Verdict.UNDETERMINED and "sessions" in why
+        assert v is Verdict.UNDETERMINED and "independent windows" in why
 
     def test_edge_negative_straddle(self):
         assert verdict(50, 20, (0.002, 0.02))[0] is Verdict.EDGE
@@ -133,11 +140,25 @@ class TestEvaluate:
         assert cell.mean == pytest.approx(d20) and cell.excess == pytest.approx(0)
         assert cell.verdict is Verdict.UNDETERMINED
 
-    def test_a_real_edge_over_enough_sessions(self):
+    def test_a_real_edge_over_enough_windows(self):
         rng = random.Random(3)
-        records = [rec(d, 0.03 + rng.gauss(0, 0.01)) for d in days(30)]
+        records = [rec(d, 0.03 + rng.gauss(0, 0.01)) for d in days(250)]
         (cell,) = evaluate(records, Baselines(flat_closes))
-        assert cell.verdict is Verdict.EDGE and cell.sessions == 30
+        assert cell.verdict is Verdict.EDGE and cell.windows == 13
+
+    def test_overlapping_horizons_are_not_independent(self):
+        # Thirty consecutive sessions of 20-session returns are two windows,
+        # however consistent: the replay's first finding came from exactly this.
+        records = [rec(d, 0.03) for d in days(30)]
+        (cell,) = evaluate(records, Baselines(flat_closes))
+        assert cell.sessions == 30 and cell.windows == 2
+        assert cell.verdict is Verdict.UNDETERMINED and cell.ci is None
+
+    def test_one_session_horizons_block_by_session(self):
+        rng = random.Random(4)
+        records = [rec(d, 0.01 + rng.gauss(0, 0.002), horizon="next_close") for d in days(30)]
+        (cell,) = evaluate(records, Baselines(flat_closes))
+        assert cell.windows == 30 and cell.verdict is Verdict.EDGE
 
     def test_few_sessions_show_no_interval(self):
         records = [rec(d, 0.05) for d in days(3) for _ in range(10)]
@@ -184,7 +205,7 @@ class TestEvaluate:
 
     def test_chance_edges_counts_only_judged_cells(self):
         few = [rec(d, 0.05) for d in days(3)]
-        many = [rec(d, 0.05, group="g2") for d in days(40)]
+        many = [rec(d, 0.05, group="g2") for d in days(250)]
         cells = evaluate(few + many, Baselines(flat_closes))
         assert chance_edges(cells) == pytest.approx(0.025)
 
@@ -228,7 +249,7 @@ class TestCalibration:
     def test_stances_ordered(self):
         rng = random.Random(5)
         recs = []
-        for d in days(30):
+        for d in days(250):
             recs.append(
                 rec(d, 0.04 + rng.gauss(0, 0.01), stance="CONSTRUCTIVE", reading_prompt="p1")
             )
@@ -238,7 +259,7 @@ class TestCalibration:
 
     def test_stances_inverted(self):
         recs = []
-        for d in days(30):
+        for d in days(250):
             recs.append(rec(d, -0.04, stance="CONSTRUCTIVE", reading_prompt="p1"))
             recs.append(rec(d, 0.04, stance="AT_RISK", reading_prompt="p1"))
         assert stance_calibration(recs, Baselines(flat_closes))["p1"]["finding"].startswith(
