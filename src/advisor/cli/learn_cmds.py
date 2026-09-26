@@ -657,3 +657,77 @@ def sweep_cmd(
         console.print(f"[dim]not filed: {s}[/dim]")
     if dry_run:
         console.print("[dim]dry run: nothing filed[/dim]")
+
+
+@app.command("hypotheses")
+def hypotheses_cmd(
+    generate: Annotated[
+        bool, typer.Option("--generate", help="Ask the model for new ones and test them")
+    ] = False,
+    replay: Annotated[
+        Optional[str], typer.Option("--replay", help="Test on a replay run too: id or 'latest'")
+    ] = "latest",
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Model-proposed hypotheses and the code's verdict on each. They change no rule."""
+    from advisor.learning.evaluate import (
+        Baselines,
+        evaluate,
+        load_live,
+        load_replay,
+        stop_calibration,
+        yahoo_closes,
+    )
+    from advisor.learning.hypotheses import HypothesisStore, generate_and_test
+    from advisor.learning.shadow import load_shadow
+    from advisor.research.config import get_settings
+
+    conn = _db()
+    try:
+        store = HypothesisStore(conn)
+        fresh = []
+        if generate:
+            path = get_settings().db_path
+            records = load_live(path) + load_shadow(path)
+            if replay:
+                _, replayed = load_replay(path, None if replay == "latest" else replay)
+                records += replayed
+            baselines = Baselines(yahoo_closes())
+            cells = evaluate(records, baselines)
+            try:
+                fresh = generate_and_test(
+                    records, cells, stop_calibration(records), baselines, store
+                )
+            except RuntimeError as exc:
+                output_error(str(exc))
+                return
+        rows = store.list()
+    finally:
+        conn.close()
+    if output == "json":
+        output_json({"generated": fresh, "all": rows})
+        return
+    table = Table(title="Hypotheses (proposed by the model, judged by the data)")
+    for col in ("id", "status", "group", "condition", "h", "expect", "matching", "rest", "why"):
+        table.add_column(col)
+
+    def side(s):
+        if not s or s.get("excess") is None:
+            return "—"
+        return f"{s['excess']:+.2%} (n={s['n']}, {s['windows']} win)"
+
+    for r in rows:
+        h, t = r["hypothesis"], r["test"]
+        table.add_row(
+            r["id"],
+            r["status"],
+            h["group"],
+            f"{h['feature']} {h['op']} {h['value']}",
+            h["horizon"],
+            h["expect"],
+            side(t.get("matching")),
+            side(t.get("rest")),
+            h["why"],
+        )
+    console.print(table)
+    console.print("[dim]A SUPPORTED hypothesis is a reason to look, not a rule change.[/dim]")
