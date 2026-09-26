@@ -12,7 +12,7 @@ from advisor.daemon.book import BookSnapshot, Position
 from advisor.daemon.models import Event, EventSource, EventTier
 from advisor.daemon.store import DaemonStore
 from advisor.daemon.universe import research_symbols, watched_universe
-from advisor.entry.sheet import build_sheet, move_from_closes
+from advisor.entry.sheet import build_sheet, move_from_closes, next_earnings, sessions_until
 
 NOW = datetime(2026, 9, 25, 11, 0, tzinfo=mc.MARKET_TZ)
 
@@ -57,6 +57,7 @@ def sheet(store, **kw):
         consensus_loader=lambda st, s: None,
         series_loader=lambda s: None,
         margin_loader=lambda s: None,
+        earnings_loader=lambda s: [],
     )
     defaults.update(kw)
     return build_sheet(store, "amzn", NOW, **defaults)
@@ -284,3 +285,44 @@ class TestWatchlistFilingsDoNotInterrupt:
         tiers = {e.symbol: e.tier for e in result.events}
         assert tiers == {"AAOI": EventTier.A, "AMZN": EventTier.B}
         assert result.interrupts == 1
+
+
+class TestEarnings:
+    def test_rddt_january_case_is_four_sessions(self):
+        """ENTER on Fri 2026-01-30; results Thu 2026-02-05: Mon-Thu."""
+        assert sessions_until(date(2026, 1, 30), date(2026, 2, 5)) == 4
+
+    def test_results_today_is_zero(self):
+        assert sessions_until(date(2026, 9, 25), date(2026, 9, 25)) == 0
+
+    def test_weekend_between_counts_nothing(self):
+        assert sessions_until(date(2026, 9, 25), date(2026, 9, 28)) == 1  # Fri -> Mon
+
+    def test_a_holiday_is_not_a_session(self):
+        """Thanksgiving 2026-11-26 is closed; the half day after it trades."""
+        assert sessions_until(date(2026, 11, 25), date(2026, 11, 30)) == 2
+
+    def test_next_date_ignores_the_past(self):
+        dates = [date(2026, 7, 30), date(2026, 10, 29), date(2026, 10, 30)]
+        assert next_earnings(dates, date(2026, 9, 25)) == date(2026, 10, 29)
+
+    def test_no_upcoming_date(self):
+        assert next_earnings([date(2026, 7, 30)], date(2026, 9, 25)) is None
+        assert next_earnings([], date(2026, 9, 25)) is None
+
+    def test_sheet_carries_date_and_sessions(self, store):
+        s = sheet(store, earnings_loader=lambda sym: [date(2026, 9, 30)])
+        assert s.next_earnings == date(2026, 9, 30) and s.earnings_in == 3
+
+    def test_no_date_is_a_gap_not_an_error(self, store):
+        s = sheet(store)
+        assert s.next_earnings is None and s.earnings_in is None
+        assert any("pre-results guard" in g for g in s.gaps)
+
+    def test_calendar_failure_is_a_gap(self, store):
+        def boom(sym):
+            raise TimeoutError("yahoo")
+
+        s = sheet(store, earnings_loader=boom)
+        assert s.next_earnings is None
+        assert any("pre-results guard" in g for g in s.gaps)

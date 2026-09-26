@@ -130,6 +130,8 @@ def entry_sheet(
             )
             for note in c.notes:
                 lines.append(f"  note: {note}")
+        if s.next_earnings is not None:
+            lines.append(f"  results {s.next_earnings.isoformat()} (in {s.earnings_in} sessions)")
         for gap in s.gaps:
             lines.append(f"  gap: {gap}")
         if lines:
