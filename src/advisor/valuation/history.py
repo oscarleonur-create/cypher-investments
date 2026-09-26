@@ -227,6 +227,7 @@ class Series(BaseModel):
     # Share count broke (reorganisation, unexplained jump) at this period end;
     # history before it must not be compared with today.
     broken_after: date | None = None
+    source: str = "SEC companyconcept"
 
 
 def build_series(
@@ -234,6 +235,8 @@ def build_series(
     revenue_rows: list[list[dict]],
     share_rows: list[dict],
     splits: list[tuple[date, float]],
+    *,
+    source: str = "SEC companyconcept",
 ) -> Series | None:
     """Pure assembly of a Series from raw concept rows and known splits."""
     revenue_ttm = ttm(merge_concepts([quarterly_points(rows) for rows in revenue_rows]))
@@ -245,7 +248,69 @@ def build_series(
         revenue_ttm=revenue_ttm,
         shares=shares,
         broken_after=break_after(shares),
+        source=source,
     )
+
+
+def _quarter_end(year: int, q: int) -> date:
+    month = 3 * q
+    nxt = date(year + (month == 12), month % 12 + 1, 1)
+    return nxt - timedelta(days=1)
+
+
+def _previous(key: tuple[int, int]) -> tuple[int, int]:
+    year, q = key
+    return (year - 1, 4) if q == 1 else (year, q - 1)
+
+
+def yahoo_rows(quarterly: dict[date, float], annual: dict[date, float]) -> list[dict]:
+    """Yahoo's statement figures as quarterly SEC-shaped frames. Pure.
+
+    Foreign private issuers file IFRS; the SEC's ``companyconcept`` API
+    returned nothing for NBIS under ``ifrs-full`` (2026-09-25). Yahoo carries
+    about five quarters and four fiscal years. Any *one* quarter missing from
+    a fiscal year is derived from the annual — not only the fiscal fourth,
+    which is what the SEC shape needs: Yahoo's oldest quarter falls off the
+    left edge, so NBIS Q1 2025 = FY2025 − (Q2 + Q3 + Q4) = $50.9M. Two
+    missing quarters are a gap, and ``ttm`` refuses gaps.
+    """
+    by_key = {quarter_key(end): (end, value) for end, value in quarterly.items()}
+    for end, value in annual.items():
+        keys = [quarter_key(end)]
+        for _ in range(3):
+            keys.append(_previous(keys[-1]))
+        missing = [k for k in keys if k not in by_key]
+        if len(missing) != 1:
+            continue
+        rest = value - sum(by_key[k][1] for k in keys if k in by_key)
+        if rest > 0:
+            by_key[missing[0]] = (_quarter_end(*missing[0]), rest)
+    return [
+        {"frame": f"CY{y}Q{q}", "end": end.isoformat(), "val": value}
+        for (y, q), (end, value) in sorted(by_key.items())
+    ]
+
+
+def _yahoo_series(symbol: str) -> Series | None:
+    """The fallback for filers the SEC series does not cover (IFRS). None on failure."""
+    try:
+        import yfinance as yf
+
+        t = yf.Ticker(symbol)
+        qi, ai = t.quarterly_income_stmt, t.income_stmt
+
+        def row(frame, name):
+            if frame is None or name not in frame.index:
+                return {}
+            return {ts.date(): float(v) for ts, v in frame.loc[name].dropna().items() if v > 0}
+
+        revenue = yahoo_rows(row(qi, "Total Revenue"), row(ai, "Total Revenue"))
+        shares_q = row(qi, "Diluted Average Shares") or row(qi, "Basic Average Shares")
+        shares = yahoo_rows(shares_q, {})
+    except Exception as exc:  # noqa: BLE001
+        logger.info("history: no Yahoo statements for %s: %s", symbol, exc)
+        return None
+    return build_series(symbol, [revenue], shares, _splits(symbol), source="yfinance statements")
 
 
 def _splits(symbol: str) -> list[tuple[date, float]]:
@@ -260,17 +325,17 @@ def _splits(symbol: str) -> list[tuple[date, float]]:
 
 
 def load_series(symbol: str) -> Series | None:
-    """TTM revenue and diluted shares through time. None when either is missing."""
+    """TTM revenue and diluted shares through time; SEC first, Yahoo for IFRS filers."""
     from advisor.news.edgar import company_for
 
     company = company_for(symbol)
     cik = getattr(company, "cik", None)
-    if not cik:
-        return None
-    try:
-        revenue_rows = [_concept_rows(int(cik), c) for c in REVENUE_CONCEPTS]
-        share_rows = _concept_rows(int(cik), SHARES_CONCEPT)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("history: SEC series unavailable for %s: %s", symbol, exc)
-        return None
-    return build_series(symbol, revenue_rows, share_rows, _splits(symbol))
+    series = None
+    if cik:
+        try:
+            revenue_rows = [_concept_rows(int(cik), c) for c in REVENUE_CONCEPTS]
+            share_rows = _concept_rows(int(cik), SHARES_CONCEPT)
+            series = build_series(symbol, revenue_rows, share_rows, _splits(symbol))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("history: SEC series unavailable for %s: %s", symbol, exc)
+    return series or _yahoo_series(symbol)

@@ -39,6 +39,14 @@ logger = logging.getLogger(__name__)
 
 WINDOW_DAYS = 730  # two years
 MIN_OBSERVATIONS = 250  # about a year of sessions; less is not a median worth trusting
+# A shorter history is shown, flagged ``short``, and never opens a position
+# leg. NBIS (IFRS, Yahoo statements) has about five quarters: enough to say
+# where the multiple sits, not enough to size a long hold on it.
+SHORT_MIN_OBSERVATIONS = 120
+# A day enters the history only if its TTM revenue ended within this many
+# days. Yahoo keeps five quarters; before them the last known TTM would be
+# carried forward a year and more, pairing 2025 prices with 2024 sales.
+MAX_TTM_AGE_DAYS = 200
 
 
 class RelativeZone(BaseModel):
@@ -56,6 +64,9 @@ class RelativeZone(BaseModel):
     # hovering at the median flips in and out daily (AMZN 3.6x vs 3.6x on
     # 2026-09-22); an entry into the zone only counts after a real stay out.
     sessions_above: int = 0
+    # Fewer than MIN_OBSERVATIONS sessions: shown, never used for a position leg.
+    short: bool = False
+    source: str = "SEC companyconcept"
     basis: str = "price / sales on trailing-12-month revenue and diluted shares, as known each day"
 
     @property
@@ -86,9 +97,17 @@ def relative_zone(
         rev, sh = as_of(series.revenue_ttm, day), as_of(series.shares, day)
         if rev is None or sh is None or rev.value <= 0:
             continue
+        if (day - rev.end).days > MAX_TTM_AGE_DAYS:
+            continue  # stale revenue: the day's multiple would be inflated
         history.append(px * sh.value / rev.value)
     rev_now, sh_now = as_of(series.revenue_ttm, today), as_of(series.shares, today)
-    if len(history) < MIN_OBSERVATIONS or rev_now is None or sh_now is None or rev_now.value <= 0:
+    if (
+        len(history) < SHORT_MIN_OBSERVATIONS
+        or rev_now is None
+        or sh_now is None
+        or rev_now.value <= 0
+        or (today - rev_now.end).days > MAX_TTM_AGE_DAYS
+    ):
         return None
     ps_now = price * sh_now.value / rev_now.value
     median = statistics.median(history)
@@ -111,6 +130,8 @@ def relative_zone(
         window_end=today,
         observations=len(history),
         sessions_above=streak,
+        short=len(history) < MIN_OBSERVATIONS,
+        source=series.source,
     )
 
 

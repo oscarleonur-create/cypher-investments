@@ -101,6 +101,15 @@ class TestActions:
         p = build_proposal(mk(IN, IN), net_liq=NET_LIQ)
         assert p.action is Action.IN_ZONE and p.legs == []
 
+    def test_a_short_zone_never_opens_a_position(self):
+        """NBIS on Yahoo's five quarters: the dip is real, the median is not a year."""
+        short = zone().model_copy(update={"short": True, "observations": 180})
+        p = build_proposal(mk(short, short, z=-3.0), net_liq=NET_LIQ)
+        assert not any(leg.horizon == "position" for leg in p.legs)
+        assert p.action is Action.IN_ZONE
+        assert any("180 sessions" in g for g in p.gaps)
+        assert any("short history" in r.text for r in p.reasons)
+
     def test_enter_with_a_sized_position_leg(self):
         p = build_proposal(mk(ENTERED, OUT), net_liq=NET_LIQ)
         (leg,) = p.legs
