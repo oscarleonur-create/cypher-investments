@@ -75,7 +75,7 @@ advice. The unit of monitoring is the **thesis**, not the ticker.
 | Sentiment | not scored. Classification comes from the SEC's own taxonomy (8-K items, form types); direction and thesis relevance wait for the thesis layer |
 | Host | the user's Mac, market hours, with watermark catch-up on wake |
 | Delivery | Telegram bot (two-way) |
-| Universe | open positions (accounts 5WI30382, 5WI47366) + the `watchlist` table |
+| Universe | open positions (accounts 5WI30382, 5WI47366) + the `watchlist` table + the TastyTrade private watchlist **"Swing"** (user decision, 2026-09-25: names traded short-term that the user would also hold long). Research jobs (valuation, factor loadings, filings) cover all of it; a filing on a name not held is capped at tier B |
 | Interrupts | only when there is a concrete action with a deadline |
 | Hedging advice | flag the exposure *and* name the fix; do not stage orders |
 | Exposure limits | agent proposes, user approves |
@@ -161,6 +161,13 @@ this symbol*.
 
 #### Valuation rules
 
+- **The entry zone is relative, by user decision (2026-09-25).** "In zone"
+  means price-to-sales at or below the name's own two-year median, with
+  revenue and shares as known on each day (SEC `companyconcept`). An
+  absolute zone drawn from the generic 25x/25%-FCF scenario was tried and
+  failed live: AMZN "required" -6.0% growth against a real FCF margin of
+  -0.3%. The absolute requirement is shown only as context, at the
+  company's own trailing margin, and "undefined" when that is negative.
 - **Never publish a fair value.** This project reports what a price requires,
   never what a business is worth. The first is arithmetic and falsifiable; the
   second is an opinion wearing a number.

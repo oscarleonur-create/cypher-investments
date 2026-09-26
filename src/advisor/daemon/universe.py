@@ -101,3 +101,51 @@ def build_universe(book: BookSnapshot, *, include_theses: bool = True) -> Univer
         logger.warning("universe: watchlist/theses unavailable, holdings only: %s", exc)
 
     return universe
+
+
+# The TastyTrade private watchlists whose names are researched like holdings.
+# "Swing" holds names the user trades short-term and would also hold long.
+TASTY_WATCHLISTS: tuple[str, ...] = ("Swing",)
+
+
+def watched_universe(
+    book: BookSnapshot,
+    *,
+    tasty_watchlists: tuple[str, ...] = TASTY_WATCHLISTS,
+    fetch_watchlist=None,
+) -> tuple[Universe, list[str]]:
+    """Holdings, the watchlist table, theses and the TastyTrade watchlists.
+
+    Returns (universe, errors). Before this, every research job read
+    ``book.symbols`` only, so a watchlist name had no valuation, no factor
+    estimate and no filings: on 2026-09-25 AMZN's reading had 2 facts against
+    AMD's 11. A watchlist that cannot be fetched degrades to the rest and is
+    reported, never silently treated as empty.
+    """
+    if fetch_watchlist is None:
+        from advisor.scanner.premarket import fetch_watchlist
+
+    universe = build_universe(book)
+    errors: list[str] = []
+    for name in tasty_watchlists:
+        symbols, error = fetch_watchlist(name)
+        if error:
+            errors.append(error)
+        for symbol in symbols:
+            universe.add(symbol, WatchReason.WATCHLIST)
+    return universe, errors
+
+
+def research_symbols(book: BookSnapshot, **kwargs) -> tuple[list[str], list[str]]:
+    """Symbols the research jobs cover: held first (largest first), then the rest.
+
+    Held names lead so a job that runs out of time or budget has covered the
+    book before the watchlist.
+    """
+    universe, errors = watched_universe(book, **kwargs)
+    size: dict[str, float] = {}
+    for p in book.positions:
+        size[p.underlying.upper()] = size.get(p.underlying.upper(), 0.0) + p.notional
+    held = sorted(size, key=lambda s: (-size[s], s))
+    rest = [s for s in universe.all_symbols if s not in size]
+    return held + rest, errors

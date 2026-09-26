@@ -43,7 +43,10 @@ async def run_brief(ctx: JobContext) -> JobResult:
     from advisor.news.ingest import ingest_filings
 
     book = ctx.store.load_latest_book()
-    filings = await ingest_filings(ctx.store, book) if book else None
+    filings = None
+    if book:
+        symbols, _errors = await _research_symbols(book)
+        filings = await ingest_filings(ctx.store, book, symbols=symbols)
     if filings and filings.events:
         detail = (
             f"{result.summary()}; {len(filings.events)} filing event(s), "
@@ -53,6 +56,23 @@ async def run_brief(ctx: JobContext) -> JobResult:
         detail = f"{result.summary()}; no new filings; {detail}"
     logger.info("brief: %s", detail)
     return JobResult(job="brief", ok=True, detail=detail, events_emitted=result.new)
+
+
+async def _research_symbols(book) -> tuple[list[str], list[str]]:
+    """Held names plus the watchlists, fetched off the loop.
+
+    ``fetch_watchlist`` runs its own event loop; calling it here directly would
+    fail with "asyncio.run() cannot be called from a running event loop".
+    """
+    import asyncio
+
+    from advisor.daemon.universe import research_symbols
+
+    try:
+        return await asyncio.to_thread(research_symbols, book)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("research universe unavailable, holdings only: %s", exc)
+        return list(book.symbols), [str(exc)]
 
 
 async def run_watch(ctx: JobContext) -> JobResult:
@@ -188,6 +208,8 @@ async def run_valuation(ctx: JobContext) -> JobResult:
     XBRL parse per symbol to produce the same answer, and the shift detector
     is edge-triggered anyway.
     """
+    import asyncio
+
     from advisor.daemon.book import fetch_book
     from advisor.valuation.ingest import refresh_valuations
 
@@ -196,8 +218,12 @@ async def run_valuation(ctx: JobContext) -> JobResult:
     except Exception as exc:  # noqa: BLE001
         return JobResult(job="valuation", ok=False, detail=f"book unavailable: {exc}")
 
+    symbols, errors = await _research_symbols(book)
     prices = {p.underlying.upper(): p.price for p in book.positions if p.price}
-    result = await refresh_valuations(ctx.store, book.symbols, prices)
+    unpriced = [s for s in symbols if s not in prices]
+    if unpriced:
+        prices.update(await asyncio.to_thread(_last_closes, unpriced))
+    result = await refresh_valuations(ctx.store, symbols, prices)
 
     detail = result.summary()
     if result.events:
@@ -208,6 +234,20 @@ async def run_valuation(ctx: JobContext) -> JobResult:
         detail += f" — {moves}"
     logger.info("valuation: %s", detail)
     return JobResult(job="valuation", ok=True, detail=detail, events_emitted=len(result.events))
+
+
+def _last_closes(symbols: list[str]) -> dict[str, float]:
+    """Latest close per symbol for names not in the book. {} on failure."""
+    from advisor.macro.factors import fetch_prices
+
+    frame = fetch_prices(symbols, period="1mo")
+    out: dict[str, float] = {}
+    for symbol in symbols:
+        if symbol in frame:
+            series = frame[symbol].dropna()
+            if len(series):
+                out[symbol] = float(series.iloc[-1])
+    return out
 
 
 def _company_name(symbol: str) -> str | None:
@@ -268,7 +308,10 @@ async def run_macro_refresh(ctx: JobContext) -> JobResult:
     except Exception as exc:  # noqa: BLE001
         return JobResult(job="macro_refresh", ok=False, detail=f"book unavailable: {exc}")
 
-    exposure, skipped = refresh_sensitivities(ctx.store, book)
+    # Loadings for the watchlist too, so a watched name's move can be split
+    # into market and its own. Book exposure still weights only what is held.
+    symbols, _errors = await _research_symbols(book)
+    exposure, skipped = refresh_sensitivities(ctx.store, book, symbols=symbols)
     if exposure is None:
         return JobResult(job="macro_refresh", ok=True, detail="nothing held to estimate")
 

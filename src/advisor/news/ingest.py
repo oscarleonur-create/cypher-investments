@@ -209,6 +209,7 @@ async def ingest_filings(
     watched = symbols or book.symbols
     if not watched:
         return result
+    held = {s.upper() for s in book.symbols}
 
     cutoff = now_et() - timedelta(days=MAX_FILING_AGE_DAYS)
     first_look = now_et() - timedelta(days=FIRST_LOOK_DAYS)
@@ -237,6 +238,9 @@ async def ingest_filings(
             if item.published_at < cutoff:
                 continue
             event = _event_for_filing(item, market_caps=market_caps)
+            if event is not None and symbol.upper() not in held and event.tier is EventTier.A:
+                # A watched name informs; only a held one may interrupt.
+                event = event.model_copy(update={"tier": EventTier.B})
             if event and store.emit(event):
                 result.events.append(event)
 
