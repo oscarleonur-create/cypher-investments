@@ -99,6 +99,18 @@ def from_candidate(c) -> Record:
         symbol=c.symbol.upper(),
         outcomes=dict(c.outcomes),
         origin=getattr(getattr(c, "origin", None), "value", "live"),
+        extra={
+            "features": {
+                "change": c.change,
+                "gap": c.gap,
+                "rvol": c.rvol,
+                "sigma": c.sigma,
+                "market_cap": c.market_cap,
+                "peer_move": c.peer_move,
+                "news_checked": c.news_checked,
+                "has_catalyst": c.has_catalyst,
+            }
+        },
     )
 
 
@@ -113,6 +125,7 @@ def from_proposal(p) -> Record:
         # Sessions a trade leg's stop is exposed for: the rest of today and
         # tomorrow (~1.5) for an intraday entry, tomorrow only after the close.
         "trade_span": 1.0 if entered_at_close(p) else 1.5,
+        "features": dict(p.features or {}),
     }
     for horizon, g in legs.items():
         if g.entry:
@@ -132,7 +145,12 @@ def from_proposal(p) -> Record:
 def from_replay_proposal(d: dict, run_id: str) -> Record:
     legs = d.get("legs") or {}
     # Replay decides at the close: a trade stop is exposed for one session.
-    extra = {"sigma": (d.get("features") or {}).get("sigma"), "run": run_id, "trade_span": 1.0}
+    extra = {
+        "sigma": (d.get("features") or {}).get("sigma"),
+        "run": run_id,
+        "trade_span": 1.0,
+        "features": dict(d.get("features") or {}),
+    }
     for horizon, pct in legs.items():
         if pct:
             extra[f"{horizon}_stop_pct"] = pct
