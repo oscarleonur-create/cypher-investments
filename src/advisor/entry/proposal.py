@@ -36,7 +36,10 @@ concentration limit).
 
 **Blockers** turn a proposal into WAIT: a tier-A event on the name today
 (read it first), or a model reading of AT_RISK. A CONSTRUCTIVE reading adds
-one point of risk to the position leg, within the cap.
+nothing: the reading leans on the scorecard's required growth, which moves
+six points with the assumed margin (META -0.4% to +5.7% on 2026-09-25), too
+fragile to size a position on (user decision, 2026-09-25). AT_RISK still
+blocks, because waiting is the cautious direction.
 
 Nothing here is a view of what the company is worth. The zone is a
 comparison with the name's own history; the stops are its own volatility;
@@ -58,7 +61,6 @@ from advisor.entry.sheet import Sheet
 TRADE_RISK = 0.02
 POSITION_RISK = 0.02
 POSITION_RISK_CHEAP = 0.03
-CONSTRUCTIVE_BONUS = 0.01
 MAX_TOTAL_RISK = 0.03
 # User decision, 2026-09-25: more risk where a long-term thesis is written and
 # intact (no rule broken or standing) — one point more, up to 4% in total.
@@ -259,8 +261,6 @@ def build_proposal(
             p.gaps.append("no volatility estimate: position stop cannot be set")
         else:
             risk = POSITION_RISK_CHEAP if z.percentile <= 0.25 else POSITION_RISK
-            if p.stance == "CONSTRUCTIVE":
-                risk += CONSTRUCTIVE_BONUS
             if sheet.thesis == "intact":
                 risk += THESIS_BONUS
             risk = min(risk, cap)

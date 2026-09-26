@@ -279,12 +279,21 @@ def build_sheet(
             logger.info("sheet: consensus unavailable for %s: %s", symbol, exc)
         if consensus is None:
             sheet.gaps.append("no consensus")
-        if margin_loader is None:
-            from advisor.entry.zone import ttm_fcf_margin as margin_loader
+        own_margin = None
+        if snapshot.margin_trailing is None:
+            # A snapshot from before margins were recorded: fetch the trailing
+            # one live rather than show a range of one.
+            if margin_loader is None:
+                from advisor.valuation.margins import load_trailing_margin
+
+                def margin_loader(sym):
+                    return load_trailing_margin(sym).margin
+
+            own_margin = margin_loader(symbol)
         sheet.context = absolute_context(
             snapshot,
             price or snapshot.price,
-            own_margin=margin_loader(symbol),
+            own_margin=own_margin,
             consensus=consensus,
         )
 

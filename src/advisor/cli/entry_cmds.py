@@ -116,15 +116,16 @@ def entry_sheet(
             lines.append(f"  {e.ts.strftime('%m-%d %H:%M')} [{e.tier}] {e.text[:110]}")
         c = s.context
         if c:
-            own = (
-                f"{_pct(c.required_own, sign=False)} at its own {c.own_margin:.1%} FCF margin"
-                if c.required_own is not None and c.own_margin is not None
-                else "undefined at its own margin"
+            each = "; ".join(
+                f"{_pct(r, sign=False)} at {m:.1%} ({label})" for label, m, r in c.readings
+            )
+            span = (
+                f"{_pct(c.low, sign=False)} to {_pct(c.high, sign=False)}"
+                if c.readings and c.high - c.low > 0.0005
+                else _pct(c.low, sign=False)
             )
             lines.append(
-                f"  requires (10y revenue CAGR): {own}; "
-                f"{_pct(c.required_generic, sign=False)} at the generic "
-                f"{c.generic.fcf_margin:.0%} — delivers {_pct(c.delivered)} YoY"
+                f"  requires (10y revenue CAGR) {span}: {each} — delivers {_pct(c.delivered)} YoY"
                 + (f", {c.consensus_label} implies {_pct(c.consensus)}/yr" if c.consensus else "")
             )
             for note in c.notes:

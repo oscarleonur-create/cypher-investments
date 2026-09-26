@@ -183,7 +183,13 @@ class TestThesis:
         s.zone = zone(pct=0.1, above=ENTRY_CONFIRM_SESSIONS)  # cheapest quarter: 3% base
         s.candidates = ["x"]
         p = build_proposal(s, net_liq=NET_LIQ, reading=reading("CONSTRUCTIVE"))
-        assert p.risk_pct == pytest.approx(0.04)  # 3 + 1 + 1 capped at 4, no trade room
+        assert p.risk_pct == pytest.approx(0.04)  # 3 cheap + 1 thesis = the 4% cap, no trade room
+
+    def test_a_constructive_reading_adds_no_risk(self):
+        """Its stance leans on required growth, which moves six points with the margin."""
+        plain = build_proposal(mk(ENTERED, OUT), net_liq=NET_LIQ)
+        read = build_proposal(mk(ENTERED, OUT), net_liq=NET_LIQ, reading=reading("CONSTRUCTIVE"))
+        assert read.risk_pct == plain.risk_pct == pytest.approx(0.02)
 
     def test_broken_thesis_waits_and_names_the_rule(self):
         p = build_proposal(
@@ -353,7 +359,7 @@ class TestRun:
         daemon.close()
         assert asked == ["GO"] and errors == []
         go = next(p for p in proposals if p.symbol == "GO")
-        assert go.stance == "CONSTRUCTIVE" and go.legs[0].risk_pct == pytest.approx(0.03)
+        assert go.stance == "CONSTRUCTIVE" and go.legs[0].risk_pct == pytest.approx(0.02)
 
     def test_reading_failure_keeps_the_deterministic_proposal(self, tmp_path):
         from advisor.daemon.store import DaemonStore

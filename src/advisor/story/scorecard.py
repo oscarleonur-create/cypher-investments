@@ -86,13 +86,28 @@ def _expectations(store: DaemonStore, symbol: str, consensus_loader) -> list[Row
         return [Row(label="Price requires", value="no valuation", detail="nothing stored yet")]
 
     stale = " · stale filing" if valuation.is_stale() else ""
+    # A range, not a number: the answer moves more with the assumed margin than
+    # with anything else (META -0.4% to +5.7% on 2026-09-25), so every margin
+    # the company offers is shown with its source (``valuation.margins``).
+    from advisor.valuation.margins import required_range
+
+    readings, left_out = required_range(valuation)
+    values = sorted(r.required for r in readings)
+    value = (
+        f"{_pct(values[0])} to {_pct(values[-1])}/yr × {base.years}y"
+        if len(values) > 1 and values[-1] - values[0] > 0.0005
+        else f"{_pct(base.implied_cagr)}/yr × {base.years}y"
+    )
+    each = "; ".join(
+        f"{_pct(r.required)} at {r.margin:.1%} FCF margin ({r.label})" for r in readings
+    )
     rows.append(
         Row(
             label="Price requires",
-            value=f"{_pct(base.implied_cagr)}/yr × {base.years}y",
+            value=value,
             detail=(
-                f"to {_money(base.required_revenue)} revenue · at ${valuation.price:,.2f} on "
-                f"{valuation.asof} · {base.terminal_multiple:g}x FCF, {base.fcf_margin:.0%} margin"
+                f"at ${valuation.price:,.2f} on {valuation.asof}, {base.terminal_multiple:g}x FCF: "
+                f"{each}" + (f" · {'; '.join(left_out)}" if left_out else "")
             ),
             source=f"valuation {valuation.asof}{stale}",
         )
@@ -139,17 +154,39 @@ def _expectations(store: DaemonStore, symbol: str, consensus_loader) -> list[Row
 
     horizon_end = valuation.period_end + timedelta(days=round(base.years * 365.25))
     last = consensus.years[-1] if consensus.years else None
-    remaining = remaining_cagr(base.required_revenue, horizon_end, last) if last else None
+    # Also a range: the revenue the price requires depends on the same margin
+    # assumption. The single generic figure let a live reading say META would
+    # need "-0.0% a year" after FY2027, which holds only at a 25% margin.
+    remaining = []
+    if last and valuation.revenue_runrate:
+        for r in readings:
+            # The generic reading keeps the stored scenario's figure, the one
+            # every other surface has always shown.
+            needed = (
+                base.required_revenue
+                if r.label == "generic"
+                else valuation.revenue_runrate * (1 + r.required) ** base.years
+            )
+            got = remaining_cagr(needed, horizon_end, last)
+            if got:
+                remaining.append((got[0], got[1], needed, r))
     if last and remaining:
-        cagr, years = remaining
+        cagrs = sorted(c for c, _, _, _ in remaining)
+        years = remaining[0][1]
+        value = (
+            f"{_pct(cagrs[0])} to {_pct(cagrs[-1])}/yr"
+            if cagrs[-1] - cagrs[0] > 0.0005
+            else f"{_pct(cagrs[0])}/yr"
+        )
+        each = "; ".join(
+            f"{_pct(c)} to reach {_money(n)} at {r.margin:.1%} margin ({r.label})"
+            for c, _, n, r in remaining
+        )
         rows.append(
             Row(
                 label=f"If {last.label} holds",
-                value=f"{_pct(cagr)}/yr",
-                detail=(
-                    f"needed for the remaining {years:.1f} years to reach "
-                    f"{_money(base.required_revenue)} by {horizon_end.year}"
-                ),
+                value=value,
+                detail=f"needed for the remaining {years:.1f} years to {horizon_end.year}: {each}",
                 source="arithmetic on the two rows above",
             )
         )

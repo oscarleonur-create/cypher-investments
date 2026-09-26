@@ -127,15 +127,22 @@ class Absolute(BaseModel):
     """What the price requires, at the generic and at the company's own margin."""
 
     price: float
-    generic: Scenario
-    required_generic: float | None = None
-    own_margin: float | None = None  # trailing free-cash-flow margin
-    required_own: float | None = None
+    # Required 10-year revenue growth at each usable margin: (label, margin,
+    # required). The same range the scorecard shows (``valuation.margins``).
+    readings: list[tuple[str, float, float]] = Field(default_factory=list)
     delivered: float | None = None  # revenue YoY, latest filing
     consensus: float | None = None  # annualised growth, run-rate -> last consensus year
     consensus_label: str = ""
     stale: bool = False
     notes: list[str] = Field(default_factory=list)
+
+    @property
+    def low(self) -> float | None:
+        return min((r for _, _, r in self.readings), default=None)
+
+    @property
+    def high(self) -> float | None:
+        return max((r for _, _, r in self.readings), default=None)
 
 
 def required_at(snapshot: ValuationSnapshot, price: float, scenario: Scenario) -> float | None:
@@ -172,45 +179,25 @@ def absolute_context(
     own_margin: float | None = None,
     consensus=None,
 ) -> Absolute | None:
-    if snapshot is None or not price or price <= 0:
+    """What the price requires, across margins. ``own_margin`` fills the trailing
+    margin for a snapshot written before margins were recorded."""
+    from advisor.valuation.margins import required_range
+
+    if snapshot is None or not price or price <= 0 or snapshot.base_case() is None:
         return None
-    base = snapshot.base_case()
-    if base is None:
-        return None
-    generic = Scenario(
-        terminal_multiple=base.terminal_multiple, fcf_margin=base.fcf_margin, years=base.years
-    )
-    ctx = Absolute(price=price, generic=generic, stale=snapshot.is_stale())
-    ctx.required_generic = required_at(snapshot, price, generic)
-    ctx.own_margin = own_margin
-    if own_margin is None:
-        ctx.notes.append("own free-cash-flow margin unavailable")
-    elif own_margin <= 0:
-        ctx.notes.append(
-            f"trailing free cash flow is negative ({own_margin:+.1%} of revenue): "
-            "a requirement at the company's own margin is undefined"
+    if snapshot.margin_trailing is None and own_margin is not None:
+        snapshot = snapshot.model_copy(
+            update={"margin_trailing": own_margin, "margin_trailing_label": "trailing 4 quarters"}
         )
-    else:
-        own = generic.model_copy(update={"fcf_margin": own_margin})
-        ctx.required_own = required_at(snapshot, price, own)
+    readings, left_out = required_range(snapshot, price)
+    ctx = Absolute(
+        price=price,
+        readings=[(r.label, r.margin, r.required) for r in readings],
+        stale=snapshot.is_stale(),
+        notes=list(left_out),
+    )
     ctx.delivered = snapshot.revenue_yoy
     ctx.consensus, ctx.consensus_label = consensus_growth(snapshot, consensus)
     if ctx.stale:
         ctx.notes.append(f"the filing behind this is stale (period ending {snapshot.period_end})")
     return ctx
-
-
-def ttm_fcf_margin(symbol: str) -> float | None:
-    """Trailing four quarters of free cash flow over revenue, from yfinance. None on failure."""
-    try:
-        import yfinance as yf
-
-        t = yf.Ticker(symbol)
-        fcf = t.quarterly_cashflow.loc["Free Cash Flow"].dropna().sort_index().iloc[-4:]
-        rev = t.quarterly_income_stmt.loc["Total Revenue"].dropna().sort_index().iloc[-4:]
-    except Exception as exc:  # noqa: BLE001
-        logger.info("zone: no FCF margin for %s: %s", symbol, exc)
-        return None
-    if len(fcf) < 4 or len(rev) < 4 or float(rev.sum()) <= 0:
-        return None
-    return float(fcf.sum()) / float(rev.sum())
