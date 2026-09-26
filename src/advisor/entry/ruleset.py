@@ -35,6 +35,10 @@ DECLARED: dict[str, dict[str, Kind]] = {
     "zone": {
         "WINDOW_DAYS": Kind.DECIDED,  # "P/S against its own two-year median"
         "MIN_OBSERVATIONS": Kind.THRESHOLD,
+        # Below MIN_OBSERVATIONS but at least this: shown, never opens a position leg.
+        "SHORT_MIN_OBSERVATIONS": Kind.THRESHOLD,
+        # How the P/S history is built: a day whose TTM revenue is older is dropped.
+        "MAX_TTM_AGE_DAYS": Kind.MODEL,
     },
     "sheet": {
         "SIGMA_SESSIONS": Kind.MODEL,
