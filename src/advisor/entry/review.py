@@ -13,7 +13,18 @@ from collections import defaultdict
 from advisor.entry.proposal import Proposal
 from advisor.scanner.journal import status as decision_status
 
-HORIZONS = ("next_close", "d5", "d10", "d20", "mae20", "trade_stop", "pos_stop20")
+HORIZONS = (
+    "next_close",
+    "d5",
+    "d10",
+    "d20",
+    "d60",
+    "d120",
+    "mae20",
+    "mae120",
+    "trade_stop",
+    "pos_stop20",
+)
 
 
 def review(proposals: list[Proposal], decisions: dict) -> list[dict]:

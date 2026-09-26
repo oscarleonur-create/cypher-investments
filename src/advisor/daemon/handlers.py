@@ -388,7 +388,8 @@ async def run_scan_outcomes(ctx: JobContext) -> JobResult:
         ctx.now,
     )
     tracked = await asyncio.to_thread(_track_proposals, ctx.store.db_path, ctx.now, sessions)
-    detail = f"{result.summary()}; {taken} newly taken from broker fills; {tracked}"
+    trades = await asyncio.to_thread(_sync_trades, ctx.store.db_path, ctx.now)
+    detail = f"{result.summary()}; {taken} newly taken from broker fills; {tracked}; {trades}"
     logger.info("scan_outcomes: %s", detail)
     return JobResult(job="scan_outcomes", ok=True, detail=detail)
 
@@ -405,6 +406,29 @@ def _track_proposals(db_path, now, sessions) -> str:
         taken = sync_proposal_fills(entries, scanner, sessions)
         return f"{result.summary()}, {taken} taken"
     finally:
+        entries.close()
+        scanner.close()
+
+
+def _sync_trades(db_path, now) -> str:
+    """The user's round trips, rebuilt from the whole broker history. Idempotent."""
+    import sqlite3
+
+    from advisor.entry.store import EntryStore
+    from advisor.learning.store import TradeStore
+    from advisor.learning.trades import HISTORY_START, sync_trades
+    from advisor.scanner.store import ScannerStore
+
+    conn = sqlite3.connect(str(db_path))
+    entries, scanner = EntryStore(db_path), ScannerStore(db_path)
+    try:
+        result = sync_trades(TradeStore(conn), scanner, entries, HISTORY_START, now.date())
+        return f"trades: {result.summary()}"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("scan_outcomes: trade sync failed: %s", exc)
+        return f"trades: failed ({exc})"
+    finally:
+        conn.close()
         entries.close()
         scanner.close()
 

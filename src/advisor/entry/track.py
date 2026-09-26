@@ -7,7 +7,10 @@ proposal's price, long.
 
     next_close   the next session's close
     d5/d10/d20   the close 5, 10, 20 sessions later
+    d60/d120     the close 60 and 120 sessions later: the position leg is held
+                 for months, and twenty sessions cannot say whether it paid
     mae20        the worst low within 20 sessions (maximum adverse excursion)
+    mae120       the same within 120 sessions
     trade_stop   1.0 if the trade leg's stop was touched before its time
                  stop (the next session's close), else 0.0
     pos_stop20   1.0 if the position leg's stop was touched within 20
@@ -30,7 +33,24 @@ from advisor.scanner.outcomes import nth_trading_day
 
 logger = logging.getLogger(__name__)
 
-KEYS = ("next_close", "d5", "d10", "d20", "mae20")
+KEYS = ("next_close", "d5", "d10", "d20", "mae20", "d60", "d120", "mae120")
+# The session each key waits for. A proposal is only fetched for when one of
+# its missing keys has become knowable: with d120 a proposal stays pending for
+# about 170 days, and asking Yahoo daily for each one would be thousands of
+# downloads that can add nothing.
+KEY_SESSIONS = {
+    "next_close": 1,
+    "trade_stop": 1,
+    "d5": 5,
+    "d10": 10,
+    "d20": 20,
+    "mae20": 20,
+    "pos_stop20": 20,
+    "d60": 60,
+    "d120": 120,
+    "mae120": 120,
+}
+LONGEST = max(KEY_SESSIONS.values())
 SETTLE = timedelta(minutes=15)
 
 
@@ -62,7 +82,14 @@ def score(p: Proposal, bars: list[Bar], now: datetime) -> dict[str, float | None
     def ret(px: float) -> float:
         return px / p.price - 1
 
-    for key, n in (("next_close", 1), ("d5", 5), ("d10", 10), ("d20", 20)):
+    for key, n in (
+        ("next_close", 1),
+        ("d5", 5),
+        ("d10", 10),
+        ("d20", 20),
+        ("d60", 60),
+        ("d120", 120),
+    ):
         target = nth_trading_day(p.session, n)
         if _closed(target, now) and target in by_day:
             out[key] = ret(by_day[target].close)
@@ -71,6 +98,10 @@ def score(p: Proposal, bars: list[Bar], now: datetime) -> dict[str, float | None
     window = [b for b in bars if p.session < b.day <= d20]
     if _closed(d20, now) and window:
         out["mae20"] = ret(min(b.low for b in window))
+    d120 = nth_trading_day(p.session, 120)
+    long_window = [b for b in bars if p.session < b.day <= d120]
+    if _closed(d120, now) and long_window:
+        out["mae120"] = ret(min(b.low for b in long_window))
 
     nxt = nth_trading_day(p.session, 1)
     for leg in p.legs:
@@ -124,30 +155,47 @@ class TrackResult:
         return text
 
 
+def due(p: Proposal, now: datetime) -> bool:
+    """Whether a missing key of ``p`` has become knowable since it was last filled."""
+    missing = [k for k in keys_for(p) if k not in p.outcomes]
+    if not missing:
+        return False
+    first = min(KEY_SESSIONS[k] for k in missing)
+    return _closed(nth_trading_day(p.session, first), now)
+
+
 def fill_proposal_outcomes(
     store: EntryStore,
     now: datetime,
     *,
     bars_fn: Callable[[str, date, date], list[Bar]] = daily_bars,
-    max_age_days: int = 60,
+    max_age_days: int = 200,  # d120 is ~170 calendar days out; room for holidays
 ) -> TrackResult:
+    """Fill whatever outcomes have become knowable. One download per symbol per run."""
     now = mc.to_et(now)
     result = TrackResult()
-    for p in store.list(since=now.date() - timedelta(days=max_age_days)):
-        if all(k in p.outcomes for k in keys_for(p)):
-            continue
-        if now.date() <= p.session:
-            continue
-        result.pending += 1
-        end = nth_trading_day(p.session, 20) + timedelta(days=1)
-        bars = bars_fn(p.symbol, p.session, min(end, now.date() + timedelta(days=1)))
+    pending = [
+        p
+        for p in store.list(since=now.date() - timedelta(days=max_age_days))
+        if now.date() > p.session and any(k not in p.outcomes for k in keys_for(p))
+    ]
+    result.pending = len(pending)
+    by_symbol: dict[str, list[Proposal]] = {}
+    for p in pending:
+        if due(p, now):
+            by_symbol.setdefault(p.symbol, []).append(p)
+    for symbol, props in by_symbol.items():
+        start = min(p.session for p in props)
+        end = max(nth_trading_day(p.session, LONGEST) for p in props) + timedelta(days=1)
+        bars = bars_fn(symbol, start, min(end, now.date() + timedelta(days=1)))
         if not bars:
-            result.no_bars.append(p.symbol)
+            result.no_bars.append(symbol)
             continue
-        added = store.merge_outcomes(p, score(p, bars, now))
-        if added:
-            result.updated += 1
-            result.fields += added
+        for p in props:
+            added = store.merge_outcomes(p, score(p, bars, now))
+            if added:
+                result.updated += 1
+                result.fields += added
     return result
 
 

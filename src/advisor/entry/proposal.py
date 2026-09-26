@@ -143,6 +143,10 @@ class Proposal(BaseModel):
     legs: list[Leg] = Field(default_factory=list)
     stance: str | None = None  # the model reading's stance, when one was read
     reading: list[str] = Field(default_factory=list)  # its sentences
+    # Which model and which prompt produced the stance: a stance can block an
+    # entry, so a change of either is a change of the rules.
+    reading_model: str | None = None
+    reading_prompt: str | None = None
     gaps: list[str] = Field(default_factory=list)
     net_liq: float | None = None
     # entry.exits.ExitCall, dumped: why, evidence, would_change, shares. Held names only.
@@ -259,6 +263,8 @@ def build_proposal(
     )
     if reading is not None and getattr(reading, "stance", None) is not None:
         p.stance = reading.stance.value
+        p.reading_model = getattr(reading, "model", None)
+        p.reading_prompt = getattr(reading, "prompt_version", None)
         p.reading = [s.text for s in reading.sentences]
     if m is None:
         p.blockers.append("no price")
