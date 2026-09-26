@@ -299,6 +299,7 @@ def run_premarket_scan(
     source: str = f"tastytrade:{DEFAULT_WATCHLIST}",
     t: PremarketThresholds = PM_DEFAULT,
 ) -> PremarketResult:
+    from advisor.scanner.ruleset import premarket_rules
     from advisor.scanner.scan import catalyst_window_start
 
     now = mc.to_et(now)
@@ -318,6 +319,7 @@ def run_premarket_scan(
     quotes = fetch_quotes(symbols, now)
     session = now.date()
     since = catalyst_window_start(now)
+    stamp = premarket_rules(t)
     for sym in symbols:
         q = quotes.get(sym)
         if q is None or q.prev_close is None:
@@ -355,6 +357,7 @@ def run_premarket_scan(
                 prev_day_change=q.prev_day_change,
                 prev_day_rvol=q.prev_day_rvol,
                 premarket_volume=q.premarket_volume,
+                rules=stamp,
             )
             items, checked = fetch_catalysts(sym, q.name, since)
             cand.catalysts, cand.news_checked = items, checked

@@ -142,6 +142,25 @@ class TestBalanceFacts:
         assert debt is None
         assert mentioned is False
 
+    def test_a_narrative_debt_note_is_not_a_mention(self):
+        """RDDT: 'LongTermDebt' matched LongTermDebtTextBlock, a note with no number."""
+        note = pd.DataFrame(
+            {
+                "concept": ["us-gaap:LongTermDebtTextBlock"],
+                "label": ["Debt"],
+                "is_dimensioned": [False],
+                "period_key": ["duration_2026-01-01_2026-06-30"],
+            }
+        )
+        debt, mentioned = _total_debt(FakeXbrl({"LongTermDebt": note}), date(2026, 6, 30))
+        assert debt is None and mentioned is False  # debt-free: the caller may use zero
+
+    def test_a_note_with_an_empty_numeric_column_is_not_a_mention(self):
+        note = pd.DataFrame(
+            {"numeric_value": [float("nan")], "is_dimensioned": [False], "label": ["Debt"]}
+        )
+        assert _total_debt(FakeXbrl({"LongTermDebt": note}), date(2026, 6, 30)) == (None, False)
+
     def test_debt_mentioned_but_unparseable_is_distinguished_from_absent(self):
         only_cashflow = DEBT[DEBT["statement_type"] == "CashFlow"]
         debt, mentioned = _total_debt(FakeXbrl({"LongTermDebt": only_cashflow}), date(2026, 6, 30))
