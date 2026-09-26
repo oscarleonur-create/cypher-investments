@@ -124,6 +124,88 @@ def from_proposal(p) -> Record:
     )
 
 
+def from_replay_proposal(d: dict, run_id: str) -> Record:
+    legs = d.get("legs") or {}
+    extra = {"sigma": (d.get("features") or {}).get("sigma"), "run": run_id}
+    for horizon, pct in legs.items():
+        if pct:
+            extra[f"{horizon}_stop_pct"] = pct
+    return Record(
+        ruleset=d.get("ruleset") or "entry",
+        version=d.get("version") or PRE_REGISTRY,
+        group=f"action {d['action']}",
+        session=date.fromisoformat(d["session"]),
+        symbol=d["symbol"],
+        outcomes=d.get("outcomes") or {},
+        origin="replay",
+        extra=extra,
+    )
+
+
+def from_replay_setup(d: dict, run_id: str, version: str) -> Record:
+    return Record(
+        ruleset="scanner.session",
+        version=version,
+        group=d["group"],
+        session=date.fromisoformat(d["session"]),
+        symbol=d["symbol"],
+        outcomes=d.get("outcomes") or {},
+        origin="replay",
+        extra={"run": run_id},
+    )
+
+
+def load_replay(db_path, run_id: str | None = None) -> tuple[str | None, list[Record]]:
+    """(run id, records) of a replay run, the latest finished one by default."""
+    import sqlite3
+
+    from advisor.learning.replay import ReplayStore
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        store = ReplayStore(conn)
+        run_id = run_id or store.latest_finished()
+        if run_id is None:
+            return None, []
+        run = next((r for r in store.runs() if r["id"] == run_id), None)
+        version = (run or {}).get("params", {}).get("scanner_version") or PRE_REGISTRY
+        records = [from_replay_proposal(d, run_id) for d in store.proposals(run_id)]
+        records += [from_replay_setup(d, run_id, version) for d in store.setups(run_id)]
+        return run_id, records
+    finally:
+        conn.close()
+
+
+def agreement(cells: list[Cell]) -> list[dict]:
+    """Where live and replay both have a cell: is the live excess inside the replay interval?
+
+    Disagreement means the replay is wrong about the live system (look-ahead,
+    the blockers it cannot apply, survivorship) or the market changed. Either
+    way, a rule change justified by the replay is then not justified.
+    """
+    replay = {(c.ruleset, c.version, c.group, c.horizon): c for c in cells if c.origin == "replay"}
+    out = []
+    for c in cells:
+        if c.origin != "live":
+            continue
+        r = replay.get((c.ruleset, c.version, c.group, c.horizon))
+        if r is None or r.ci is None or c.excess is None:
+            continue
+        out.append(
+            {
+                "ruleset": c.ruleset,
+                "version": c.version,
+                "group": c.group,
+                "horizon": c.horizon,
+                "live_excess": c.excess,
+                "live_n": c.n,
+                "replay_ci": list(r.ci),
+                "agrees": r.ci[0] <= c.excess <= r.ci[1],
+            }
+        )
+    return out
+
+
 # ── Baseline: the name's own drift ──────────────────────────────────────
 
 
