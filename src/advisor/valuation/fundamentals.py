@@ -161,6 +161,13 @@ def _total_debt(xbrl, asof: date) -> tuple[float | None, bool]:
 
     CRDO is the case: no undimensioned balance-sheet debt reading, because
     there is no debt to report.
+
+    Only a *numeric* fact counts as a mention. ``by_concept`` matches by
+    substring, so "LongTermDebt" also returns ``LongTermDebtTextBlock`` — the
+    narrative "Debt" note. RDDT's describes an undrawn credit facility; it
+    carries no number, and counting it made every RDDT filing "debt
+    mentioned but unparseable", so RDDT could not be valued at all
+    (found end to end, 2026-09-25).
     """
     mentioned = False
     for concept in DEBT_CONCEPTS:
@@ -168,7 +175,12 @@ def _total_debt(xbrl, asof: date) -> tuple[float | None, bool]:
             df = xbrl.query().by_concept(concept).to_dataframe()
         except Exception:  # noqa: BLE001
             continue
-        if df is not None and not df.empty:
+        if (
+            df is not None
+            and not df.empty
+            and "numeric_value" in df.columns
+            and df["numeric_value"].notna().any()
+        ):
             mentioned = True
         rows = _balance_rows(xbrl, concept, asof)
         if rows is not None and not rows.empty:
