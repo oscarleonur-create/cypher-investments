@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -100,6 +100,15 @@ class TestActions:
     def test_in_zone_without_a_trigger(self):
         p = build_proposal(mk(IN, IN), net_liq=NET_LIQ)
         assert p.action is Action.IN_ZONE and p.legs == []
+
+    def test_a_short_zone_never_opens_a_position(self):
+        """NBIS on Yahoo's five quarters: the dip is real, the median is not a year."""
+        short = zone().model_copy(update={"short": True, "observations": 180})
+        p = build_proposal(mk(short, short, z=-3.0), net_liq=NET_LIQ)
+        assert not any(leg.horizon == "position" for leg in p.legs)
+        assert p.action is Action.IN_ZONE
+        assert any("180 sessions" in g for g in p.gaps)
+        assert any("short history" in r.text for r in p.reasons)
 
     def test_enter_with_a_sized_position_leg(self):
         p = build_proposal(mk(ENTERED, OUT), net_liq=NET_LIQ)
@@ -380,6 +389,117 @@ class TestRun:
         daemon.close()
         assert proposals[0].action is Action.ENTER and proposals[0].stance is None
         assert "model down" in errors[0]
+
+    @staticmethod
+    def _reads(*statuses):
+        """A reader returning these statuses in turn, and the calls it saw."""
+        calls = []
+
+        def reader(sym):
+            status = statuses[min(len(calls), len(statuses) - 1)]
+            calls.append(sym)
+            return SimpleNamespace(
+                status=SimpleNamespace(value=status),
+                stance=SimpleNamespace(value="CONSTRUCTIVE") if status == "OK" else None,
+                sentences=[],
+            )
+
+        return reader, calls
+
+    def _run(self, tmp_path, sheet, reader, explainer, now=NOW):
+        from advisor.daemon.store import DaemonStore
+        from advisor.entry import run
+
+        daemon = DaemonStore(tmp_path / "research.db")
+        try:
+            return run.propose_all(
+                daemon,
+                now,
+                symbols=["GO"],
+                reader=reader,
+                explainer=explainer,
+                sheet_builder=lambda st, sym, n, scanner_store=None: sheet,
+            )
+        finally:
+            daemon.close()
+
+    @pytest.fixture(autouse=True)
+    def _fresh_memo(self):
+        from advisor.entry import run
+
+        run._EXPLAINED.clear()
+        yield
+        run._EXPLAINED.clear()
+
+    def test_a_decision_with_no_facts_pulls_news_then_reads_again(self, tmp_path):
+        """RDDT 2026-09-25: -27% in a month, nothing on file, reading NO_FACTS."""
+        reader, calls = self._reads("NO_FACTS", "OK")
+        pulled = []
+        proposals, errors = self._run(
+            tmp_path,
+            mk(ENTERED, OUT, z=-2.5),
+            reader,
+            lambda sym, reason: pulled.append((sym, reason)) or 3,
+        )
+        assert pulled == [("GO", "ENTRY_DROP")]
+        assert calls == ["GO", "GO"] and errors == []
+        assert proposals[0].stance == "CONSTRUCTIVE"
+        assert not any("NO_FACTS" in g for g in proposals[0].gaps)
+
+    def test_a_rally_searches_for_a_rally(self, tmp_path):
+        reader, _ = self._reads("NO_FACTS", "OK")
+        pulled = []
+        self._run(tmp_path, mk(ENTERED, OUT, z=1.0), reader, lambda s, r: pulled.append(r) or 1)
+        assert pulled == ["ENTRY_RALLY"]
+
+    def test_nothing_found_is_said_and_not_read_again(self, tmp_path):
+        reader, calls = self._reads("NO_FACTS")
+        proposals, _ = self._run(tmp_path, mk(ENTERED, OUT), reader, lambda s, r: 0)
+        assert calls == ["GO"]
+        gaps = proposals[0].gaps
+        assert "no news found to explain the move" in gaps and "reading NO_FACTS" in gaps
+        assert proposals[0].action is Action.ENTER  # the deterministic proposal stands
+
+    def test_searched_once_per_name_per_session(self, tmp_path):
+        """The job runs hourly; an empty search is not repeated."""
+        reader, _ = self._reads("NO_FACTS")
+        pulled = []
+
+        def explainer(s, r):
+            pulled.append(s)
+            return 0
+
+        self._run(tmp_path, mk(ENTERED, OUT), reader, explainer)
+        self._run(tmp_path, mk(ENTERED, OUT), reader, explainer)
+        assert pulled == ["GO"]
+        self._run(tmp_path, mk(ENTERED, OUT), reader, explainer, now=NOW + timedelta(days=1))
+        assert pulled == ["GO", "GO"]
+
+    def test_no_pull_when_no_decision_is_on_the_table(self, tmp_path):
+        """A changed sheet is read, but a quiet IN_ZONE is not worth a search."""
+        reader, _ = self._reads("NO_FACTS")
+        pulled = []
+        sheet = mk(IN, IN).model_copy(update={"events_today": []})
+        sheet_changed = mk(ENTERED, IN)  # re-entry without a stay out: no trigger
+        for sh in (sheet, sheet_changed):
+            self._run(tmp_path, sh, reader, lambda s, r: pulled.append(s) or 1)
+        assert pulled == []
+
+    def test_no_pull_when_the_reading_has_facts(self, tmp_path):
+        reader, _ = self._reads("OK")
+        pulled = []
+        self._run(tmp_path, mk(ENTERED, OUT), reader, lambda s, r: pulled.append(s) or 1)
+        assert pulled == []
+
+    def test_a_failed_pull_is_an_error_not_a_crash(self, tmp_path):
+        reader, _ = self._reads("NO_FACTS")
+
+        def boom(s, r):
+            raise TimeoutError("tavily timeout")
+
+        proposals, errors = self._run(tmp_path, mk(ENTERED, OUT), reader, boom)
+        assert proposals[0].action is Action.ENTER
+        assert "news pull failed: tavily timeout" in errors[0]
 
     def test_no_book_no_default_universe(self, tmp_path):
         from advisor.daemon.store import DaemonStore

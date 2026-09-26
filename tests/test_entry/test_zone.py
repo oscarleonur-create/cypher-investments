@@ -6,7 +6,9 @@ from datetime import date, timedelta
 
 import pytest
 from advisor.entry.zone import (
+    MAX_TTM_AGE_DAYS,
     MIN_OBSERVATIONS,
+    SHORT_MIN_OBSERVATIONS,
     Scenario,
     absolute_context,
     consensus_growth,
@@ -19,11 +21,20 @@ from advisor.valuation.models import ImpliedExpectations, ValuationSnapshot
 TODAY = date(2026, 9, 25)
 
 
-def series(rev=100.0, shares=10.0, broken_after=None, shares_path=None):
+def quarterly(value, first=date(2023, 1, 1), last=TODAY):
+    """A TTM point every 90 days, each known on its end: always fresh."""
+    out, d = [], first
+    while d <= last:
+        out.append(Point(end=d, value=value, known=d))
+        d += timedelta(days=90)
+    return out
+
+
+def series(rev=100.0, shares=10.0, broken_after=None, shares_path=None, revenue=None):
     start = date(2023, 1, 1)
     return Series(
         symbol="X",
-        revenue_ttm=[Point(end=start, value=rev, known=start)],
+        revenue_ttm=revenue or quarterly(rev),
         shares=shares_path or [Point(end=start, value=shares, known=start)],
         broken_after=broken_after,
     )
@@ -54,7 +65,63 @@ class TestRelativeZone:
         assert not z.in_zone and z.distance == pytest.approx(0.3)
 
     def test_too_little_history(self):
-        assert relative_zone(closes([10.0] * (MIN_OBSERVATIONS - 1)), series(), TODAY, 10) is None
+        hist = closes([10.0] * (SHORT_MIN_OBSERVATIONS - 1))
+        assert relative_zone(hist, series(), TODAY, 10) is None
+
+    def test_under_a_year_is_a_short_zone(self):
+        """NBIS: five Yahoo quarters. Shown, flagged, never a position leg."""
+        z = relative_zone(closes([10.0] * (MIN_OBSERVATIONS - 1)), series(), TODAY, 10)
+        assert z is not None and z.short
+        assert z.observations == MIN_OBSERVATIONS - 1
+
+    def test_exactly_the_short_floor(self):
+        z = relative_zone(closes([10.0] * SHORT_MIN_OBSERVATIONS), series(), TODAY, 10)
+        assert z is not None and z.short
+
+    def test_a_full_year_is_not_short(self):
+        z = relative_zone(closes([10.0] * MIN_OBSERVATIONS), series(), TODAY, 10)
+        assert z is not None and not z.short
+
+    def test_stale_revenue_days_are_excluded(self):
+        """The last TTM before Yahoo's window carried forward a year inflates P/S.
+
+        Old sales (100) paired with prices from a year when sales tripled would
+        put the median at 3x; only days with fresh TTM may count.
+        """
+        old_end = TODAY - timedelta(days=700)  # fresh only until day -500
+        revenue = [Point(end=old_end, value=100.0, known=old_end)] + quarterly(
+            300.0, first=TODAY - timedelta(days=180)
+        )
+        hist = closes([30.0] * 500)
+        z = relative_zone(hist, series(revenue=revenue), TODAY, 30.0)
+        assert z is not None
+        assert z.median == pytest.approx(1.0)  # 30 * 10 / 300, never 30 * 10 / 100
+        assert z.short  # the stale days did not count toward a full year
+
+    def test_stale_revenue_today_means_no_zone(self):
+        """A name that stopped reporting: today's P/S would be on old sales."""
+        end = TODAY - timedelta(days=MAX_TTM_AGE_DAYS + 1)
+        revenue = quarterly(100.0, last=end)
+        assert relative_zone(closes([10.0] * 400), series(revenue=revenue), TODAY, 10) is None
+
+    def test_revenue_exactly_at_the_age_limit_counts(self):
+        end = TODAY - timedelta(days=MAX_TTM_AGE_DAYS)
+        revenue = [
+            Point(
+                end=date(2023, 1, 1) + timedelta(days=90 * i),
+                value=100.0,
+                known=date(2023, 1, 1) + timedelta(days=90 * i),
+            )
+            for i in range(20)
+        ]
+        revenue = [p for p in revenue if p.end < end] + [Point(end=end, value=100.0, known=end)]
+        z = relative_zone(closes([10.0] * 400), series(revenue=revenue), TODAY, 10)
+        assert z is not None
+
+    def test_source_is_carried(self):
+        s = series().model_copy(update={"source": "yfinance statements"})
+        z = relative_zone(closes([10.0] * 400), s, TODAY, 10)
+        assert z.source == "yfinance statements"
 
     def test_only_two_years_count(self):
         old = [(TODAY - timedelta(days=900 + i), 1000.0) for i in range(100)]

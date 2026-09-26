@@ -250,10 +250,17 @@ def build_proposal(
                 text=(
                     f"P/S {z.ps_now:.1f}x, {where} its 2-year median {z.median:.1f}x "
                     f"(percentile {z.percentile:.0%}); zone top ${z.top:,.2f}"
+                    + (f" [short history: {z.observations} sessions]" if z.short else "")
                 ),
-                source="SEC revenue and diluted shares as known each day; yfinance closes",
+                source=f"{z.source} revenue and diluted shares as known each day; "
+                "yfinance closes",
             )
         )
+        if z.short:
+            p.gaps.append(
+                f"zone from {z.observations} sessions (under a year): shown, not used to "
+                "open a position"
+            )
     c = sheet.context
     if c is not None and c.delivered is not None:
         p.reasons.append(
@@ -307,7 +314,7 @@ def build_proposal(
         )
 
     # Position leg.
-    position_ok = z is not None and z.in_zone and bool(p.triggers)
+    position_ok = z is not None and z.in_zone and not z.short and bool(p.triggers)
     if position_ok:
         stop_pct = position_stop_pct(sigma)
         if stop_pct is None:
