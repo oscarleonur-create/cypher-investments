@@ -71,6 +71,12 @@ def keys_for(p: Proposal) -> tuple[str, ...]:
     return KEYS + extra
 
 
+def entered_at_close(p: Proposal) -> bool:
+    """Built at or after its session's close: the entry is the closing price."""
+    close = datetime.combine(p.session, mc.session_close(p.session), tzinfo=mc.MARKET_TZ)
+    return mc.to_et(p.built_at) >= close
+
+
 def score(p: Proposal, bars: list[Bar], now: datetime) -> dict[str, float | None]:
     """Every outcome knowable at ``now``. Pure."""
     out: dict[str, float | None] = {}
@@ -104,9 +110,14 @@ def score(p: Proposal, bars: list[Bar], now: datetime) -> dict[str, float | None
         out["mae120"] = ret(min(b.low for b in long_window))
 
     nxt = nth_trading_day(p.session, 1)
+    # A proposal made at or after the close enters at the close: that day's
+    # low came before the entry and cannot touch its stop. (One made during
+    # the session still counts its whole day, which can overstate touches:
+    # daily bars cannot say whether the low came before or after it.)
+    first = nxt if entered_at_close(p) else p.session
     for leg in p.legs:
         if leg.horizon == "trade" and _closed(nxt, now):
-            span = [b for b in bars if p.session <= b.day <= nxt]
+            span = [b for b in bars if first <= b.day <= nxt]
             if span:
                 out["trade_stop"] = 1.0 if min(b.low for b in span) <= leg.stop else 0.0
         if leg.horizon == "position" and _closed(d20, now) and window:

@@ -104,10 +104,15 @@ def from_candidate(c) -> Record:
 
 def from_proposal(p) -> Record:
     legs = {g.horizon: g for g in p.legs}
+    from advisor.entry.track import entered_at_close
+
     extra = {
         "stance": p.stance,
         "reading_prompt": getattr(p, "reading_prompt", None),
         "sigma": (p.features or {}).get("sigma"),
+        # Sessions a trade leg's stop is exposed for: the rest of today and
+        # tomorrow (~1.5) for an intraday entry, tomorrow only after the close.
+        "trade_span": 1.0 if entered_at_close(p) else 1.5,
     }
     for horizon, g in legs.items():
         if g.entry:
@@ -126,7 +131,8 @@ def from_proposal(p) -> Record:
 
 def from_replay_proposal(d: dict, run_id: str) -> Record:
     legs = d.get("legs") or {}
-    extra = {"sigma": (d.get("features") or {}).get("sigma"), "run": run_id}
+    # Replay decides at the close: a trade stop is exposed for one session.
+    extra = {"sigma": (d.get("features") or {}).get("sigma"), "run": run_id, "trade_span": 1.0}
     for horizon, pct in legs.items():
         if pct:
             extra[f"{horizon}_stop_pct"] = pct
@@ -159,9 +165,9 @@ def load_replay(db_path, run_id: str | None = None) -> tuple[str | None, list[Re
     """(run id, records) of a replay run, the latest finished one by default."""
     import sqlite3
 
-    from advisor.learning.replay import ReplayStore
+    from advisor.learning.replay import ReplayStore, replay_path
 
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(replay_path(db_path)))
     try:
         store = ReplayStore(conn)
         run_id = run_id or store.latest_finished()
@@ -398,8 +404,9 @@ def wilson(hits: int, n: int, z: float = 1.96) -> tuple[float, float] | None:
     return max(0.0, centre - half), min(1.0, centre + half)
 
 
-# The trade leg runs from entry (intraday) to the next session's close: about
-# a session and a half. The position leg's stop is checked over 20 sessions.
+# The trade leg runs from entry to the next session's close: about a session
+# and a half from an intraday entry, one from a closing one (each record says
+# which, as ``trade_span``). The position leg's stop is checked over 20.
 STOP_SPANS = {"trade": ("trade_stop", 1.5), "position": ("pos_stop20", 20.0)}
 
 
@@ -415,7 +422,8 @@ def stop_calibration(records: list[Record]) -> list[dict]:
             if hit is None or not sigma or not pct or sigma <= 0:
                 continue
             observed.append(hit)
-            expected.append(touch_probability(pct / sigma, span))
+            t = r.extra.get("trade_span", span) if leg == "trade" else span
+            expected.append(touch_probability(pct / sigma, t))
         if not observed:
             continue
         n, hits = len(observed), int(sum(observed))
