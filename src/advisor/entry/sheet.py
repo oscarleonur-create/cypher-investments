@@ -72,6 +72,8 @@ class Sheet(BaseModel):
     # (no rule broken or standing), "broken" (listing which), or None.
     thesis: str | None = None
     thesis_broken: list[str] = Field(default_factory=list)
+    # The distress reading an exit acts on (entry.distress.latest_distress), dumped.
+    distress: dict | None = None
     # The next results date on or after today (yfinance calendar) and the
     # trading sessions until it: 0 means today. None when no date is known.
     next_earnings: date | None = None
@@ -350,6 +352,14 @@ def build_sheet(
         except Exception as exc:  # noqa: BLE001
             logger.info("sheet: thesis status unavailable for %s: %s", symbol, exc)
             sheet.gaps.append("thesis written but its status could not be read")
+
+    try:
+        from advisor.entry.distress import latest_distress
+
+        reading = latest_distress(store, symbol, now)
+        sheet.distress = reading.model_dump(mode="json") if reading else None
+    except Exception as exc:  # noqa: BLE001
+        logger.info("sheet: distress reading unavailable for %s: %s", symbol, exc)
 
     if earnings_loader is None:
         from advisor.data.yahoo import fetch_earnings_dates as earnings_loader

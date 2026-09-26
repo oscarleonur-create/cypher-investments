@@ -52,6 +52,26 @@ class TestDedup:
         events = [make_event(), make_event(), make_event(dedup_key="other")]
         assert store.emit_many(events) == 2
 
+    def test_a_duplicate_does_not_hold_the_write_lock(self, tmp_path):
+        """Found live 2026-09-26: a re-run that emitted only duplicates left a
+        transaction open, and the next store on the file got "database is locked"."""
+        import sqlite3
+
+        a = DaemonStore(tmp_path / "research.db")
+        try:
+            a.emit(make_event())
+            assert a.emit(make_event()) is False  # duplicate, must not leave a lock
+            other = sqlite3.connect(str(tmp_path / "research.db"), timeout=0.2)
+            try:
+                other.execute("CREATE TABLE IF NOT EXISTS probe (x INTEGER)")
+                other.execute("INSERT INTO probe VALUES (1)")
+                other.commit()
+            finally:
+                other.close()
+            assert a.emit(make_event(dedup_key="after")) is True
+        finally:
+            a.close()
+
 
 class TestQuerying:
     def test_filters_by_tier_and_symbol(self, store):

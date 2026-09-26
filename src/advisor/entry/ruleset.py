@@ -58,19 +58,41 @@ DECLARED: dict[str, dict[str, Kind]] = {
         "REVIEW_KINDS": Kind.DECIDED,
         "SEVERITY": Kind.DECIDED,
     },
+    # News read for distress: the outlet count is the user's (2026-09-26); what
+    # counts as exit-grade is the prompt, so the prompt is versioned too.
+    "distress": {
+        "MIN_OUTLETS_FOR_EXIT": Kind.DECIDED,
+        "STICKY_DAYS": Kind.MODEL,
+        "SWEEP_DAYS": Kind.MODEL,
+        "READ_WINDOW_DAYS": Kind.MODEL,
+        "MAX_ITEMS": Kind.MODEL,
+        "SYSTEM_PROMPT": Kind.MODEL,
+        # How publishers are folded into outlets decides the count, so they are rules.
+        "_ALIASES": Kind.MODEL,
+        "_SUFFIXES": Kind.MODEL,
+        "_NEWS_KINDS": Kind.MODEL,
+    },
 }
 
 # Constants of the rule modules that decide nothing about a proposal.
 NOT_RULES: dict[str, str] = {
     "proposal.NEEDS_RATIONALE": "a ledger invariant: which actions must carry reasons",
+    "distress.DISTRESS_REASONS": "the names of the searches, recorded on their events",
+    "distress.LABELS": "display text for each situation",
 }
 
 
 def entry_rules() -> RuleStamp:
     """The version of the rules ``build_proposal`` runs now."""
-    from advisor.entry import exits, proposal, sheet, zone
+    from advisor.entry import distress, exits, proposal, sheet, zone
 
-    modules = {"proposal": proposal, "zone": zone, "sheet": sheet, "exits": exits}
+    modules = {
+        "proposal": proposal,
+        "zone": zone,
+        "sheet": sheet,
+        "exits": exits,
+        "distress": distress,
+    }
     return stamp(
         RULESET,
         {

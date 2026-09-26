@@ -229,6 +229,48 @@ def _print_proposals(proposals) -> None:
             console.print(line, markup=False, emoji=False)
 
 
+@app.command("distress")
+def entry_distress(
+    symbols: Annotated[Optional[list[str]], typer.Argument(help="Default: held names")] = None,
+    search: Annotated[
+        bool, typer.Option("--search/--no-search", help="Run the Tavily distress search first")
+    ] = True,
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Search held names for distress news and read it for an exit (EXIT_GRADE / WATCH / NONE)."""
+    from advisor.daemon.market_calendar import now_et
+    from advisor.entry.distress import distress_all
+
+    store, scanner = _stores()
+    try:
+        if symbols:
+            names = [s.upper() for s in symbols]
+        else:
+            book = store.load_latest_book()
+            if book is None:
+                raise typer.BadParameter("no book snapshot stored; name the symbols explicitly")
+            names = sorted({p.underlying.upper() for p in book.positions if p.quantity > 0})
+        readings, errors = distress_all(store, names, now_et(), search=search)
+    finally:
+        store.close()
+        scanner.close()
+    if output == "json":
+        output_json({"errors": errors, "readings": [r.model_dump(mode="json") for r in readings]})
+        return
+    for e in errors:
+        console.print(f"[yellow]{e}[/yellow]")
+    for r in readings:
+        head = f"{r.symbol} {r.status}"
+        if r.status == "OK":
+            head += f" {r.verdict.value} {r.situation.value} · {len(r.outlets)} outlet(s)"
+        head += f" · {r.items_read} items read"
+        console.print(head, markup=False, emoji=False, style="bold")
+        if r.reason:
+            console.print(f"  reading: {r.reason}", markup=False, emoji=False)
+        for i in r.cited:
+            console.print(f"  {i.id} {i.date} [{i.provider}] {i.title}", markup=False, emoji=False)
+
+
 @app.command("skip")
 def entry_skip(
     symbol: Annotated[str, typer.Argument()],
