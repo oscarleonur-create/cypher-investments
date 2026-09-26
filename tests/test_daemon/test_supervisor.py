@@ -56,6 +56,7 @@ class TestRegistry:
             "premarket_scan",
             "entry_proposals",
             "scan_outcomes",
+            "learning_sweep",
             "heartbeat",
         }
 
