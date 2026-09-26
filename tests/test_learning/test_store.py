@@ -56,6 +56,15 @@ class TestRegister:
         assert v.kinds == {"thresholds.sigma_min": Kind.THRESHOLD}
         assert v.first_code == S1.code and v.ruleset == "scanner.session"
 
+    def test_first_seen_is_tz_aware_eastern(self, conn):
+        # SQLite's datetime('now') is naive UTC: 02:13 "tomorrow" for a
+        # 22:13 ET Friday run. The first live run showed exactly that.
+        rule_versions.register(conn, S1)
+        conn.commit()
+        seen = RuleStore(conn).get(S1.version).first_seen_at
+        assert seen.tzinfo is not None
+        assert seen.utcoffset() == mc.now_et().utcoffset()
+
     def test_none_is_skipped(self, conn):
         assert not rule_versions.register(conn, None)
 

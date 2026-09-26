@@ -14,6 +14,7 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from advisor.daemon.market_calendar import now_et
 from advisor.learning.rules import PRE_REGISTRY, Kind, RuleStamp
 
 _SCHEMA = """\
@@ -23,7 +24,7 @@ CREATE TABLE IF NOT EXISTS rule_versions (
     params_json   TEXT NOT NULL,
     kinds_json    TEXT NOT NULL,
     first_code    TEXT NOT NULL,               -- git revision that first ran it
-    first_seen_at TEXT DEFAULT (datetime('now'))
+    first_seen_at TEXT NOT NULL                -- ISO, tz-aware ET
 );
 CREATE INDEX IF NOT EXISTS idx_rule_versions_ruleset
     ON rule_versions(ruleset, first_seen_at DESC);
@@ -61,13 +62,15 @@ def register(conn: sqlite3.Connection, s: RuleStamp | None) -> bool:
         return False
     cur = conn.execute(
         "INSERT OR IGNORE INTO rule_versions "
-        "(version, ruleset, params_json, kinds_json, first_code) VALUES (?, ?, ?, ?, ?)",
+        "(version, ruleset, params_json, kinds_json, first_code, first_seen_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
         (
             s.version,
             s.ruleset,
             json.dumps(s.params, sort_keys=True),
             json.dumps({k: v.value for k, v in s.kinds.items()}, sort_keys=True),
             s.code,
+            now_et().isoformat(),
         ),
     )
     return cur.rowcount > 0
