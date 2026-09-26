@@ -587,13 +587,22 @@ def sweep_cmd(
         universe = [s.strip().upper() for s in symbols.split(",") if s.strip()]
     else:
         universe, _ = replay_universe(_book_symbols())
+    from advisor.learning.actuator import active_entry_params, active_session_thresholds
+
     end = now_et().date()
     start = end - timedelta(days=int(365 * years))
+    conn = _db()
+    try:
+        base_p, base_t = active_entry_params(conn), active_session_thresholds(conn)
+    finally:
+        conn.close()
     result = sweep(
         universe,
         start,
         end,
         only=set(target) if target else None,
+        base_params=base_p,
+        base_thresholds=base_t,
         progress=None if output == "json" else lambda m: console.print(f"[dim]{m}[/dim]"),
     )
     if not dry_run:

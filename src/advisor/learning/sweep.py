@@ -78,11 +78,12 @@ def _grid(current, *, whole: bool = False) -> tuple:
     return tuple(sorted({round(current * m, 4) for m in (0.5, 0.75, 1.0, 1.25, 1.5)}))
 
 
-def targets() -> list[Target]:
+def targets(base_params=None, base_thresholds=None) -> list[Target]:
+    """Each searchable threshold, its grid centred on the value in force (not the code's)."""
     from advisor.entry.proposal import current_params
 
-    p = current_params()
-    t = detect.DEFAULT
+    p = base_params or current_params()
+    t = base_thresholds or detect.DEFAULT
     return [
         Target("trade stop", "entry", "proposal.TRADE_STOP_SIGMAS", "trade_stop_sigmas",
                _grid(p.trade_stop_sigmas), 1, "trade leg: stop, else next close"),
@@ -121,14 +122,26 @@ def _position_result(bars, i: int, stop: float, entry: float, n: int = 20) -> fl
     return bars[i + n].close / entry - 1
 
 
-def measure(target: Target, value, data: SymbolData, sheets, drifts: dict[int, float]) -> list:
-    """(session, excess) for every record ``value`` produces on this symbol."""
+def measure(
+    target: Target,
+    value,
+    data: SymbolData,
+    sheets,
+    drifts: dict[int, float],
+    base_params=None,
+    base_thresholds=None,
+) -> list:
+    """(session, excess) for every record ``value`` produces on this symbol.
+
+    Everything but the one threshold is the rules in force, so a value is
+    compared with what the daemon actually runs.
+    """
     from advisor.entry.proposal import current_params
 
     out = []
     bars = data.bars
     if target.ruleset == "scanner.session":
-        t = replace(detect.DEFAULT, **{target.field: value})
+        t = replace(base_thresholds or detect.DEFAULT, **{target.field: value})
         group = DAILY_A if target.field == "gap_min" else DAILY_C
         base = drifts.get(1)
         if base is None:
@@ -141,7 +154,7 @@ def measure(target: Target, value, data: SymbolData, sheets, drifts: dict[int, f
                 out.append((bars[ds.i].day, bars[ds.i + 1].close / entry - 1 - base))
         return out
 
-    params = replace(current_params(), **{target.field: value})
+    params = replace(base_params or current_params(), **{target.field: value})
     base = drifts.get(target.horizon)
     if base is None:
         return out
@@ -314,9 +327,15 @@ def sweep(
     history_days: int = 1100,
     only: set[str] | None = None,
     progress: Callable[[str], None] | None = None,
+    base_params=None,
+    base_thresholds=None,
 ) -> SweepResult:
-    """Measure every target's grid over the symbols, then walk each forward."""
-    chosen = [t for t in targets() if not only or t.name in only]
+    """Measure every target's grid over the symbols, then walk each forward.
+
+    ``base_params``/``base_thresholds``: the rules in force (approved changes
+    applied); default the code's. The comparison is always against them.
+    """
+    chosen = [t for t in targets(base_params, base_thresholds) if not only or t.name in only]
     records: dict[str, dict] = {t.name: defaultdict(list) for t in chosen}
     sessions: dict[str, list] = {t.name: [] for t in chosen}
     result = SweepResult(symbols=len(symbols))
@@ -331,23 +350,23 @@ def sweep(
         sheets = day_sheets(data, start, end)
         for t in chosen:
             for v in t.grid:
-                recs = measure(t, v, data, sheets, drifts)
+                recs = measure(t, v, data, sheets, drifts, base_params, base_thresholds)
                 records[t.name][v].extend(recs)
                 sessions[t.name].extend(d for d, _ in recs)
         if progress:
             progress(f"{n}/{len(symbols)} {sym}")
     for t in chosen:
-        current = _current(t)
+        current = _current(t, base_params, base_thresholds)
         result.verdicts.append(walk_forward(t, current, records[t.name], sessions[t.name]))
     return result
 
 
-def _current(t: Target):
+def _current(t: Target, base_params=None, base_thresholds=None):
     from advisor.entry.proposal import current_params
 
     if t.ruleset == "entry":
-        return getattr(current_params(), t.field)
-    return getattr(detect.DEFAULT, t.field)
+        return getattr(base_params or current_params(), t.field)
+    return getattr(base_thresholds or detect.DEFAULT, t.field)
 
 
 def file_proposals(result: SweepResult, store) -> SweepResult:
