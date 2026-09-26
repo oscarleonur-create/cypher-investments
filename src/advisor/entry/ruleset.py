@@ -63,19 +63,24 @@ DECLARED: dict[str, dict[str, Kind]] = {
 # Constants of the rule modules that decide nothing about a proposal.
 NOT_RULES: dict[str, str] = {
     "proposal.NEEDS_RATIONALE": "a ledger invariant: which actions must carry reasons",
+    "proposal.PARAM_CONSTANTS": "a map from EntryParams fields to the constants above",
 }
 
 
-def entry_rules() -> RuleStamp:
-    """The version of the rules ``build_proposal`` runs now."""
+def entry_rules(params=None) -> RuleStamp:
+    """The version of the rules ``build_proposal`` runs with ``params`` (default: the code's)."""
+    from dataclasses import asdict
+
     from advisor.entry import exits, proposal, sheet, zone
 
     modules = {"proposal": proposal, "zone": zone, "sheet": sheet, "exits": exits}
-    return stamp(
-        RULESET,
-        {
-            f"{mod}.{name}": (getattr(modules[mod], name), kind)
-            for mod, names in DECLARED.items()
-            for name, kind in names.items()
-        },
-    )
+    declared = {
+        f"{mod}.{name}": (getattr(modules[mod], name), kind)
+        for mod, names in DECLARED.items()
+        for name, kind in names.items()
+    }
+    if params is not None:
+        for field_, value in asdict(params).items():
+            key = f"proposal.{proposal.PARAM_CONSTANTS[field_]}"
+            declared[key] = (value, declared[key][1])
+    return stamp(RULESET, declared)
