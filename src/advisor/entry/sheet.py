@@ -68,6 +68,10 @@ class Sheet(BaseModel):
     # (no rule broken or standing), "broken" (listing which), or None.
     thesis: str | None = None
     thesis_broken: list[str] = Field(default_factory=list)
+    # The next results date on or after today (yfinance calendar) and the
+    # trading sessions until it: 0 means today. None when no date is known.
+    next_earnings: date | None = None
+    earnings_in: int | None = None
     gaps: list[str] = Field(default_factory=list)
 
     @property
@@ -202,6 +206,24 @@ def thesis_status(store, symbol: str, book, now: datetime) -> tuple[str | None, 
     return "intact", []
 
 
+def sessions_until(today: date, day: date) -> int:
+    """Trading sessions after ``today`` up to and including ``day``; 0 when it is today."""
+    from datetime import timedelta
+
+    n, cursor = 0, today
+    while cursor < day:
+        cursor += timedelta(days=1)
+        if mc.is_trading_day(cursor):
+            n += 1
+    return n
+
+
+def next_earnings(dates: list[date], today: date) -> date | None:
+    """The first results date on or after today. Pure."""
+    upcoming = [d for d in dates if d >= today]
+    return min(upcoming) if upcoming else None
+
+
 def build_sheet(
     store: DaemonStore,
     symbol: str,
@@ -211,6 +233,7 @@ def build_sheet(
     consensus_loader: Callable | None = None,
     series_loader: Callable | None = None,
     margin_loader: Callable | None = None,
+    earnings_loader: Callable[[str], list[date]] | None = None,
     scanner_store=None,
 ) -> Sheet:
     """Everything stored plus prices and SEC series, for one name. Never raises on gaps."""
@@ -306,6 +329,17 @@ def build_sheet(
         except Exception as exc:  # noqa: BLE001
             logger.info("sheet: thesis status unavailable for %s: %s", symbol, exc)
             sheet.gaps.append("thesis written but its status could not be read")
+
+    if earnings_loader is None:
+        from advisor.data.yahoo import fetch_earnings_dates as earnings_loader
+    try:
+        sheet.next_earnings = next_earnings(earnings_loader(symbol), now.date())
+    except Exception as exc:  # noqa: BLE001
+        logger.info("sheet: earnings calendar unavailable for %s: %s", symbol, exc)
+    if sheet.next_earnings is None:
+        sheet.gaps.append("no upcoming results date known: the pre-results guard cannot apply")
+    else:
+        sheet.earnings_in = sessions_until(now.date(), sheet.next_earnings)
 
     if scanner_store is not None:
         sheet.candidates = [

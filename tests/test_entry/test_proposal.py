@@ -101,6 +101,38 @@ class TestActions:
         p = build_proposal(mk(IN, IN), net_liq=NET_LIQ)
         assert p.action is Action.IN_ZONE and p.legs == []
 
+    def _near_results(self, n, sheet=None):
+        s = sheet or mk(ENTERED, OUT)
+        return s.model_copy(update={"next_earnings": date(2026, 10, 1), "earnings_in": n})
+
+    def test_results_within_five_sessions_wait(self):
+        """RDDT 2026-01-30: ENTER four sessions before results, -18% at d20."""
+        p = build_proposal(self._near_results(4), net_liq=NET_LIQ)
+        assert p.action is Action.WAIT and p.legs
+        assert "results due 2026-10-01 (in 4 sessions)" in p.blockers[0]
+
+    def test_exactly_five_sessions_still_waits(self):
+        assert build_proposal(self._near_results(5), net_liq=NET_LIQ).action is Action.WAIT
+
+    def test_six_sessions_out_enters(self):
+        assert build_proposal(self._near_results(6), net_liq=NET_LIQ).action is Action.ENTER
+
+    def test_results_today(self):
+        p = build_proposal(self._near_results(0), net_liq=NET_LIQ)
+        assert p.action is Action.WAIT and "(today)" in p.blockers[0]
+
+    def test_one_session_is_singular(self):
+        p = build_proposal(self._near_results(1), net_liq=NET_LIQ)
+        assert "(in 1 session)" in p.blockers[0]
+
+    def test_quiet_in_zone_is_not_turned_into_wait(self):
+        """Nothing to act on, nothing to delay: no reading, no news pull for it."""
+        p = build_proposal(self._near_results(2, mk(IN, IN)), net_liq=NET_LIQ)
+        assert p.action is Action.IN_ZONE and p.blockers == []
+
+    def test_unknown_results_date_does_not_block(self):
+        assert build_proposal(mk(ENTERED, OUT), net_liq=NET_LIQ).action is Action.ENTER
+
     def test_a_short_zone_never_opens_a_position(self):
         """NBIS on Yahoo's five quarters: the dip is real, the median is not a year."""
         short = zone().model_copy(update={"short": True, "observations": 180})

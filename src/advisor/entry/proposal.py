@@ -35,7 +35,13 @@ position leg may not take the name past 20% of the book (the book's own
 concentration limit).
 
 **Blockers** turn a proposal into WAIT: a tier-A event on the name today
-(read it first), or a model reading of AT_RISK. A CONSTRUCTIVE reading adds
+(read it first), results due within five sessions, or a model reading of
+AT_RISK. The results guard came from replaying RDDT (2026-09-25): an ENTER
+on 2026-01-30, four sessions before results, lost 18% in twenty sessions
+and 27% at its worst. The zone and the move are about to be repriced by a
+number nobody has seen; entering the day before is a bet on that number,
+not on the zone. The day after is left to the tier-A blocker, which fires
+on the results filing itself. A CONSTRUCTIVE reading adds
 nothing: the reading leans on the scorecard's required growth, which moves
 six points with the assumed margin (META -0.4% to +5.7% on 2026-09-25), too
 fragile to size a position on (user decision, 2026-09-25). AT_RISK still
@@ -73,6 +79,8 @@ DIP_SIGMAS = 2.0
 # An entry into the zone counts only after this many sessions above it, so a
 # price hovering at the median does not fire ENTER every other day.
 ENTRY_CONFIRM_SESSIONS = 5
+# No new entry when results are due within this many trading sessions (0 = today).
+EARNINGS_GUARD_SESSIONS = 5
 
 
 class Action(StrEnum):
@@ -339,6 +347,17 @@ def build_proposal(
     if not sized:
         p.gaps.append("net liq unknown: legs are not sized")
 
+    # Only a proposal to act waits on results; a quiet IN_ZONE has nothing to delay.
+    if p.legs and sheet.earnings_in is not None and sheet.earnings_in <= EARNINGS_GUARD_SESSIONS:
+        when = (
+            "today"
+            if sheet.earnings_in == 0
+            else f"in {sheet.earnings_in} session{'s' if sheet.earnings_in > 1 else ''}"
+        )
+        p.blockers.append(
+            f"results due {sheet.next_earnings.isoformat()} ({when}): "
+            "wait for the number, not a bet on it"
+        )
     # Action.
     if p.legs and p.blockers:
         p.action = Action.WAIT
