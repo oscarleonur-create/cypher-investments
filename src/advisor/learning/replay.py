@@ -132,45 +132,30 @@ def sigma_before(bars: list[DayBar], i: int, sessions: int = 60) -> float | None
 # ── One symbol ────────────────────────────────────────────────────────────
 
 
-def replay_symbol(
-    data: SymbolData,
-    start: date,
-    end: date,
-    *,
-    thresholds: detect.Thresholds = detect.DEFAULT,
-) -> tuple[list[Proposal], list[dict]]:
-    """Proposals and daily setups for each session in [start, end]. Pure given ``data``."""
+@dataclass
+class DaySheet:
+    """One session's sheet before any setup is attached: the expensive part, computed once."""
+
+    i: int  # index into the symbol's bars
+    sheet: Sheet
+    sigma: float | None  # daily σ before this bar, for the daily setups
+
+
+def day_sheets(data: SymbolData, start: date, end: date) -> list[DaySheet]:
+    """Move, zone, previous zone and results date for each session in [start, end].
+
+    Independent of every threshold a sweep varies, so a sweep builds these once
+    per symbol and decides on them many times.
+    """
     bars = data.bars
     closes = [(b.day, b.close) for b in bars]
-    score_bars = [Bar(b.day, b.high, b.low, b.close) for b in bars]
-    horizon_end = bars[-1].day if bars else end
-    scored_at = datetime.combine(horizon_end, mc.session_close(horizon_end), tzinfo=mc.MARKET_TZ)
-    scored_at += timedelta(hours=1)
-    proposals: list[Proposal] = []
-    setups: list[dict] = []
+    out: list[DaySheet] = []
     for i, b in enumerate(bars):
         d = b.day
         if d < start or d > end:
             continue
         hist = closes[: i + 1]
         assert hist[-1][0] == d  # nothing after d is visible below this line
-        sigma = sigma_before(bars, i)
-        ids = []
-        for group, entry in daily_setups(bars, i, sigma, thresholds):
-            sid = f"{d.isoformat()}:{group}:{data.symbol}"
-            ids.append(sid)
-            setups.append(
-                {
-                    "id": sid,
-                    "group": group,
-                    "session": d.isoformat(),
-                    "symbol": data.symbol,
-                    "entry": entry,
-                    "sigma": sigma,
-                    "outcomes": setup_outcomes(bars, i, group, entry),
-                }
-            )
-        move = move_from_closes(hist, d)
         zone = relative_zone(hist, data.series, d, b.close) if data.series else None
         zone_prev = None
         if data.series and i >= 1:
@@ -179,18 +164,69 @@ def replay_symbol(
         sheet = Sheet(
             symbol=data.symbol,
             built_at=datetime.combine(d, mc.session_close(d), tzinfo=mc.MARKET_TZ),
-            move=move,
+            move=move_from_closes(hist, d),
             zone=zone,
             zone_prev=zone_prev,
-            candidates=ids,
             next_earnings=upcoming,
             earnings_in=sessions_until(d, upcoming) if upcoming else None,
             gaps=list(NOT_REPLAYED),
         )
-        p = build_proposal(sheet, net_liq=NOMINAL_NET_LIQ)
-        p.origin = Origin.REPLAY
+        out.append(DaySheet(i, sheet, sigma_before(bars, i)))
+    return out
+
+
+def decide(
+    data: SymbolData,
+    ds: DaySheet,
+    *,
+    thresholds: detect.Thresholds = detect.DEFAULT,
+    params=None,
+) -> tuple[Proposal, list[dict]]:
+    """The proposal and the daily setups for one session, under the given rules. Cheap."""
+    bars, i = data.bars, ds.i
+    d = bars[i].day
+    setups, ids = [], []
+    for group, entry in daily_setups(bars, i, ds.sigma, thresholds):
+        sid = f"{d.isoformat()}:{group}:{data.symbol}"
+        ids.append(sid)
+        setups.append(
+            {
+                "id": sid,
+                "group": group,
+                "session": d.isoformat(),
+                "symbol": data.symbol,
+                "entry": entry,
+                "sigma": ds.sigma,
+                "outcomes": setup_outcomes(bars, i, group, entry),
+            }
+        )
+    sheet = ds.sheet.model_copy(update={"candidates": ids})
+    p = build_proposal(sheet, net_liq=NOMINAL_NET_LIQ, params=params)
+    p.origin = Origin.REPLAY
+    return p, setups
+
+
+def replay_symbol(
+    data: SymbolData,
+    start: date,
+    end: date,
+    *,
+    thresholds: detect.Thresholds = detect.DEFAULT,
+    params=None,
+) -> tuple[list[Proposal], list[dict]]:
+    """Proposals and daily setups for each session in [start, end]. Pure given ``data``."""
+    bars = data.bars
+    score_bars = [Bar(b.day, b.high, b.low, b.close) for b in bars]
+    horizon_end = bars[-1].day if bars else end
+    scored_at = datetime.combine(horizon_end, mc.session_close(horizon_end), tzinfo=mc.MARKET_TZ)
+    scored_at += timedelta(hours=1)
+    proposals: list[Proposal] = []
+    setups: list[dict] = []
+    for ds in day_sheets(data, start, end):
+        p, s = decide(data, ds, thresholds=thresholds, params=params)
         p.outcomes = score(p, score_bars, scored_at)
         proposals.append(p)
+        setups.extend(s)
     return proposals, setups
 
 

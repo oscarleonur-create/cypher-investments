@@ -132,6 +132,14 @@ def build_registry() -> JobRegistry:
     )
     reg.register(
         Job(
+            name="learning_sweep",
+            trigger=AtLeastEvery(days=28, after=time(19, 0)),
+            handler=handlers.run_learning_sweep,
+            description="replay each threshold's grid; file what survives walk-forward as PENDING",
+        )
+    )
+    reg.register(
+        Job(
             name="heartbeat",
             trigger=EveryMinutes(5, during_session_only=False),
             handler=handlers.run_heartbeat,
