@@ -49,12 +49,28 @@ def scan_run(
     output: Annotated[str, typer.Option("--output", "-o")] = "table",
 ) -> None:
     """Scan the market now and record any new A/C candidates."""
+    import sqlite3
+
     from advisor.daemon.market_calendar import now_et
+    from advisor.learning.actuator import active_session_thresholds
+    from advisor.research.config import get_settings
     from advisor.scanner.scan import run_scan
 
+    # The same thresholds the daemon runs: the code's, with approved changes.
+    conn = sqlite3.connect(str(get_settings().db_path))
+    try:
+        thresholds = active_session_thresholds(conn)
+    finally:
+        conn.close()
     store = _store()
     try:
-        result = run_scan(store, now_et(), news_budget=budget, check_news=not no_news)
+        result = run_scan(
+            store,
+            now_et(),
+            news_budget=budget,
+            check_news=not no_news,
+            thresholds=thresholds,
+        )
     finally:
         store.close()
     if output == "json":
