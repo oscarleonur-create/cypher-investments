@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import sqlite3
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 from advisor.daemon import market_calendar as mc
@@ -19,6 +19,7 @@ from advisor.learning.replay import (
     SymbolData,
     compact,
     daily_setups,
+    replay_path,
     replay_symbol,
     run,
     setup_outcomes,
@@ -184,6 +185,16 @@ class TestRun:
         with pytest.raises(ValueError):
             run(store, ["ZZZ"], END, START, loader=FakeLoader())
 
+    def test_short_history_is_its_own_reason(self, store):
+        def short(symbol, start, end):
+            return SymbolData(symbol, make_bars()[:120], series())
+
+        r = run(store, ["NEWIPO"], START, END, run_id="rs", loader=short)
+        assert r.short_history == ["NEWIPO"] and r.no_data == [] and r.replayed == 0
+
+    def test_replay_lives_beside_the_live_database(self, tmp_path):
+        assert replay_path(tmp_path / "research.db").name == "research-replay.db"
+
     def test_missing_data_is_listed_not_skipped_silently(self, store):
         r = run(store, ["ZZZ", "GONE"], START, END, run_id="r1", loader=FakeLoader({"GONE"}))
         assert r.no_data == ["GONE"] and r.replayed == 1
@@ -224,7 +235,7 @@ class TestRun:
 class TestLoadAndAgreement:
     def test_load_replay_latest(self, tmp_path):
         path = tmp_path / "research.db"
-        conn = sqlite3.connect(str(path))
+        conn = sqlite3.connect(str(replay_path(path)))
         run(ReplayStore(conn), ["ZZZ"], START, END, run_id="r5", loader=FakeLoader())
         conn.close()
         run_id, records = load_replay(path)
@@ -236,7 +247,7 @@ class TestLoadAndAgreement:
 
     def cell(self, origin, excess, ci):
         return Cell(
-            "entry", "v", "action ENTER", "d20", origin, 30, 30, excess, excess, 0.5, 0.0,
+            "entry", "v", "action ENTER", "d20", origin, 30, 30, 30, excess, excess, 0.5, 0.0,
             excess, ci, None, 0, Verdict.UNDETERMINED, "",
         )  # fmt: skip
 
@@ -268,3 +279,58 @@ class TestCalendar:
 
 
 _ = Baselines  # imported for symmetry with the evaluator tests
+
+
+class TestTradeStopAtTheClose:
+    """A proposal made at the close enters at the close: that day's low came before it."""
+
+    def test_entry_day_low_does_not_touch_a_closing_entry(self):
+        from advisor.entry.proposal import build_proposal
+        from advisor.entry.sheet import Move, Sheet
+        from advisor.entry.track import Bar, entered_at_close, score
+
+        day, nxt = DAYS[500], DAYS[501]
+        sheet = Sheet(
+            symbol="ZZZ",
+            built_at=datetime.combine(day, mc.session_close(day), tzinfo=mc.MARKET_TZ),
+            move=Move(price=100.0, asof=day, day=-0.05, sigma=0.02, z=-2.5),
+            candidates=[f"{day.isoformat()}:setup C~daily:ZZZ"],
+        )
+        p = build_proposal(sheet, net_liq=10_000)
+        assert entered_at_close(p)
+        stop = next(g.stop for g in p.legs if g.horizon == "trade")
+        later = datetime.combine(nxt, mc.session_close(nxt), tzinfo=mc.MARKET_TZ)
+        later += timedelta(hours=1)
+        crash_today = [Bar(day, 100, stop * 0.9, 100), Bar(nxt, 100, 100, 100)]
+        crash_tomorrow = [Bar(day, 100, 100, 100), Bar(nxt, 100, stop * 0.9, 100)]
+        assert score(p, crash_today, later)["trade_stop"] == 0.0
+        assert score(p, crash_tomorrow, later)["trade_stop"] == 1.0
+
+    def test_an_intraday_entry_still_counts_its_day(self):
+        from advisor.entry.proposal import build_proposal
+        from advisor.entry.sheet import Move, Sheet
+        from advisor.entry.track import Bar, entered_at_close, score
+
+        day, nxt = DAYS[500], DAYS[501]
+        sheet = Sheet(
+            symbol="ZZZ",
+            built_at=datetime.combine(day, mc.REGULAR_OPEN, tzinfo=mc.MARKET_TZ)
+            + timedelta(hours=2),
+            move=Move(price=100.0, asof=day, day=-0.05, sigma=0.02, z=-2.5),
+            candidates=[f"{day.isoformat()}:C:ZZZ"],
+        )
+        p = build_proposal(sheet, net_liq=10_000)
+        assert not entered_at_close(p)
+        stop = next(g.stop for g in p.legs if g.horizon == "trade")
+        later = datetime.combine(nxt, mc.session_close(nxt), tzinfo=mc.MARKET_TZ)
+        later += timedelta(hours=1)
+        crash_today = [Bar(day, 100, stop * 0.9, 100), Bar(nxt, 100, 100, 100)]
+        assert score(p, crash_today, later)["trade_stop"] == 1.0
+
+    def test_calibration_uses_one_session_for_closing_entries(self):
+        from advisor.learning.evaluate import from_replay_proposal
+
+        r = from_replay_proposal(
+            {"action": "ENTER", "session": "2025-03-03", "symbol": "X", "legs": {}}, "run"
+        )
+        assert r.extra["trade_span"] == 1.0

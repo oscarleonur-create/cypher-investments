@@ -365,8 +365,9 @@ def replay_cmd(
     from datetime import timedelta
 
     from advisor.daemon.market_calendar import now_et
-    from advisor.learning.replay import ReplayStore, run
+    from advisor.learning.replay import MIN_HISTORY_BARS, ReplayStore, replay_path, run
     from advisor.learning.universe import replay_universe
+    from advisor.research.config import get_settings
 
     own: set[str] = set()
     if symbols:
@@ -375,7 +376,7 @@ def replay_cmd(
         universe, own = replay_universe(_book_symbols())
     end = now_et().date()
     start = end - timedelta(days=int(365 * years))
-    conn = _db()
+    conn = sqlite3.connect(str(replay_path(get_settings().db_path)))
     try:
         result = run(
             ReplayStore(conn),
@@ -394,6 +395,7 @@ def replay_cmd(
         f"replay {result.run_id}: {result.replayed}/{result.symbols} symbols, "
         f"{result.proposals} proposals, {result.setups} daily setups; "
         f"no data: {', '.join(result.no_data) or 'none'}; "
+        f"under {MIN_HISTORY_BARS} sessions: {', '.join(result.short_history) or 'none'}; "
         f"no SEC/Yahoo series (no zone): {', '.join(result.no_series) or 'none'}"
     )
     console.print(f"[dim]advisor learn report --replay {result.run_id}[/dim]")

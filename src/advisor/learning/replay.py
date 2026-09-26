@@ -24,8 +24,10 @@ entered at the open" (the 09:35 hold, relative volume and news cannot be
 known from daily bars); C is "closed down at least ``drop_min`` and
 ``sigma_min``σ, entered at the close" (no peer test, no news).
 
-Records go to ``replay_records`` under a ``replay_runs`` row, never to the
-live ledgers the daemon and the UI read.
+Records go to ``replay_records`` under a ``replay_runs`` row in their own
+file beside the live database (``replay_path``), never to the ledgers the
+daemon and the UI read. A broad two-year run is ~75 MB; it does not belong in
+the shared ``research.db``.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ import statistics
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 from advisor.daemon import market_calendar as mc
 from advisor.entry.proposal import Proposal, build_proposal
@@ -51,6 +54,8 @@ from advisor.scanner.ruleset import session_rules
 logger = logging.getLogger(__name__)
 
 NOMINAL_NET_LIQ = 10_000.0  # sizing does not change a return; legs still need a book
+# Fewer sessions than this cannot give a two-year zone or a 60-session σ.
+MIN_HISTORY_BARS = 300
 NOT_REPLAYED = (
     "replay: no event stream (tier-A blocker not applied)",
     "replay: no model reading",
@@ -217,8 +222,6 @@ def load_symbol(symbol: str, start: date, end: date) -> SymbolData | None:
         if all(v == v and v > 0 for v in vals):
             vol = float(row["Volume"]) if row["Volume"] == row["Volume"] else 0.0
             bars.append(DayBar(ts.date(), *vals, vol))
-    if len(bars) < 300:
-        return None
     series = None
     try:
         from advisor.valuation.history import load_series
@@ -244,6 +247,13 @@ def _past_earnings(symbol: str) -> list[date]:
 
 
 # ── Storage ───────────────────────────────────────────────────────────────
+
+
+def replay_path(db_path) -> Path:
+    """The replay's own file, beside the live database."""
+    db_path = Path(db_path)
+    return db_path.with_name(f"{db_path.stem}-replay{db_path.suffix}")
+
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS replay_runs (
@@ -396,6 +406,7 @@ class RunResult:
     proposals: int = 0
     setups: int = 0
     no_data: list[str] = field(default_factory=list)
+    short_history: list[str] = field(default_factory=list)
     no_series: list[str] = field(default_factory=list)
 
     def summary(self) -> dict:
@@ -405,6 +416,7 @@ class RunResult:
             "proposals": self.proposals,
             "setups": self.setups,
             "no_data": self.no_data,
+            "short_history": self.short_history,
             "no_series": self.no_series,
         }
 
@@ -444,6 +456,9 @@ def run(
         data = loader(sym, start - timedelta(days=history_days), mc.now_et().date())
         if data is None:
             result.no_data.append(sym)
+            continue
+        if len(data.bars) < MIN_HISTORY_BARS:
+            result.short_history.append(sym)
             continue
         if data.series is None:
             result.no_series.append(sym)
