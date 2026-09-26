@@ -258,21 +258,35 @@ def report(
     horizon: Annotated[
         Optional[list[str]], typer.Option("--horizon", help="Repeatable; default all")
     ] = None,
+    replay: Annotated[
+        Optional[str],
+        typer.Option("--replay", help="Include a replay run: its id, or 'latest'"),
+    ] = None,
     output: Annotated[str, typer.Option("--output", "-o")] = "table",
 ) -> None:
     """What each rule version has earned against its names' own drift, and calibration."""
     from advisor.learning.evaluate import (
         Baselines,
+        agreement,
         chance_edges,
         evaluate,
         load_live,
+        load_replay,
         stance_calibration,
         stop_calibration,
         yahoo_closes,
     )
     from advisor.research.config import get_settings
 
-    records = load_live(get_settings().db_path)
+    path = get_settings().db_path
+    records = load_live(path)
+    run_id = None
+    if replay:
+        run_id, replayed = load_replay(path, None if replay == "latest" else replay)
+        if run_id is None:
+            output_error("no finished replay run on file")
+            return
+        records += replayed
     if ruleset:
         records = [r for r in records if r.ruleset == ruleset]
     baselines = Baselines(yahoo_closes())
@@ -280,14 +294,17 @@ def report(
     stops = stop_calibration(records)
     stances = stance_calibration(records, baselines)
     chance = chance_edges(cells)
+    agree = agreement(cells)
     if output == "json":
         output_json(
             {
                 "records": len(records),
+                "replay_run": run_id,
                 "cells": [c.as_dict() for c in cells],
                 "edges_expected_by_chance": chance,
                 "stop_calibration": stops,
                 "stance_calibration": stances,
+                "live_vs_replay": agree,
             }
         )
         return
@@ -327,3 +344,73 @@ def report(
         )
     for prompt, s in stances.items():
         console.print(f"stances (prompt {prompt}, {s['horizon']}): {s['finding']}")
+    for a in agree:
+        mark = "agrees with" if a["agrees"] else "OUTSIDE"
+        console.print(
+            f"live vs replay {a['group']} {a['horizon']}: live {a['live_excess']:+.2%} "
+            f"(n={a['live_n']}) {mark} replay [{a['replay_ci'][0]:+.2%}, {a['replay_ci'][1]:+.2%}]"
+        )
+
+
+@app.command("replay")
+def replay_cmd(
+    years: Annotated[float, typer.Option("--years", help="Replay window, ending today")] = 2.0,
+    symbols: Annotated[
+        Optional[str],
+        typer.Option("--symbols", help="Comma-separated; default the broad universe"),
+    ] = None,
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Run today's rules over history, day by day, with only what was known each day."""
+    from datetime import timedelta
+
+    from advisor.daemon.market_calendar import now_et
+    from advisor.learning.replay import ReplayStore, run
+    from advisor.learning.universe import replay_universe
+
+    own: set[str] = set()
+    if symbols:
+        universe = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    else:
+        universe, own = replay_universe(_book_symbols())
+    end = now_et().date()
+    start = end - timedelta(days=int(365 * years))
+    conn = _db()
+    try:
+        result = run(
+            ReplayStore(conn),
+            universe,
+            start,
+            end,
+            progress=None if output == "json" else lambda m: console.print(f"[dim]{m}[/dim]"),
+        )
+    finally:
+        conn.close()
+    summary = {**result.summary(), "run_id": result.run_id, "own_symbols": sorted(own)}
+    if output == "json":
+        output_json(summary)
+        return
+    console.print(
+        f"replay {result.run_id}: {result.replayed}/{result.symbols} symbols, "
+        f"{result.proposals} proposals, {result.setups} daily setups; "
+        f"no data: {', '.join(result.no_data) or 'none'}; "
+        f"no SEC/Yahoo series (no zone): {', '.join(result.no_series) or 'none'}"
+    )
+    console.print(f"[dim]advisor learn report --replay {result.run_id}[/dim]")
+
+
+def _book_symbols() -> list[str]:
+    """Held names and watchlists, when a book is on file; [] otherwise."""
+    try:
+        from advisor.daemon.store import DaemonStore
+        from advisor.daemon.universe import research_symbols
+        from advisor.research.config import get_settings
+
+        store = DaemonStore(get_settings().db_path)
+        try:
+            book = store.load_latest_book()
+            return research_symbols(book)[0] if book is not None else []
+        finally:
+            store.close()
+    except Exception:  # noqa: BLE001
+        return []
