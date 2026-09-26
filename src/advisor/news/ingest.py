@@ -309,6 +309,10 @@ REASON_KEYWORDS: dict[str, str] = {
     "FILING_RESULTS": "earnings results",
     "FILING_MANAGEMENT_CHANGE": "executive",
     "FILING_ACTIVIST_STAKE": "activist stake",
+    # Entry proposals (entry.run): a decision on a name with nothing on file.
+    "ENTRY_DROP": "stock drop",
+    "ENTRY_RALLY": "stock rally",
+    "ENTRY_REVIEW": "stock news",
 }
 DEFAULT_KEYWORDS = "stock news"
 
