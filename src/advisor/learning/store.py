@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel
 
@@ -125,3 +125,67 @@ class RuleStore:
             ).fetchall()
             out[label] = {(r["v"] or PRE_REGISTRY): r["n"] for r in rows}
         return out
+
+
+_TRADES_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS trades (
+    id            TEXT NOT NULL PRIMARY KEY,   -- account:instrument:opened_at
+    account       TEXT NOT NULL,
+    underlying    TEXT NOT NULL,
+    entry_session TEXT NOT NULL,
+    book          TEXT NOT NULL,
+    closed        INTEGER NOT NULL,
+    payload_json  TEXT NOT NULL,               -- learning.trades.Trade
+    updated_at    TEXT NOT NULL                -- ISO, tz-aware ET
+);
+CREATE INDEX IF NOT EXISTS idx_trades_session ON trades(entry_session DESC);
+"""
+
+
+class TradeStore:
+    """The user's round trips, rebuilt from the broker. The learning module's table."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        conn.row_factory = sqlite3.Row
+        self._conn = conn
+        conn.executescript(_TRADES_SCHEMA)
+
+    def upsert(self, t) -> int:
+        """Write ``t`` if new or changed (an OPEN trade that closed). 1 if written."""
+        payload = t.model_dump_json()
+        row = self._conn.execute("SELECT payload_json FROM trades WHERE id = ?", (t.id,)).fetchone()
+        if row is not None and row["payload_json"] == payload:
+            return 0
+        self._conn.execute(
+            "INSERT OR REPLACE INTO trades "
+            "(id, account, underlying, entry_session, book, closed, payload_json, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                t.id,
+                t.account,
+                t.underlying,
+                t.entry_session.isoformat(),
+                t.book.value,
+                int(t.closed),
+                payload,
+                now_et().isoformat(),
+            ),
+        )
+        self._conn.commit()
+        return 1
+
+    def list(self, *, book: str | None = None, since: date | None = None) -> list:
+        from advisor.learning.trades import Trade
+
+        clauses, args = [], []
+        if book is not None:
+            clauses.append("book = ?")
+            args.append(book)
+        if since is not None:
+            clauses.append("entry_session >= ?")
+            args.append(since.isoformat())
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._conn.execute(
+            f"SELECT payload_json FROM trades {where} ORDER BY entry_session, id", args
+        ).fetchall()
+        return [Trade.model_validate_json(r["payload_json"]) for r in rows]
