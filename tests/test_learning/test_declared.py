@@ -13,7 +13,7 @@ import inspect
 from dataclasses import fields, replace
 
 import pytest
-from advisor.entry import proposal, sheet, zone
+from advisor.entry import exits, proposal, sheet, zone
 from advisor.entry import ruleset as entry_ruleset
 from advisor.learning.rules import Kind
 from advisor.scanner import detect, premarket, scan, sources
@@ -38,7 +38,7 @@ def constants(module) -> set[str]:
 
 
 SCANNER_MODULES = {"detect": detect, "premarket": premarket, "sources": sources, "scan": scan}
-ENTRY_MODULES = {"proposal": proposal, "zone": zone, "sheet": sheet}
+ENTRY_MODULES = {"proposal": proposal, "zone": zone, "sheet": sheet, "exits": exits}
 
 
 def _scanner_declared() -> set[str]:

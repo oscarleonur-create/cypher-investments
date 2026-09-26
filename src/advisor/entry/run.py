@@ -25,7 +25,7 @@ from advisor.entry.sheet import build_sheet
 
 logger = logging.getLogger(__name__)
 
-WORTH_READING = {Action.ENTER, Action.ADD, Action.WAIT}
+WORTH_READING = {Action.ENTER, Action.ADD, Action.WAIT, Action.EXIT, Action.TRIM, Action.REVIEW}
 EXPLAIN_DAYS = 14  # the move being explained is recent; older news is not its cause
 
 # (symbol, session) already searched this process. The daemon is long-lived,
@@ -128,6 +128,9 @@ def propose_all(
             elif reading is not None:
                 proposal.gaps.append(f"reading {status or 'unavailable'}")
         if entry_store is not None:
-            entry_store.add(proposal)
+            try:
+                entry_store.add(proposal)
+            except ValueError as exc:
+                errors.append(str(exc))
         out.append(proposal)
     return out, errors

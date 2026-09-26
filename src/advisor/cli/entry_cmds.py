@@ -190,7 +190,18 @@ def entry_propose(
 
 
 def _print_proposals(proposals) -> None:
-    order = {"ENTER": 0, "ADD": 1, "WAIT": 2, "IN_ZONE": 3, "NONE": 4, "CANNOT_SAY": 5}
+    order = {
+        "EXIT": 0,
+        "TRIM": 1,
+        "REVIEW": 2,
+        "ENTER": 3,
+        "ADD": 4,
+        "WAIT": 5,
+        "HOLD": 6,
+        "IN_ZONE": 7,
+        "NONE": 8,
+        "CANNOT_SAY": 9,
+    }
     for p in sorted(proposals, key=lambda p: (order.get(p.action.value, 9), p.symbol)):
         head = f"{p.symbol} {p.action.value}"
         if p.price:
@@ -201,6 +212,11 @@ def _print_proposals(proposals) -> None:
         lines = [f"  trigger: {t}" for t in p.triggers]
         lines += [f"  · {r.text}  [{r.source}]" for r in p.reasons]
         lines += [f"  ! {b}" for b in p.blockers]
+        for call in p.exits:
+            size = f"sell {call['shares']}" if call.get("shares") else "no size: your call"
+            lines.append(f"  {call['action']} ({call['rule']}, {size})")
+            lines += [f"    evidence: {e['text']}  [{e['source']}]" for e in call["evidence"]]
+            lines.append(f"    would change it: {call['would_change']}")
         for leg in p.legs:
             lines.append(
                 f"  {leg.horizon}: buy {leg.shares} (${leg.notional:,.0f}), stop {leg.stop:,.2f} "

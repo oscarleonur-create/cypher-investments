@@ -3,8 +3,8 @@
 The kinds follow the user's decisions of 2026-09-25: risk budgets, the book
 limit and the two-year window are theirs (``decided``) and the learning loop
 may never search them; what qualifies as a trigger and where a stop sits are
-``threshold``s it may propose changing. A test fails if ``proposal``, ``zone``
-or ``sheet`` gains a constant that is neither declared here nor listed as not
+``threshold``s it may propose changing. A test fails if ``proposal``, ``zone``,
+``sheet`` or ``exits`` gains a constant that is neither declared here nor listed as not
 a rule.
 """
 
@@ -31,6 +31,8 @@ DECLARED: dict[str, dict[str, Kind]] = {
         "TRADE_STOP_SIGMAS": Kind.THRESHOLD,
         "DIP_SIGMAS": Kind.THRESHOLD,
         "ENTRY_CONFIRM_SESSIONS": Kind.THRESHOLD,
+        # No new entry within this many sessions of results (RDDT replay, 2026-09-25).
+        "EARNINGS_GUARD_SESSIONS": Kind.THRESHOLD,
     },
     "zone": {
         "WINDOW_DAYS": Kind.DECIDED,  # "P/S against its own two-year median"
@@ -43,18 +45,32 @@ DECLARED: dict[str, dict[str, Kind]] = {
     "sheet": {
         "SIGMA_SESSIONS": Kind.MODEL,
         "THESIS_LOOKBACK_DAYS": Kind.MODEL,
+        # How long an exit-grade filing keeps asking after it lands.
+        "FILINGS_LOOKBACK_DAYS": Kind.MODEL,
+    },
+    # Exit calls on held names. The user decided (2026-09-26) that a rich P/S is
+    # a REVIEW and which filings end the case; the percentile is theirs too.
+    "exits": {
+        "RICH_PERCENTILE": Kind.DECIDED,
+        "EXIT_ITEMS": Kind.DECIDED,
+        "EXIT_KINDS": Kind.DECIDED,
+        "REVIEW_ITEMS": Kind.DECIDED,
+        "REVIEW_KINDS": Kind.DECIDED,
+        "SEVERITY": Kind.DECIDED,
     },
 }
 
 # Constants of the rule modules that decide nothing about a proposal.
-NOT_RULES: dict[str, str] = {}
+NOT_RULES: dict[str, str] = {
+    "proposal.NEEDS_RATIONALE": "a ledger invariant: which actions must carry reasons",
+}
 
 
 def entry_rules() -> RuleStamp:
     """The version of the rules ``build_proposal`` runs now."""
-    from advisor.entry import proposal, sheet, zone
+    from advisor.entry import exits, proposal, sheet, zone
 
-    modules = {"proposal": proposal, "zone": zone, "sheet": sheet}
+    modules = {"proposal": proposal, "zone": zone, "sheet": sheet, "exits": exits}
     return stamp(
         RULESET,
         {

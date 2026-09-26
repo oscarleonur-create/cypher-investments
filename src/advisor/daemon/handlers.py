@@ -437,7 +437,7 @@ async def run_entry_proposals(ctx: JobContext) -> JobResult:
     acts = [
         f"{p.symbol} {p.action.value}"
         for p in proposals
-        if p.action.value in ("ENTER", "ADD", "WAIT")
+        if p.action.value in ("ENTER", "ADD", "WAIT", "EXIT", "TRIM", "REVIEW")
     ]
     detail = f"{len(proposals)} proposals" + (
         f": {', '.join(acts)}" if acts else ", none to act on"
