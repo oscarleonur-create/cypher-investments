@@ -279,7 +279,10 @@ def report(
     from advisor.research.config import get_settings
 
     path = get_settings().db_path
-    records = load_live(path)
+    from advisor.learning.shadow import load_shadow
+
+    # Challengers' records are their own cells (origin "shadow"), never pooled.
+    records = load_live(path) + load_shadow(path)
     run_id = None
     if replay:
         run_id, replayed = load_replay(path, None if replay == "latest" else replay)
@@ -416,3 +419,144 @@ def _book_symbols() -> list[str]:
             store.close()
     except Exception:  # noqa: BLE001
         return []
+
+
+# ── Rule changes: propose, shadow, activate, reject, retire ───────────────
+
+
+def _changes():
+    from advisor.learning.actuator import ChangeStore
+
+    return ChangeStore(_db())
+
+
+def _print_change(c, output: str) -> None:
+    if output == "json":
+        output_json(c.model_dump(mode="json"))
+        return
+    console.print(
+        f"{c.id} {c.status.value}: {c.ruleset} {c.param} {c.previous} → {c.value} "
+        f"({c.source}){' — ' + c.note if c.note else ''}"
+    )
+
+
+@app.command("changes")
+def changes(
+    status: Annotated[
+        Optional[str], typer.Option("--status", help="PENDING|SHADOW|ACTIVE|REJECTED|RETIRED")
+    ] = None,
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Rule changes on file and the entry/scanner thresholds in force."""
+    from dataclasses import asdict
+
+    from advisor.learning.actuator import (
+        Status,
+        active_entry_params,
+        active_session_thresholds,
+    )
+
+    store = _changes()
+    try:
+        rows = store.list(status=Status(status.upper()) if status else None)
+        entry = asdict(active_entry_params(store._conn))
+        session = asdict(active_session_thresholds(store._conn))
+    finally:
+        store._conn.close()
+    if output == "json":
+        output_json(
+            {
+                "changes": [c.model_dump(mode="json") for c in rows],
+                "active": {"entry": entry, "scanner.session": session},
+            }
+        )
+        return
+    table = Table(title="Rule changes")
+    for col in ("id", "status", "ruleset", "param", "from", "to", "source", "note"):
+        table.add_column(col)
+    for c in rows:
+        table.add_row(
+            c.id,
+            c.status.value,
+            c.ruleset,
+            c.param,
+            str(c.previous),
+            str(c.value),
+            c.source,
+            c.note,
+        )
+    console.print(table)
+
+
+@app.command("propose-change")
+def propose_change(
+    ruleset: Annotated[str, typer.Argument(help="entry | scanner.session")],
+    param: Annotated[str, typer.Argument(help="e.g. proposal.TRADE_STOP_SIGMAS")],
+    value: Annotated[float, typer.Argument()],
+    note: Annotated[str, typer.Option("--note", "-n")] = "",
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Propose a threshold change by hand. It does nothing until shadowed or activated."""
+    from advisor.learning.actuator import ChangeError
+
+    store = _changes()
+    try:
+        v = int(value) if float(value).is_integer() else value
+        c = store.propose(ruleset, param, v, source="user", note=note)
+    except ChangeError as exc:
+        output_error(str(exc))
+        return
+    finally:
+        store._conn.close()
+    _print_change(c, output)
+
+
+def _transition(change_id: str, action: str, note: str, output: str) -> None:
+    from advisor.learning.actuator import ChangeError
+
+    store = _changes()
+    try:
+        method = getattr(store, action)
+        c = method(change_id, note) if action in ("reject", "retire") else method(change_id)
+    except ChangeError as exc:
+        output_error(str(exc))
+        return
+    finally:
+        store._conn.close()
+    _print_change(c, output)
+
+
+@app.command("shadow")
+def shadow_cmd(
+    change_id: str, output: Annotated[str, typer.Option("--output", "-o")] = "table"
+) -> None:
+    """Run a proposed change beside the live rules, recorded apart, acted on by nobody."""
+    _transition(change_id, "shadow", "", output)
+
+
+@app.command("activate")
+def activate_cmd(
+    change_id: str, output: Annotated[str, typer.Option("--output", "-o")] = "table"
+) -> None:
+    """Make a change the rule the daemon runs (the next job picks it up)."""
+    _transition(change_id, "activate", "", output)
+
+
+@app.command("reject")
+def reject_cmd(
+    change_id: str,
+    note: Annotated[str, typer.Option("--note", "-n")] = "",
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Decline a proposed or shadowed change."""
+    _transition(change_id, "reject", note, output)
+
+
+@app.command("retire")
+def retire_cmd(
+    change_id: str,
+    note: Annotated[str, typer.Option("--note", "-n")] = "",
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Roll back an active or shadowed change: the code's value returns."""
+    _transition(change_id, "retire", note, output)
