@@ -200,3 +200,16 @@ def test_a_sweep_over_synthetic_symbols_runs_every_target():
     assert all(v.reason for v in r.verdicts)
     assert math.isfinite(len(r.verdicts))
     _ = MIN_RECORDS
+
+
+def test_the_grid_and_the_baseline_are_the_rules_in_force():
+    from dataclasses import replace
+
+    from advisor.entry.proposal import current_params
+    from advisor.learning.sweep import _current, targets
+
+    active = replace(current_params(), trade_stop_sigmas=2.0)
+    t = next(x for x in targets(active) if x.field == "trade_stop_sigmas")
+    assert t.grid == (1.0, 1.5, 2.0, 2.5, 3.0)
+    assert _current(t, active) == 2.0
+    assert _current(t) == current_params().trade_stop_sigmas

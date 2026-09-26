@@ -527,9 +527,22 @@ async def run_learning_sweep(ctx: JobContext) -> JobResult:
             own = research_symbols(book)[0] if book is not None else []
         finally:
             store.close()
+        from advisor.learning.actuator import active_entry_params, active_session_thresholds
+
         symbols, _ = replay_universe(own)
         end = now.date()
-        result = sweep(symbols, end - timedelta(days=730), end)
+        conn = sqlite3.connect(str(db_path))
+        try:
+            base_p, base_t = active_entry_params(conn), active_session_thresholds(conn)
+        finally:
+            conn.close()
+        result = sweep(
+            symbols,
+            end - timedelta(days=730),
+            end,
+            base_params=base_p,
+            base_thresholds=base_t,
+        )
         conn = sqlite3.connect(str(db_path))
         try:
             file_proposals(result, ChangeStore(conn))
