@@ -124,6 +124,22 @@ def build_registry() -> JobRegistry:
     )
     reg.register(
         Job(
+            name="distress_premarket",
+            trigger=DailyAt(time(8, 15), trading_days_only=False, grace_hours=6.0),
+            handler=handlers.run_distress_sweep,
+            description="distress news per held name, read for an exit (before the open)",
+        )
+    )
+    reg.register(
+        Job(
+            name="distress_midday",
+            trigger=DailyAt(time(12, 30), trading_days_only=False, grace_hours=3.0),
+            handler=handlers.run_distress_sweep,
+            description="distress news per held name, read for an exit (midday)",
+        )
+    )
+    reg.register(
+        Job(
             name="scan_outcomes",
             trigger=DailyAt(time(16, 20), grace_hours=6.0),
             handler=handlers.run_scan_outcomes,

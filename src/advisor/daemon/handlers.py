@@ -448,6 +448,46 @@ async def run_entry_proposals(ctx: JobContext) -> JobResult:
     return JobResult(job="entry_proposals", ok=bool(proposals) or not errors, detail=detail)
 
 
+async def run_distress_sweep(ctx: JobContext) -> JobResult:
+    """Twice a day: search each held name for distress news and read it for an exit.
+
+    The user's example (2026-09-26): a report of a possible bankruptcy that no
+    filing has confirmed must still become an action. The reading is stored as
+    a tier-C ``DISTRESS_READING``; the next ``entry_proposals`` run turns an
+    exit-grade one into EXIT (2+ outlets) or REVIEW (one), with its sources.
+    Runs on weekends too: companies file for bankruptcy on Sundays.
+    """
+    import asyncio
+
+    def _run(db_path, now):
+        from advisor.daemon.store import DaemonStore
+        from advisor.entry.distress import distress_all
+
+        store = DaemonStore(db_path)
+        try:
+            book = store.load_latest_book()
+            if book is None:
+                return [], ["no book snapshot stored"]
+            held = sorted({p.underlying.upper() for p in book.positions if p.quantity > 0})
+            return distress_all(store, held, now)
+        finally:
+            store.close()
+
+    readings, errors = await asyncio.to_thread(_run, ctx.store.db_path, ctx.now)
+    graded = [
+        f"{r.symbol} {r.situation.value} ({len(r.outlets)} outlet(s))"
+        for r in readings
+        if r.verdict.value == "EXIT_GRADE"
+    ]
+    detail = f"{len(readings)} names read" + (
+        f": EXIT_GRADE {', '.join(graded)}" if graded else ", nothing exit-grade"
+    )
+    if errors:
+        detail += f"; {len(errors)} error(s): {errors[0]}"
+    logger.info("distress_sweep: %s", detail)
+    return JobResult(job="distress_sweep", ok=bool(readings) or not errors, detail=detail)
+
+
 def _with_scanner_store(db_path, fn, now):
     """Open, use and close a ScannerStore entirely within the calling thread."""
     from advisor.scanner.store import ScannerStore

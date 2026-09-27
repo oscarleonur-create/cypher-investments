@@ -111,6 +111,44 @@ def _filing_call(action, what, label, e, sheet) -> ExitCall:
     )
 
 
+def _news_call(sheet) -> ExitCall | None:
+    """EXIT (unconfirmed) on an exit-grade report from 2+ outlets; REVIEW on one."""
+    from advisor.entry.distress import MIN_OUTLETS_FOR_EXIT, DistressReading, Verdict
+
+    if not sheet.distress:
+        return None
+    r = DistressReading.model_validate(sheet.distress)
+    if r.verdict is not Verdict.EXIT_GRADE or not r.cited:
+        return None
+    n = len(r.outlets)
+    exit_ = n >= MIN_OUTLETS_FOR_EXIT
+    confirmed = any(c.rule == "filing" and c.action == "EXIT" for c in _filing_calls(sheet))
+    status = "confirmed by a filing" if confirmed else "no SEC filing confirms it yet"
+    why = (
+        f"{n} independent outlet{'s' if n != 1 else ''} report {r.label} "
+        f"({', '.join(r.outlets)}); {status}"
+        + ("" if exit_ else f": one outlet is a REVIEW, {MIN_OUTLETS_FOR_EXIT} make an EXIT")
+        + (f". Reading: {r.reason}" if r.reason else "")
+    )
+    return ExitCall(
+        action="EXIT" if exit_ else "REVIEW",
+        rule="news" if confirmed else "news (unconfirmed)",
+        why=why,
+        evidence=[
+            Reason(
+                text=f"{i.date} {i.title}",
+                source=i.provider + (f" {i.url}" if i.url else ""),
+            )
+            for i in r.cited[:5]
+        ],
+        would_change=(
+            "a filing or company statement that denies it, or financing that removes "
+            "the risk; until then it asks for two weeks"
+        ),
+        shares=int(sheet.holding.quantity) if exit_ else None,
+    )
+
+
 def exit_calls(sheet, *, net_liq: float | None) -> tuple[list[ExitCall], list[Reason], list[str]]:
     """Calls, HOLD reasons and gaps for a held long. Pure over the sheet.
 
@@ -170,6 +208,11 @@ def exit_calls(sheet, *, net_liq: float | None) -> tuple[list[ExitCall], list[Re
 
     # Filings that end the investment case.
     calls.extend(_filing_calls(sheet))
+
+    # News the taxonomy does not map, read by the model, counted without it.
+    news = _news_call(sheet)
+    if news is not None:
+        calls.append(news)
 
     # The user's own thesis.
     if sheet.thesis == "broken":

@@ -313,6 +313,10 @@ REASON_KEYWORDS: dict[str, str] = {
     "ENTRY_DROP": "stock drop",
     "ENTRY_RALLY": "stock rally",
     "ENTRY_REVIEW": "stock news",
+    # Exit sweep (entry.distress): what ends the case before a filing says so.
+    # Two short queries rather than one long one (keywords, never sentences).
+    "DISTRESS": "bankruptcy default delisting",
+    "DISTRESS_PROBE": "fraud investigation restructuring",
 }
 DEFAULT_KEYWORDS = "stock news"
 
