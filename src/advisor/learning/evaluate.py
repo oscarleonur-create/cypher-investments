@@ -176,13 +176,16 @@ def from_replay_proposal(d: dict, run_id: str) -> Record:
     for horizon, pct in legs.items():
         if pct:
             extra[f"{horizon}_stop_pct"] = pct
+    outcomes = dict(d.get("outcomes") or {})
+    if "trade" in legs:
+        outcomes["trade_exit"] = _trade_exit(outcomes, extra.get("trade_stop_pct"))
     return Record(
         ruleset=d.get("ruleset") or "entry",
         version=d.get("version") or PRE_REGISTRY,
-        group=f"action {d['action']}",
+        group=f"action {d['action']} · {legs_label(legs)}",
         session=date.fromisoformat(d["session"]),
         symbol=d["symbol"],
-        outcomes=d.get("outcomes") or {},
+        outcomes=outcomes,
         origin="replay",
         extra=extra,
     )
