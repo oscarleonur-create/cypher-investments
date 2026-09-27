@@ -16,6 +16,7 @@ import logging
 import re
 
 from advisor.news.models import EntityMatch, MatchMethod
+from advisor.news.names import names_company
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +111,12 @@ def resolve_entity(
         return EntityMatch(symbol=upper, method=MatchMethod.PROVIDER_TAG)
 
     haystack = text or ""
-    if company_name:
+    # The reviewed list of how headlines name the company (news.names) wins
+    # over the registered name, which misreads common words ("coherent").
+    listed = names_company(upper, haystack)
+    if listed:
+        return EntityMatch(symbol=upper, method=MatchMethod.COMPANY_NAME)
+    if listed is None and company_name:
         core = normalize_name(company_name)
         # Require a substantive name, not "Co" or a single letter.
         if len(core) >= 4 and core in normalize_name(haystack):

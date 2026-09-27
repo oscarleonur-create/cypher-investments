@@ -233,10 +233,14 @@ class DaemonStore:
         tier: EventTier | None = None,
         symbol: str | None = None,
         since: datetime | None = None,
+        kinds: tuple[str, ...] | None = None,
     ) -> list[Event]:
         """Most recent events first, optionally filtered."""
         sql = "SELECT * FROM events WHERE 1=1"
         params: list = []
+        if kinds:
+            sql += f" AND kind IN ({','.join('?' * len(kinds))})"
+            params.extend(kinds)
         if tier is not None:
             sql += " AND tier = ?"
             params.append(tier.value)
@@ -626,6 +630,33 @@ class DaemonStore:
             "OR kind IN ('NEWS_CONTEXT', 'NEWS_ANGLE'))"
         ).fetchall()
         return [self._row_to_event(r) for r in rows]
+
+    def unverified_news(self, since: datetime, limit: int = 500) -> list[Event]:
+        """News events since ``since`` whose date was never checked (news.verify)."""
+        rows = self._conn.execute(
+            "SELECT * FROM events WHERE kind IN ('NEWS_CONTEXT', 'NEWS_ANGLE') AND ts >= ? "
+            "AND json_extract(payload_json, '$.verified') IS NULL ORDER BY ts DESC LIMIT ?",
+            (since.isoformat(), limit),
+        ).fetchall()
+        return [self._row_to_event(r) for r in rows]
+
+    def set_news_verification(
+        self, event_id: str, status: str, published_at: datetime, claimed_at: datetime
+    ) -> bool:
+        """Record a news event's checked date: the payload says how, ``ts`` moves to it."""
+        cur = self._conn.execute(
+            "UPDATE events SET ts = ?, payload_json = json_set(payload_json, "
+            "'$.verified', ?, '$.published_at', ?, '$.claimed_at', ?) WHERE id = ?",
+            (
+                published_at.isoformat(),
+                status,
+                published_at.isoformat(),
+                claimed_at.isoformat(),
+                event_id,
+            ),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
 
     def fill_event_lead(self, event_id: str, lead: str) -> bool:
         """Attach a lead to an event that has none. Nothing else in it changes."""

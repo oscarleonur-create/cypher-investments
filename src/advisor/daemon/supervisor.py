@@ -140,6 +140,14 @@ def build_registry() -> JobRegistry:
     )
     reg.register(
         Job(
+            name="trading_halts",
+            trigger=WindowEvery(start=time(4, 0), end=time(20, 5), minutes=5),
+            handler=handlers.run_trading_halts,
+            description="exchange trading halts on watched names, read for an exit",
+        )
+    )
+    reg.register(
+        Job(
             name="scan_outcomes",
             trigger=DailyAt(time(16, 20), grace_hours=6.0),
             handler=handlers.run_scan_outcomes,

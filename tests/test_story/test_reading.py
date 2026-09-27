@@ -360,7 +360,12 @@ class TestGatherFacts:
         """Live SPCX: ten Grok/xAI articles pushed the unlock story out."""
 
         def news(kind, key, angle=None, hours=0):
-            payload = {"title": key, "url": f"https://x/{key}", "provider": "www.benzinga.com"}
+            payload = {
+                "title": key,
+                "url": f"https://x/{key}",
+                "provider": "www.benzinga.com",
+                "verified": "CONFIRMED",
+            }
             if angle:
                 payload["angle"] = angle
             event = Event(
@@ -393,3 +398,25 @@ class TestGatherFacts:
     def test_other_symbols_do_not_leak_in(self, store):
         filing(store)
         assert all(f.kind != "EVENT" for f in gather_facts(store, "CRDO"))
+
+
+def test_unchecked_news_never_becomes_a_fact(tmp_path):
+    """An unchecked date may not rest under a decision, entry or exit (news.verify)."""
+    from advisor.story.reading import gather_facts
+
+    store = DaemonStore(tmp_path / "r.db")
+    try:
+        for key, verified in (
+            ("checked", "CONFIRMED"),
+            ("unchecked", "UNVERIFIED"),
+            ("legacy", None),
+        ):
+            payload = {"title": key, "url": f"https://x/{key}", "provider": "reuters.com"}
+            if verified:
+                payload["verified"] = verified
+            store.emit(Event(source=EventSource.CALENDAR, kind="NEWS_CONTEXT", tier=EventTier.C,
+                             symbol="TE", dedup_key=key, payload=payload))  # fmt: skip
+        texts = [f.text for f in gather_facts(store, "TE") if f.kind == "NEWS"]
+        assert len(texts) == 1 and "checked" in texts[0]
+    finally:
+        store.close()

@@ -41,6 +41,7 @@ class EventSource(StrEnum):
     COMPUTED = "computed"  # derived from positions (DTE, strike breach, drift)
     MACRO = "macro"  # factor moves, regime, book exposure
     CALENDAR = "calendar"  # scheduled macro prints, earnings, ex-div
+    EXCHANGE = "exchange"  # trading halts and resumptions (Nasdaq Trader feed)
     DAEMON = "daemon"  # the daemon's own lifecycle
 
 
