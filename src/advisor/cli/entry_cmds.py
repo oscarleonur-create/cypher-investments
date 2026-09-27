@@ -244,7 +244,7 @@ def entry_skip(
     """Record why you did not act on today's proposals for a name."""
     from datetime import date
 
-    from advisor.daemon.market_calendar import now_et
+    from advisor.daemon.market_calendar import now_et, session_of
     from advisor.scanner.models import DecisionSource, SkipReason, TradeDecision
 
     try:
@@ -253,7 +253,7 @@ def entry_skip(
         raise typer.BadParameter(
             f"reason must be one of: {', '.join(r.value for r in SkipReason)}"
         ) from exc
-    day = date.fromisoformat(session) if session else now_et().date()
+    day = date.fromisoformat(session) if session else session_of(now_et())
     entries = _entry_store()
     daemon_store, scanner = _stores()
     try:
