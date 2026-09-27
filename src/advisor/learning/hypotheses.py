@@ -36,6 +36,7 @@ from advisor.learning.evaluate import (
     Record,
     blocks_of,
     cluster_ci,
+    horizons_for,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,11 +94,15 @@ class Status(StrEnum):
 class Hypothesis(BaseModel):
     """The only form the model may propose in."""
 
-    group: str = Field(description="an existing group, e.g. 'action ENTER' or 'setup C~daily'")
+    group: str = Field(
+        description="an existing group, e.g. 'action ENTER · trade' or 'setup C~daily'"
+    )
     feature: str = Field(description="one of the allowed feature names")
     op: Literal["<", "<=", ">", ">=", "==", "!="]
     value: float | bool | str
-    horizon: Literal["close", "next_close", "d5", "d10", "d20", "d60", "d120"]
+    horizon: Literal[
+        "close", "next_close", "d5", "d10", "d20", "d60", "d120", "trade_exit", "pos_exit"
+    ] = Field(description="one of the horizons listed for the group")
     expect: Literal["better", "worse"] = Field(
         description="how records matching the condition do against the rest of the group"
     )
@@ -120,6 +125,8 @@ BETTER or WORSE at HORIZON than the rest of GROUP.
 Rules:
 - Use only a group's own listed features, on the scale shown (p5 … median …
   p95): a value outside that range selects nothing and is thrown out.
+- Use only a horizon listed for the group: each group is judged on the
+  horizons of what it proposed, and any other has no outcomes.
 - Each hypothesis must be testable on those features; no outside knowledge,
   no tickers, no dates, no news.
 - Prefer hypotheses that would change a threshold the system already has.
@@ -166,6 +173,7 @@ def summary_for_model(
     ranges = ranges or {}
     lines.append("FEATURES BY GROUP (p5 … median … p95; use only these, on these scales):")
     for group in sorted(groups):
+        lines.append(f"  {group} | horizons: {', '.join(horizons_for(group))}")
         feats = ranges.get(group)
         if not feats:
             lines.append(f"  {group}: none recorded — do not propose on this group")
@@ -209,6 +217,11 @@ def validate(h: Hypothesis, groups: set[str]) -> str | None:
         return f"feature {h.feature!r} is not recorded"
     if h.group not in groups:
         return f"group {h.group!r} has no records"
+    if h.horizon not in horizons_for(h.group):
+        return (
+            f"{h.horizon} is not a horizon {h.group} is judged on "
+            f"(its horizons: {', '.join(horizons_for(h.group))})"
+        )
     if h.op in ("<", "<=", ">", ">=") and isinstance(h.value, str | bool):
         return f"{h.op} needs a number, got {h.value!r}"
     return None
@@ -229,17 +242,27 @@ def examine(h: Hypothesis, records: list[Record], baselines: Baselines) -> Findi
         return Finding(status=Status.INVALID, reason=invalid)
     k = HORIZON_SESSIONS[h.horizon]
     match, rest = [], []
+    held: list[int] = []
+    with_outcome = 0
     for r in records:
         if r.group != h.group:
             continue
         ret = r.outcomes.get(h.horizon)
-        base = baselines.get(r.symbol, k) if ret is not None else None
+        kk = k
+        if h.horizon == "pos_exit" and ret is not None:
+            # As the judge does: each position against its own holding period.
+            kk = int(r.outcomes.get("pos_exit_sessions") or 0)
+            held.append(kk)
+        with_outcome += ret is not None
+        base = baselines.get(r.symbol, kk) if ret is not None else None
         if ret is None or base is None:
             continue
         m = _matches((r.extra.get("features") or {}).get(h.feature), h.op, h.value)
         if m is None:
             continue
         (match if m else rest).append((r.session, ret - base))
+    if held:
+        k = max(1, int(statistics.median(held)))
 
     def side(vals):
         windows = len(blocks_of(vals, k))
@@ -254,10 +277,12 @@ def examine(h: Hypothesis, records: list[Record], baselines: Baselines) -> Findi
     a, b = side(match), side(rest)
     in_group = sum(1 for r in records if r.group == h.group)
     if not match and not rest:
-        return Finding(
-            status=Status.INVALID,
-            reason=f"{h.feature} is not recorded for {h.group} ({in_group} records)",
+        reason = (
+            f"{h.feature} is not recorded for {h.group} ({in_group} records)"
+            if with_outcome
+            else f"no {h.group} record has a {h.horizon} outcome yet ({in_group} records)"
         )
+        return Finding(status=Status.INVALID, reason=reason)
     if min(a["n"], b["n"]) < MIN_N:
         # A condition that leaves one side (nearly) empty asks nothing: usually a
         # wrong scale, e.g. a 0-1 percentile compared with 80.

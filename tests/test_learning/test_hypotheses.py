@@ -184,3 +184,62 @@ class TestTheFirstLiveRound:
         ranges = feature_ranges(recs(0.01, 0.0))
         assert ranges["action ENTER"]["ps_percentile"].startswith("0.1")
         assert ranges["action ENTER"]["thesis"] == "values: intact"
+
+
+def leg_recs(group: str, outcomes_of, seed=2):
+    rng = random.Random(seed)
+    return [
+        Record(
+            "entry", "v", group, d, "AAA",
+            outcomes_of(pct, rng),
+            extra={"features": {"ps_percentile": pct}},
+        )
+        for d in DAYS
+        for pct in (0.1, 0.9)
+    ]  # fmt: skip
+
+
+class TestHorizonsByLeg:
+    """The AAOI end-to-end run (2026-09-27): the model picked 'close' for a trade group."""
+
+    def test_a_horizon_the_group_is_not_judged_on_is_invalid(self):
+        g = "action ENTER · trade"
+        rs = leg_recs(g, lambda pct, rng: {"trade_exit": 0.0, "next_close": 0.0})
+        r = examine(hyp(group=g, horizon="close"), rs, Baselines(flat))
+        assert r.status is Status.INVALID
+        assert "not a horizon action ENTER · trade is judged on" in r.reason
+        assert "trade_exit, next_close" in r.reason
+
+    def test_trade_exit_is_testable(self):
+        g = "action ENTER · trade"
+        rs = leg_recs(
+            g, lambda pct, rng: {"trade_exit": (0.01 if pct < 0.5 else 0.0) + rng.gauss(0, 0.002)}
+        )
+        r = examine(hyp(group=g, horizon="trade_exit"), rs, Baselines(flat))
+        assert r.status is Status.SUPPORTED
+
+    def test_pos_exit_uses_each_positions_holding_period(self):
+        g = "action ENTER · position"
+
+        def rising(symbol):
+            return {d: 100.0 * 1.001**i for i, d in enumerate(DAYS)}
+
+        rs = leg_recs(
+            g, lambda pct, rng: {"pos_exit": 0.05 if pct < 0.5 else 0.0, "pos_exit_sessions": 20.0}
+        )
+        r = examine(hyp(group=g, horizon="pos_exit"), rs, Baselines(rising))
+        drift = 1.001**20 - 1
+        assert r.matching["excess"] == pytest.approx(0.05 - drift)
+        assert r.rest["excess"] == pytest.approx(-drift)
+        assert r.matching["windows"] < len(DAYS)  # blocks of 20 sessions, not one per day
+
+    def test_no_outcome_yet_is_not_called_a_missing_feature(self):
+        g = "action ENTER · position"
+        rs = leg_recs(g, lambda pct, rng: {"d20": 0.0})  # every position still open
+        r = examine(hyp(group=g, horizon="pos_exit"), rs, Baselines(flat))
+        assert r.status is Status.INVALID and "has a pos_exit outcome yet" in r.reason
+
+    def test_the_model_is_shown_each_groups_horizons(self):
+        s = summary_for_model([], [], {"action ENTER · trade": 5, "setup C": 3})
+        assert "action ENTER · trade | horizons: trade_exit, next_close" in s
+        assert "setup C | horizons: close," in s
