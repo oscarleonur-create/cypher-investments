@@ -13,7 +13,7 @@ import inspect
 from dataclasses import fields, replace
 
 import pytest
-from advisor.entry import distress, exits, proposal, sheet, zone
+from advisor.entry import distress, exits, freshness, proposal, sheet, zone
 from advisor.entry import ruleset as entry_ruleset
 from advisor.learning.rules import Kind
 from advisor.scanner import detect, premarket, scan, sources
@@ -44,6 +44,7 @@ ENTRY_MODULES = {
     "sheet": sheet,
     "exits": exits,
     "distress": distress,
+    "freshness": freshness,
 }
 
 

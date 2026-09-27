@@ -47,6 +47,12 @@ six points with the assumed margin (META -0.4% to +5.7% on 2026-09-25), too
 fragile to size a position on (user decision, 2026-09-25). AT_RISK still
 blocks, because waiting is the cautious direction.
 
+A stale input blocks too (``entry.freshness``, user decision 2026-09-27): a
+price that is not today's, a book older than an hour in session, filings not
+ingested since the previous close (the tier-A blocker would be blind), and
+for an ADD distress news not read in a day. An intact thesis read against a
+valuation more than ten days old earns no bonus. Exits are never held back.
+
 **Held names** are judged for their exit as well (``entry.exits``): EXIT
 past the stop from the purchase price or on a filing that ends the case,
 TRIM above the book limit, REVIEW for a broken thesis rule, a rich P/S or
@@ -68,6 +74,7 @@ from enum import StrEnum
 from pydantic import BaseModel, Field
 
 from advisor.daemon import market_calendar as mc
+from advisor.entry import freshness
 from advisor.entry.ruleset import entry_rules
 from advisor.entry.sheet import Sheet
 from advisor.learning.rules import Origin, RuleStamp
@@ -288,6 +295,7 @@ def features_of(sheet: Sheet) -> dict[str, float | int | bool | str | None]:
         "consensus_growth": c.consensus if c else None,
         "required_low": c.low if c else None,
         "required_high": c.high if c else None,
+        "stale": ",".join(s.input for s in sheet.stale) or None,
     }
 
 
@@ -379,7 +387,12 @@ def build_proposal(
                 source="thesis claims (action card)",
             )
         )
-    cap = MAX_TOTAL_RISK_THESIS if sheet.thesis == "intact" else MAX_TOTAL_RISK
+    # An intact thesis read against a stale valuation earns no extra risk.
+    bonus_stale = [s for s in sheet.stale if s.blocks == freshness.BONUS]
+    thesis_bonus = sheet.thesis == "intact" and not bonus_stale
+    if sheet.thesis == "intact" and bonus_stale:
+        p.gaps.append(f"no thesis bonus: {bonus_stale[0].text}")
+    cap = MAX_TOTAL_RISK_THESIS if thesis_bonus else MAX_TOTAL_RISK
 
     weight = sheet.holding.weight if sheet.holding else 0.0
     held = sheet.holding is not None
@@ -406,7 +419,7 @@ def build_proposal(
             p.gaps.append("no volatility estimate: position stop cannot be set")
         else:
             risk = POSITION_RISK_CHEAP if z.percentile <= CHEAP_PERCENTILE else POSITION_RISK
-            if sheet.thesis == "intact":
+            if thesis_bonus:
                 risk += THESIS_BONUS
             risk = min(risk, cap)
             stop = m.price * (1 - stop_pct)
@@ -493,6 +506,11 @@ def build_proposal(
             f"results due {sheet.next_earnings.isoformat()} ({when}): "
             "wait for the number, not a bet on it"
         )
+    # Stale inputs: the proposal is only as current as its oldest input.
+    if p.legs:
+        for st in sheet.stale:
+            if st.blocks == freshness.ENTRY or (st.blocks == freshness.ADDING and held):
+                p.blockers.append(f"{st.text}: refresh it before entering")
     # Action.
     if p.legs and p.blockers:
         p.action = Action.WAIT
