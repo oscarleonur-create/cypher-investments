@@ -541,3 +541,36 @@ class TestRun:
         proposals, errors = propose_all(daemon, NOW)
         daemon.close()
         assert proposals == [] and "no book" in errors[0]
+
+
+class TestWeekendProposal:
+    """A proposal read on a Sunday is Friday's, entered at Friday's close."""
+
+    def sunday(self):
+        s = mk(zone_now=IN, zone_prev=IN)
+        s.built_at = datetime(2026, 9, 27, 8, 29, tzinfo=mc.MARKET_TZ)
+        return s
+
+    def test_its_session_is_friday(self):
+        p = build_proposal(self.sunday(), net_liq=NET_LIQ)
+        assert p.session == date(2026, 9, 25)
+
+    def test_saturday_and_sunday_runs_are_one_record(self, tmp_path):
+        store = EntryStore(tmp_path / "e.db")
+        sat = self.sunday()
+        sat.built_at = datetime(2026, 9, 26, 12, 0, tzinfo=mc.MARKET_TZ)
+        a = build_proposal(sat, net_liq=NET_LIQ)
+        b = build_proposal(self.sunday(), net_liq=NET_LIQ)
+        assert a.id == b.id
+        store.add(a)
+        store.add(b)
+        assert len(store.list()) == 1
+
+    def test_it_counts_monday_as_its_next_close(self):
+        p = build_proposal(self.sunday(), net_liq=NET_LIQ)
+        bars = [
+            Bar(date(2026, 9, 25), 101.0, 99.0, 100.0),
+            Bar(date(2026, 9, 28), 103.0, 101.0, 102.0),
+        ]
+        out = score(p, bars, datetime(2026, 9, 28, 17, 0, tzinfo=mc.MARKET_TZ))
+        assert out["next_close"] == pytest.approx(0.02)
