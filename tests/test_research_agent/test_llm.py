@@ -91,3 +91,51 @@ class TestOpenRouterLLM:
         system_content = messages[0]["content"]
         assert "JSON" in system_content
         assert "answer" in system_content
+
+
+class TestReasoningEffort:
+    """GLM-5.3 at its default effort spent 82 s on one reading; "medium" took 4.7 s."""
+
+    def test_unset_sends_nothing_extra(self):
+        assert _make_config().reasoning_body() == {}
+
+    def test_set_is_sent_as_openrouter_reasoning(self):
+        assert _make_config(llm_reasoning_effort=" Medium ").reasoning_body() == {
+            "reasoning": {"effort": "medium"}
+        }
+
+    def test_a_typo_fails_loudly_instead_of_thinking_for_minutes(self):
+        import pytest
+
+        with pytest.raises(ValueError, match="low, medium, high"):
+            _make_config(llm_reasoning_effort="meduim").reasoning_body()
+
+    @patch("research_agent.llm.OpenAI")
+    def test_complete_and_chat_carry_it(self, MockOpenAI):
+        client = MagicMock()
+        MockOpenAI.return_value = client
+        client.chat.completions.create.return_value = _mock_response('{"answer": "a"}')
+        llm = OpenRouterLLM(_make_config(llm_reasoning_effort="medium"))
+        llm.complete("s", "u", response_model=SimpleResponse)
+        llm.chat("s", [{"role": "user", "content": "hi"}])
+        for call in client.chat.completions.create.call_args_list:
+            assert call.kwargs["extra_body"] == {"reasoning": {"effort": "medium"}}
+
+    @patch("research_agent.llm.OpenAI")
+    def test_unset_leaves_the_call_as_before(self, MockOpenAI):
+        client = MagicMock()
+        MockOpenAI.return_value = client
+        client.chat.completions.create.return_value = _mock_response("x")
+        OpenRouterLLM(_make_config()).complete("s", "u")
+        assert "extra_body" not in client.chat.completions.create.call_args.kwargs
+
+    @patch("advisor.agent.llm.OpenAI")
+    def test_the_tool_agent_carries_it(self, MockOpenAI):
+        from advisor.agent.llm import AgentLLM
+
+        client = MagicMock()
+        MockOpenAI.return_value = client
+        AgentLLM(_make_config(llm_reasoning_effort="low")).chat_with_tools([], [])
+        assert client.chat.completions.create.call_args.kwargs["extra_body"] == {
+            "reasoning": {"effort": "low"}
+        }

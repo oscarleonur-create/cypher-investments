@@ -17,6 +17,12 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
 
+def _extra(config: ResearchConfig) -> dict:
+    """Keyword arguments every completion carries beyond the standard ones."""
+    body = config.reasoning_body()
+    return {"extra_body": body} if body else {}
+
+
 class OpenRouterLLM:
     """OpenRouter LLM client with structured output support."""
 
@@ -56,6 +62,7 @@ class OpenRouterLLM:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
+            **_extra(self._config),
         )
 
         text = response.choices[0].message.content
@@ -89,6 +96,7 @@ class OpenRouterLLM:
             max_tokens=self._config.llm_max_tokens,
             temperature=0.3,
             messages=[{"role": "system", "content": system_prompt}, *messages],
+            **_extra(self._config),
         )
         return response.choices[0].message.content or ""
 

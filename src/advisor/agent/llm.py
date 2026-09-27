@@ -13,6 +13,7 @@ from typing import Any
 
 from openai import OpenAI
 from research_agent.config import ResearchConfig
+from research_agent.llm import _extra
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
@@ -60,4 +61,5 @@ class AgentLLM:
             messages=messages,
             tools=tools,
             tool_choice="auto",
+            **_extra(self._config),
         )

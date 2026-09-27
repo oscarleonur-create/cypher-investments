@@ -25,6 +25,23 @@ class ResearchConfig(BaseSettings):
     llm_timeout_seconds: int = 60
     llm_max_tokens: int = 4096
     llm_temperature: float = 0.1
+    # How hard a reasoning model thinks before answering, sent to OpenRouter as
+    # ``reasoning.effort`` (low | medium | high); empty leaves the provider's
+    # default. Measured 2026-09-27: GLM-5.3 at its default spent 9,218 reasoning
+    # tokens and 82 s on one name reading (307 s with a retry); at "medium", 76
+    # tokens and 4.7 s, and the reading still passed the number gate.
+    llm_reasoning_effort: str = ""
+
+    def reasoning_body(self) -> dict:
+        """The ``extra_body`` a completion call sends: the effort, when one is set."""
+        effort = self.llm_reasoning_effort.strip().lower()
+        if not effort:
+            return {}
+        if effort not in ("low", "medium", "high"):
+            raise ValueError(
+                f"RESEARCH_AGENT_LLM_REASONING_EFFORT={effort!r}: one of low, medium, high"
+            )
+        return {"reasoning": {"effort": effort}}
 
     # --- Loop budgets ---
     max_iterations: int = 4
