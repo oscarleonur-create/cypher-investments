@@ -89,6 +89,7 @@ def entry_sheet(
         "zone top",
         "in zone",
         "held",
+        "stale",
     ):
         table.add_column(col, no_wrap=True)
     for s in sheets:
@@ -107,6 +108,7 @@ def entry_sheet(
             "—" if z is None else f"{z.top:,.2f}",
             "—" if z is None else ("yes" if z.in_zone else f"no ({_pct(z.distance)})"),
             "—" if s.holding is None else f"{s.holding.weight * 100:.1f}%",
+            ", ".join(st.input for st in s.stale) or "—",
         )
     console.print(table)
     console.print("* = something changed today (tier A/B event, |z| ≥ 2, or a scanner candidate)")
@@ -162,9 +164,19 @@ def entry_propose(
     output: Annotated[str, typer.Option("--output", "-o")] = "table",
 ) -> None:
     """A sized proposal per name: ENTER / ADD / IN_ZONE / WAIT / NONE, with its reasons."""
+    import sqlite3
+
     from advisor.daemon.market_calendar import now_et
     from advisor.entry.run import propose_all
+    from advisor.learning.actuator import active_entry_params
+    from advisor.research.config import get_settings
 
+    # The same thresholds the daemon runs: the code's, with approved changes.
+    conn = sqlite3.connect(str(get_settings().db_path))
+    try:
+        params = active_entry_params(conn)
+    finally:
+        conn.close()
     store, scanner = _stores()
     entries = _entry_store() if record else None
     try:
@@ -175,6 +187,7 @@ def entry_propose(
             entry_store=entries,
             scanner_store=scanner,
             read=read,
+            params=params,
         )
     finally:
         store.close()
@@ -369,7 +382,7 @@ def entry_skip(
     """Record why you did not act on today's proposals for a name."""
     from datetime import date
 
-    from advisor.daemon.market_calendar import now_et
+    from advisor.daemon.market_calendar import now_et, session_of
     from advisor.scanner.models import DecisionSource, SkipReason, TradeDecision
 
     try:
@@ -378,7 +391,7 @@ def entry_skip(
         raise typer.BadParameter(
             f"reason must be one of: {', '.join(r.value for r in SkipReason)}"
         ) from exc
-    day = date.fromisoformat(session) if session else now_et().date()
+    day = date.fromisoformat(session) if session else session_of(now_et())
     entries = _entry_store()
     daemon_store, scanner = _stores()
     try:

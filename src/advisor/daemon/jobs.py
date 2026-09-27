@@ -33,7 +33,28 @@ class Trigger(Protocol):
 
     def is_due(self, now: datetime, last_run: datetime | None) -> bool: ...
 
+    def last_due(self, now: datetime) -> datetime | None:
+        """The latest moment at or before ``now`` by which a run should have succeeded.
+
+        A job whose last success is older is late. None when nothing was due
+        yet. Slack for a slow tick is included, so a job running on schedule
+        is never reported late.
+        """
+        ...
+
     def describe(self) -> str: ...
+
+
+# A slot that fired this long ago without a success is late, not just running.
+LATE_AFTER = timedelta(minutes=15)
+
+
+def _back_days(now: datetime, days: int = 10):
+    """``now``'s date and the ones before it, newest first."""
+    d = mc.to_et(now).date()
+    for _ in range(days):
+        yield d
+        d -= timedelta(days=1)
 
 
 @dataclass(frozen=True)
@@ -58,6 +79,16 @@ class DailyAt:
         if now - slot > timedelta(hours=self.grace_hours):
             return False
         return last_run is None or mc.to_et(last_run) < slot
+
+    def last_due(self, now: datetime) -> datetime | None:
+        now = mc.to_et(now)
+        for d in _back_days(now):
+            if self.trading_days_only and not mc.is_trading_day(d):
+                continue
+            slot = datetime.combine(d, self.at, tzinfo=mc.MARKET_TZ)
+            if slot + LATE_AFTER <= now:
+                return slot
+        return None
 
     def describe(self) -> str:
         scope = "trading days" if self.trading_days_only else "every day"
@@ -92,6 +123,17 @@ class WindowEvery:
             return True
         return et - last >= timedelta(minutes=self.minutes)
 
+    def last_due(self, now: datetime) -> datetime | None:
+        """One run inside the latest window that has had time for one."""
+        now = mc.to_et(now)
+        for d in _back_days(now):
+            if not mc.is_trading_day(d):
+                continue
+            start = datetime.combine(d, self.start, tzinfo=mc.MARKET_TZ)
+            if start + LATE_AFTER <= now:
+                return start
+        return None
+
     def describe(self) -> str:
         return (
             f"every {self.minutes}m {self.start.strftime('%H:%M')}-"
@@ -119,6 +161,24 @@ class EveryMinutes:
             return True
         return now - mc.to_et(last_run) >= timedelta(minutes=self.minutes)
 
+    def last_due(self, now: datetime) -> datetime | None:
+        """Within two intervals of now in session (or always), else by the last session's end."""
+        now = mc.to_et(now)
+        slack = timedelta(minutes=2 * self.minutes) + LATE_AFTER
+        if not self.during_session_only:
+            return now - slack
+        if mc.is_market_open(now):
+            first = self.not_before or mc.REGULAR_OPEN
+            if now - datetime.combine(now.date(), first, tzinfo=now.tzinfo) >= slack:
+                return now - slack
+        for d in _back_days(now):
+            if not mc.is_trading_day(d):
+                continue
+            close = datetime.combine(d, mc.session_close(d), tzinfo=mc.MARKET_TZ)
+            if close <= now:
+                return close - timedelta(minutes=2 * self.minutes)
+        return None
+
     def describe(self) -> str:
         scope = "during session" if self.during_session_only else "always"
         if self.not_before is not None:
@@ -145,6 +205,10 @@ class AtLeastEvery:
         if last_run is None:
             return True
         return now - mc.to_et(last_run) >= timedelta(days=self.days)
+
+    def last_due(self, now: datetime) -> datetime | None:
+        """A run within ``days`` plus one day of slack for a laptop asleep."""
+        return mc.to_et(now) - timedelta(days=self.days + 1)
 
     def describe(self) -> str:
         return f"every {self.days}d after {self.after.strftime('%H:%M')} ET"

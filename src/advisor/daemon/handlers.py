@@ -403,15 +403,18 @@ async def run_setup_scan(ctx: JobContext) -> JobResult:
     """
     import asyncio
 
-    from advisor.scanner.scan import run_scan
+    from advisor.learning.shadow import scan_with_shadows
 
     # yfinance, Tavily and EDGAR are blocking clients; run them off the loop.
     # The connection must be opened inside that worker thread — sqlite3
     # refuses a connection used from a thread other than its creator's.
-    result = await asyncio.to_thread(_with_scanner_store, ctx.store.db_path, run_scan, ctx.now)
+    # The active thresholds (approved rule changes) are applied; challengers
+    # in shadow decide on the same fetches and are recorded apart.
+    result, shadows = await asyncio.to_thread(scan_with_shadows, ctx.store.db_path, ctx.now)
     ok = result.source_error is None or result.movers_seen > 0
-    logger.info("scan: %s", result.summary())
-    return JobResult(job="scan", ok=ok, detail=result.summary())
+    detail = result.summary() + (f"; {'; '.join(shadows)}" if shadows else "")
+    logger.info("scan: %s", detail)
+    return JobResult(job="scan", ok=ok, detail=detail)
 
 
 async def run_premarket_scan(ctx: JobContext) -> JobResult:
@@ -459,7 +462,14 @@ async def run_scan_outcomes(ctx: JobContext) -> JobResult:
         ctx.now,
     )
     tracked = await asyncio.to_thread(_track_proposals, ctx.store.db_path, ctx.now, sessions)
-    detail = f"{result.summary()}; {taken} newly taken from broker fills; {tracked}"
+    trades = await asyncio.to_thread(_sync_trades, ctx.store.db_path, ctx.now)
+    from advisor.learning.shadow import fill_shadow_outcomes
+
+    shadow = await asyncio.to_thread(fill_shadow_outcomes, ctx.store.db_path, ctx.now)
+    detail = (
+        f"{result.summary()}; {taken} newly taken from broker fills; {tracked}; {trades}; "
+        f"shadow: {shadow}"
+    )
     logger.info("scan_outcomes: %s", detail)
     return JobResult(job="scan_outcomes", ok=True, detail=detail)
 
@@ -480,6 +490,29 @@ def _track_proposals(db_path, now, sessions) -> str:
         scanner.close()
 
 
+def _sync_trades(db_path, now) -> str:
+    """The user's round trips, rebuilt from the whole broker history. Idempotent."""
+    import sqlite3
+
+    from advisor.entry.store import EntryStore
+    from advisor.learning.store import TradeStore
+    from advisor.learning.trades import HISTORY_START, sync_trades
+    from advisor.scanner.store import ScannerStore
+
+    conn = sqlite3.connect(str(db_path))
+    entries, scanner = EntryStore(db_path), ScannerStore(db_path)
+    try:
+        result = sync_trades(TradeStore(conn), scanner, entries, HISTORY_START, now.date())
+        return f"trades: {result.summary()}"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("scan_outcomes: trade sync failed: %s", exc)
+        return f"trades: failed ({exc})"
+    finally:
+        conn.close()
+        entries.close()
+        scanner.close()
+
+
 async def run_entry_proposals(ctx: JobContext) -> JobResult:
     """Hourly in session: a sized proposal per watched name, recorded for tracking.
 
@@ -493,14 +526,24 @@ async def run_entry_proposals(ctx: JobContext) -> JobResult:
         from advisor.daemon.store import DaemonStore
         from advisor.entry.run import propose_all
         from advisor.entry.store import EntryStore
+        from advisor.learning.shadow import EntryShadows
         from advisor.scanner.store import ScannerStore
 
         entries, scanner = EntryStore(db_path), ScannerStore(db_path)
         daemon = DaemonStore(db_path)
+        shadows = EntryShadows(db_path)
         try:
             _verify_stored_news(daemon, now)
-            return propose_all(daemon, now, entry_store=entries, scanner_store=scanner)
+            return propose_all(
+                daemon,
+                now,
+                entry_store=entries,
+                scanner_store=scanner,
+                params=shadows.params,
+                shadow=shadows,
+            )
         finally:
+            shadows.close()
             entries.close()
             scanner.close()
             daemon.close()
@@ -572,11 +615,115 @@ def _with_scanner_store(db_path, fn, now):
         store.close()
 
 
+async def run_learning_sweep(ctx: JobContext) -> JobResult:
+    """Monthly, evenings: search the thresholds over the replay; file survivors as PENDING.
+
+    Proposes only, with one exception the user chose (2026-09-27): each ACTIVE
+    change is re-judged against the code's value on the newest history, and one
+    the history no longer supports expires — the code's value returns and a
+    tier-B notice says so. Every other transition past PENDING is the user's
+    (``advisor learn shadow|activate|reject``). Long — about forty minutes over
+    the broad universe — and entirely off the event loop.
+    """
+    import asyncio
+
+    def _run(db_path, now):
+        import sqlite3
+        from datetime import timedelta
+
+        from advisor.daemon.store import DaemonStore
+        from advisor.daemon.universe import research_symbols
+        from advisor.learning.actuator import ChangeStore, code_values_of_active
+        from advisor.learning.sweep import settle, sweep
+        from advisor.learning.universe import replay_universe
+
+        store = DaemonStore(db_path)
+        try:
+            book = store.load_latest_book()
+            own = research_symbols(book)[0] if book is not None else []
+        finally:
+            store.close()
+        from advisor.learning.actuator import active_entry_params, active_session_thresholds
+
+        symbols, _ = replay_universe(own)
+        end = now.date()
+        conn = sqlite3.connect(str(db_path))
+        try:
+            base_p, base_t = active_entry_params(conn), active_session_thresholds(conn)
+            also = code_values_of_active(ChangeStore(conn))
+        finally:
+            conn.close()
+        result = sweep(
+            symbols,
+            end - timedelta(days=730),
+            end,
+            base_params=base_p,
+            base_thresholds=base_t,
+            also=also,
+        )
+        conn = sqlite3.connect(str(db_path))
+        try:
+            expired = settle(result, ChangeStore(conn))
+        finally:
+            conn.close()
+        return result, expired
+
+    result, expired = await asyncio.to_thread(_run, ctx.store.db_path, ctx.now)
+    emitted = _notify_expired(ctx.store, expired)
+    survived = [v for v in result.verdicts if v.proposed is not None]
+    detail = (
+        f"{result.used}/{result.symbols} symbols; {len(result.verdicts)} thresholds searched; "
+        f"{len(survived)} survived; filed PENDING: {', '.join(result.proposed) or 'none'}; "
+        f"renewed: {', '.join(result.renewed) or 'none'}; "
+        f"expired: {', '.join(c.id for c in expired) or 'none'}"
+    )
+    logger.info("learning_sweep: %s", detail)
+    return JobResult(job="learning_sweep", ok=True, detail=detail, events_emitted=emitted)
+
+
+def _notify_expired(store, changes) -> int:
+    from advisor.learning.actuator import expired_event
+
+    return store.emit_many([expired_event(c) for c in changes])
+
+
+async def run_rule_expiry(ctx: JobContext) -> JobResult:
+    """Daily: every rule change whose evidence no sweep renewed expires; say which.
+
+    The rules in force already ignore an expired change (``in_force``); this
+    marks it EXPIRED so ``learn changes`` and the frontend show it, and sends
+    the tier-B notice. Cheap and idempotent: a second run finds nothing.
+    """
+    import asyncio
+    import sqlite3
+
+    def _run(db_path):
+        from advisor.learning.actuator import ChangeStore
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            return ChangeStore(conn).expire_due()
+        finally:
+            conn.close()
+
+    expired = await asyncio.to_thread(_run, ctx.store.db_path)
+    emitted = _notify_expired(ctx.store, expired)
+    detail = (
+        f"expired: {', '.join(f'{c.id} {c.param}' for c in expired)}" if expired else "nothing due"
+    )
+    logger.info("rule_expiry: %s", detail)
+    return JobResult(job="rule_expiry", ok=True, detail=detail, events_emitted=emitted)
+
+
 async def run_heartbeat(ctx: JobContext) -> JobResult:
     """Liveness tick — proves the supervisor loop is running between jobs.
 
     Advances the DAEMON watermark so `daemon status` can distinguish "the
-    daemon is up and quiet" from "the daemon died three hours ago".
+    daemon is up and quiet" from "the daemon died three hours ago". Its cursor
+    carries the code revision the daemon runs, read when it started, so the
+    frontend can say whether the daemon is behind main.
     """
-    ctx.store.set_watermark(EventSource.DAEMON, last_seen_ts=ctx.now)
+    from advisor.learning.rules import code_rev
+
+    ctx.store.set_watermark(EventSource.DAEMON, last_seen_ts=ctx.now, last_seen_cursor=code_rev())
     return JobResult(job="heartbeat", ok=True, detail="alive")

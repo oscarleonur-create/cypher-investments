@@ -13,7 +13,7 @@ import inspect
 from dataclasses import fields, replace
 
 import pytest
-from advisor.entry import distress, exits, proposal, sheet, zone
+from advisor.entry import distress, exits, freshness, proposal, sheet, zone
 from advisor.entry import ruleset as entry_ruleset
 from advisor.learning.rules import Kind
 from advisor.news import google_news, halts
@@ -49,6 +49,7 @@ ENTRY_MODULES = {
     "halts": halts,
     "google_news": google_news,
     "names": company_names,
+    "freshness": freshness,
 }
 
 

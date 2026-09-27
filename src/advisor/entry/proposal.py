@@ -47,6 +47,12 @@ six points with the assumed margin (META -0.4% to +5.7% on 2026-09-25), too
 fragile to size a position on (user decision, 2026-09-25). AT_RISK still
 blocks, because waiting is the cautious direction.
 
+A stale input blocks too (``entry.freshness``, user decision 2026-09-27): a
+price that is not today's, a book older than an hour in session, filings not
+ingested since the previous close (the tier-A blocker would be blind), and
+for an ADD distress news not read in a day. An intact thesis read against a
+valuation more than ten days old earns no bonus. Exits are never held back.
+
 **Held names** are judged for their exit as well (``entry.exits``): EXIT
 past the stop from the purchase price or on a filing that ends the case,
 TRIM above the book limit, REVIEW for a broken thesis rule, a rich P/S or
@@ -61,11 +67,14 @@ the size is the user's own budget.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from datetime import date, datetime
 from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from advisor.daemon import market_calendar as mc
+from advisor.entry import freshness
 from advisor.entry.ruleset import entry_rules
 from advisor.entry.sheet import Sheet
 from advisor.learning.rules import Origin, RuleStamp
@@ -93,6 +102,47 @@ DIP_SIGMAS = 2.0
 ENTRY_CONFIRM_SESSIONS = 5
 # No new entry when results are due within this many trading sessions (0 = today).
 EARNINGS_GUARD_SESSIONS = 5
+
+
+@dataclass(frozen=True)
+class EntryParams:
+    """The entry rules' thresholds: the only numbers the learning loop may change.
+
+    Built from the module constants by ``current_params()``, so passing nothing
+    runs the code's own rules. A challenger (shadow) or an approved override
+    passes its own, without touching the constants: the daemon runs jobs in
+    threads, and a rule patched globally for one would be patched for all.
+    Risk budgets and the book limit are not here — they are the user's
+    (``decided``) and never searchable.
+    """
+
+    position_stop_min: float
+    position_stop_max: float
+    position_stop_sigmas: float
+    position_stop_sessions: int
+    trade_stop_sigmas: float
+    dip_sigmas: float
+    entry_confirm_sessions: int
+    earnings_guard_sessions: int
+
+
+# field -> the module constant it defaults to (and the name it is declared under).
+PARAM_CONSTANTS = {
+    "position_stop_min": "POSITION_STOP_MIN",
+    "position_stop_max": "POSITION_STOP_MAX",
+    "position_stop_sigmas": "POSITION_STOP_SIGMAS",
+    "position_stop_sessions": "POSITION_STOP_SESSIONS",
+    "trade_stop_sigmas": "TRADE_STOP_SIGMAS",
+    "dip_sigmas": "DIP_SIGMAS",
+    "entry_confirm_sessions": "ENTRY_CONFIRM_SESSIONS",
+    "earnings_guard_sessions": "EARNINGS_GUARD_SESSIONS",
+}
+
+
+def current_params() -> EntryParams:
+    """The thresholds as the code declares them now."""
+    g = globals()
+    return EntryParams(**{f: g[c] for f, c in PARAM_CONSTANTS.items()})
 
 
 class Action(StrEnum):
@@ -124,6 +174,10 @@ class Leg(BaseModel):
     notional: float
     exit_rules: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    # Position leg: the price at which a trim is reviewed (P/S at its 2-year
+    # 80th percentile). Kept as a number so the leg can be scored by its own
+    # exit rules, not only at fixed horizons.
+    target: float | None = None
 
 
 class Reason(BaseModel):
@@ -143,6 +197,10 @@ class Proposal(BaseModel):
     legs: list[Leg] = Field(default_factory=list)
     stance: str | None = None  # the model reading's stance, when one was read
     reading: list[str] = Field(default_factory=list)  # its sentences
+    # Which model and which prompt produced the stance: a stance can block an
+    # entry, so a change of either is a change of the rules.
+    reading_model: str | None = None
+    reading_prompt: str | None = None
     gaps: list[str] = Field(default_factory=list)
     net_liq: float | None = None
     # entry.exits.ExitCall, dumped: why, evidence, would_change, shares. Held names only.
@@ -163,11 +221,12 @@ class Proposal(BaseModel):
         return sum(leg.risk_pct for leg in self.legs)
 
 
-def position_stop_pct(sigma: float | None) -> float | None:
+def position_stop_pct(sigma: float | None, params: EntryParams | None = None) -> float | None:
     if not sigma or sigma <= 0:
         return None
-    pct = POSITION_STOP_SIGMAS * sigma * math.sqrt(POSITION_STOP_SESSIONS)
-    return min(max(pct, POSITION_STOP_MIN), POSITION_STOP_MAX)
+    P = params or current_params()
+    pct = P.position_stop_sigmas * sigma * math.sqrt(P.position_stop_sessions)
+    return min(max(pct, P.position_stop_min), P.position_stop_max)
 
 
 def _size(net_liq: float | None, risk: float, entry: float, stop: float) -> tuple[int, float]:
@@ -177,7 +236,8 @@ def _size(net_liq: float | None, risk: float, entry: float, stop: float) -> tupl
     return max(shares, 0), max(shares, 0) * entry
 
 
-def triggers_for(sheet: Sheet) -> list[str]:
+def triggers_for(sheet: Sheet, params: EntryParams | None = None) -> list[str]:
+    P = params or current_params()
     out = []
     if sheet.candidates:
         out.append(f"scanner setup today: {', '.join(sheet.candidates)}")
@@ -187,14 +247,14 @@ def triggers_for(sheet: Sheet) -> list[str]:
         and z.in_zone
         and prev is not None
         and not prev.in_zone
-        and z.sessions_above >= ENTRY_CONFIRM_SESSIONS
+        and z.sessions_above >= P.entry_confirm_sessions
     ):
         out.append(
             f"entered the zone today after {z.sessions_above} sessions above it: "
             f"P/S {z.ps_now:.2f}x ≤ 2y median {z.median:.2f}x (was {prev.ps_now:.2f}x)"
         )
     m = sheet.move
-    if z is not None and z.in_zone and m is not None and m.z is not None and m.z <= -DIP_SIGMAS:
+    if z is not None and z.in_zone and m is not None and m.z is not None and m.z <= -P.dip_sigmas:
         out.append(f"fell {m.day:+.1%} today ({m.z:+.1f}σ) inside the zone")
     return out
 
@@ -235,6 +295,7 @@ def features_of(sheet: Sheet) -> dict[str, float | int | bool | str | None]:
         "consensus_growth": c.consensus if c else None,
         "required_low": c.low if c else None,
         "required_high": c.high if c else None,
+        "stale": ",".join(s.input for s in sheet.stale) or None,
     }
 
 
@@ -243,22 +304,26 @@ def build_proposal(
     *,
     net_liq: float | None,
     reading=None,
+    params: EntryParams | None = None,
 ) -> Proposal:
-    """One proposal from one sheet. Pure: the reading, if any, is passed in."""
+    """One proposal from one sheet. Pure: the reading and the thresholds are passed in."""
+    P = params or current_params()
     m, z = sheet.move, sheet.zone
     p = Proposal(
         symbol=sheet.symbol,
-        session=sheet.built_at.date(),
+        session=mc.session_of(sheet.built_at),
         built_at=sheet.built_at,
         action=Action.CANNOT_SAY,
         price=m.price if m else None,
         gaps=list(sheet.gaps),
         net_liq=net_liq,
         features=features_of(sheet),
-        rules=entry_rules(),
+        rules=entry_rules(P),
     )
     if reading is not None and getattr(reading, "stance", None) is not None:
         p.stance = reading.stance.value
+        p.reading_model = getattr(reading, "model", None)
+        p.reading_prompt = getattr(reading, "prompt_version", None)
         p.reading = [s.text for s in reading.sentences]
     if m is None:
         p.blockers.append("no price")
@@ -268,7 +333,7 @@ def build_proposal(
         # trade. A held name is still judged for its exit.
         return _held(p, sheet, net_liq) if sheet.holding is not None else p
 
-    p.triggers = triggers_for(sheet)
+    p.triggers = triggers_for(sheet, P)
 
     # Reasons, each with its source.
     if z is not None:
@@ -322,7 +387,12 @@ def build_proposal(
                 source="thesis claims (action card)",
             )
         )
-    cap = MAX_TOTAL_RISK_THESIS if sheet.thesis == "intact" else MAX_TOTAL_RISK
+    # An intact thesis read against a stale valuation earns no extra risk.
+    bonus_stale = [s for s in sheet.stale if s.blocks == freshness.BONUS]
+    thesis_bonus = sheet.thesis == "intact" and not bonus_stale
+    if sheet.thesis == "intact" and bonus_stale:
+        p.gaps.append(f"no thesis bonus: {bonus_stale[0].text}")
+    cap = MAX_TOTAL_RISK_THESIS if thesis_bonus else MAX_TOTAL_RISK
 
     weight = sheet.holding.weight if sheet.holding else 0.0
     held = sheet.holding is not None
@@ -344,12 +414,12 @@ def build_proposal(
     # Position leg.
     position_ok = z is not None and z.in_zone and not z.short and bool(p.triggers)
     if position_ok:
-        stop_pct = position_stop_pct(sigma)
+        stop_pct = position_stop_pct(sigma, P)
         if stop_pct is None:
             p.gaps.append("no volatility estimate: position stop cannot be set")
         else:
             risk = POSITION_RISK_CHEAP if z.percentile <= CHEAP_PERCENTILE else POSITION_RISK
-            if sheet.thesis == "intact":
+            if thesis_bonus:
                 risk += THESIS_BONUS
             risk = min(risk, cap)
             stop = m.price * (1 - stop_pct)
@@ -359,9 +429,9 @@ def build_proposal(
                 entry=m.price,
                 stop=stop,
                 stop_basis=(
-                    f"{POSITION_STOP_SIGMAS:g}·σ·√{POSITION_STOP_SESSIONS} = {stop_pct:.1%} "
+                    f"{P.position_stop_sigmas:g}·σ·√{P.position_stop_sessions} = {stop_pct:.1%} "
                     f"below entry (σ {sigma:.2%}/day), kept in "
-                    f"{POSITION_STOP_MIN * 100:.0f}–{POSITION_STOP_MAX:.0%}"
+                    f"{P.position_stop_min * 100:.0f}–{P.position_stop_max:.0%}"
                 ),
                 risk_pct=risk,
                 shares=shares,
@@ -371,6 +441,7 @@ def build_proposal(
                     f"review a trim above ${z.p80_price:,.2f} "
                     "(P/S at its 2-year 80th percentile)",
                 ],
+                target=z.p80_price,
             )
             at_limit = held and weight >= BOOK_LIMIT
             if sized and not at_limit:
@@ -397,7 +468,7 @@ def build_proposal(
 
     # Trade leg.
     if sheet.candidates and sigma:
-        stop = m.price * (1 - TRADE_STOP_SIGMAS * sigma)
+        stop = m.price * (1 - P.trade_stop_sigmas * sigma)
         used = sum(leg.risk_pct for leg in p.legs)
         risk = min(TRADE_RISK, cap - used)
         if risk > 0:
@@ -406,7 +477,9 @@ def build_proposal(
                 horizon="trade",
                 entry=m.price,
                 stop=stop,
-                stop_basis=f"{TRADE_STOP_SIGMAS}·σ = {TRADE_STOP_SIGMAS * sigma:.1%} below entry",
+                stop_basis=(
+                    f"{P.trade_stop_sigmas}·σ = {P.trade_stop_sigmas * sigma:.1%} below entry"
+                ),
                 risk_pct=risk,
                 shares=shares,
                 notional=notional,
@@ -423,7 +496,7 @@ def build_proposal(
         p.gaps.append("net liq unknown: legs are not sized")
 
     # Only a proposal to act waits on results; a quiet IN_ZONE has nothing to delay.
-    if p.legs and sheet.earnings_in is not None and sheet.earnings_in <= EARNINGS_GUARD_SESSIONS:
+    if p.legs and sheet.earnings_in is not None and sheet.earnings_in <= P.earnings_guard_sessions:
         when = (
             "today"
             if sheet.earnings_in == 0
@@ -433,6 +506,11 @@ def build_proposal(
             f"results due {sheet.next_earnings.isoformat()} ({when}): "
             "wait for the number, not a bet on it"
         )
+    # Stale inputs: the proposal is only as current as its oldest input.
+    if p.legs:
+        for st in sheet.stale:
+            if st.blocks == freshness.ENTRY or (st.blocks == freshness.ADDING and held):
+                p.blockers.append(f"{st.text}: refresh it before entering")
     # Action.
     if p.legs and p.blockers:
         p.action = Action.WAIT

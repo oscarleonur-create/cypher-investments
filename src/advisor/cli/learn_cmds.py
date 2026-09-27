@@ -10,7 +10,13 @@ from rich.table import Table
 
 from advisor.cli.formatters import console, output_error, output_json
 
-app = typer.Typer(name="learn", help="Rule versions and, later, what each one has earned")
+app = typer.Typer(name="learn", help="Rule versions, your trades, and what each rule has earned")
+
+
+def _db() -> sqlite3.Connection:
+    from advisor.research.config import get_settings
+
+    return sqlite3.connect(str(get_settings().db_path))
 
 
 def _current() -> dict[str, str]:
@@ -41,9 +47,8 @@ def rules(
     """Rule versions on file, how many records each produced, and which one runs now."""
     from advisor.learning.rules import PRE_REGISTRY
     from advisor.learning.store import RuleStore
-    from advisor.research.config import get_settings
 
-    conn = sqlite3.connect(str(get_settings().db_path))
+    conn = _db()
     try:
         store = RuleStore(conn)
         if version is not None:
@@ -126,3 +131,619 @@ def _show(store, version: str, output: str) -> None:
     console.print(table)
     if not changed:
         console.print("[dim]identical to the rules running now[/dim]")
+
+
+@app.command("trades")
+def trades(
+    sync: Annotated[
+        bool, typer.Option("--sync/--no-sync", help="Rebuild from the broker history first")
+    ] = False,
+    book: Annotated[
+        Optional[str], typer.Option("--book", help="quick | hold | unclassified")
+    ] = None,
+    show: Annotated[int, typer.Option("--show", help="List the last N trades")] = 0,
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Your round trips per book, what the system matched, and your exits vs the rule's."""
+    from advisor.daemon.market_calendar import now_et
+    from advisor.entry.store import EntryStore
+    from advisor.learning.store import TradeStore
+    from advisor.learning.trades import HISTORY_START, review, sync_trades, unmatched
+    from advisor.research.config import get_settings
+    from advisor.scanner.store import ScannerStore
+
+    conn = _db()
+    try:
+        store = TradeStore(conn)
+        synced = None
+        if sync:
+            path = get_settings().db_path
+            scanner, entries = ScannerStore(path), EntryStore(path)
+            try:
+                synced = sync_trades(store, scanner, entries, HISTORY_START, now_et().date())
+            finally:
+                scanner.close()
+                entries.close()
+            if synced.error:
+                output_error(f"broker unavailable: {synced.error}")
+                return
+        all_trades = store.list(book=book)
+        coverage = _coverage_start(conn)
+    finally:
+        conn.close()
+
+    rows = review(all_trades)
+    missed, before = unmatched(all_trades, coverage)
+    open_ = [t for t in all_trades if not t.closed]
+    if output == "json":
+        output_json(
+            {
+                "sync": synced.summary() if synced else None,
+                "books": rows,
+                "open": len(open_),
+                "coverage_start": coverage.isoformat() if coverage else None,
+                "unmatched_since_coverage": [t.id for t in missed],
+                "before_coverage": before,
+                "trades": [t.model_dump(mode="json") for t in all_trades[-show:]] if show else [],
+            }
+        )
+        return
+    if synced:
+        console.print(f"[dim]{synced.summary()}[/dim]")
+    table = Table(title="Your trades, by book")
+    cols = ("book", "n", "hit", "mean", "median", "P&L", "sessions", "matched", "yours vs rule")
+    for col in cols:
+        table.add_column(col)
+    for r in rows:
+        if "vs_rule" not in r:
+            table.add_row(r["book"], str(r["n"]), "", "", "", f"${r['pnl']:,.0f}", "", "", "")
+            continue
+        vs = r["vs_rule"]
+        cmp_ = f"{vs['yours']:+.2%} vs {vs['rule']:+.2%} (n={vs['n']})" if vs["n"] else "—"
+        table.add_row(
+            r["book"],
+            str(r["n"]),
+            f"{r['hit_rate']:.0%}",
+            f"{r['mean_ret']:+.2%}",
+            f"{r['median_ret']:+.2%}",
+            f"${r['pnl']:,.0f}",
+            f"{r['mean_sessions']:.1f}",
+            str(r["matched"]),
+            cmp_,
+        )
+    console.print(table)
+    since = f"since {coverage}" if coverage else "the system has recorded nothing yet"
+    console.print(
+        f"[dim]{len(open_)} open. {since}: {len(missed)} closed long trades matched no "
+        f"candidate or proposal (things you saw that the system did not); {before} earlier "
+        "trades predate it and are not counted as misses[/dim]"
+    )
+    if show:
+        t2 = Table(title=f"Last {show} trades")
+        for col in ("opened", "symbol", "book", "sessions", "ret", "P&L", "matched"):
+            t2.add_column(col)
+        for t in all_trades[-show:]:
+            t2.add_row(
+                t.entry_session.isoformat(),
+                t.underlying if t.instrument == "Equity" else t.symbol,
+                t.book.value,
+                "open" if not t.closed else str(t.sessions_held),
+                "—" if t.ret is None else f"{t.ret:+.2%}",
+                "—" if t.pnl is None else f"${t.pnl:,.0f}",
+                ", ".join(t.candidate_ids + ([t.proposal_id] if t.proposal_id else [])) or "",
+            )
+        console.print(t2)
+
+
+def _coverage_start(conn: sqlite3.Connection):
+    """The first session anything was recorded by the scanner or the entry module."""
+    from datetime import date
+
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    firsts = [
+        conn.execute(f"SELECT MIN(session) FROM {t}").fetchone()[0]
+        for t in ("scan_candidates", "entry_proposals")
+        if t in tables
+    ]
+    firsts = [f for f in firsts if f]
+    return date.fromisoformat(min(firsts)) if firsts else None
+
+
+@app.command("report")
+def report(
+    ruleset: Annotated[
+        Optional[str],
+        typer.Option("--ruleset", help="scanner.session | scanner.premarket | entry"),
+    ] = None,
+    horizon: Annotated[
+        Optional[list[str]], typer.Option("--horizon", help="Repeatable; default all")
+    ] = None,
+    replay: Annotated[
+        Optional[str],
+        typer.Option("--replay", help="Include a replay run: its id, or 'latest'"),
+    ] = None,
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """What each rule version has earned against its names' own drift, and calibration."""
+    from advisor.learning.evaluate import (
+        Baselines,
+        agreement,
+        chance_edges,
+        evaluate,
+        load_live,
+        load_replay,
+        stance_calibration,
+        stop_calibration,
+        yahoo_closes,
+    )
+    from advisor.research.config import get_settings
+
+    path = get_settings().db_path
+    from advisor.learning.shadow import load_shadow
+
+    # Challengers' records are their own cells (origin "shadow"), never pooled.
+    records = load_live(path) + load_shadow(path)
+    run_id = None
+    if replay:
+        run_id, replayed = load_replay(path, None if replay == "latest" else replay)
+        if run_id is None:
+            output_error("no finished replay run on file")
+            return
+        records += replayed
+    if ruleset:
+        records = [r for r in records if r.ruleset == ruleset]
+    baselines = Baselines(yahoo_closes())
+    cells = evaluate(records, baselines, tuple(horizon) if horizon else None)
+    stops = stop_calibration(records)
+    stances = stance_calibration(records, baselines)
+    chance = chance_edges(cells)
+    agree = agreement(cells)
+    if output == "json":
+        output_json(
+            {
+                "records": len(records),
+                "replay_run": run_id,
+                "cells": [c.as_dict() for c in cells],
+                "edges_expected_by_chance": chance,
+                "stop_calibration": stops,
+                "stance_calibration": stances,
+                "live_vs_replay": agree,
+            }
+        )
+        return
+
+    def pct(x):
+        return "—" if x is None else f"{x:+.2%}"
+
+    table = Table(title=f"What the rules earned ({len(records)} records)")
+    cols = ("ruleset", "version", "group", "h", "n", "sess", "indep", "mean", "vs drift", "95% CI")
+    for col in (*cols, "tail", "verdict"):
+        table.add_column(col)
+    for c in cells:
+        table.add_row(
+            c.ruleset,
+            c.version,
+            c.group,
+            c.horizon,
+            str(c.n),
+            str(c.sessions),
+            str(c.windows),
+            pct(c.mean),
+            pct(c.excess),
+            f"{pct(c.ci[0])} … {pct(c.ci[1])}" if c.ci else "—",
+            pct(c.tail),
+            c.verdict.value,
+        )
+    console.print(table)
+    edges = sum(c.verdict.value == "EDGE" for c in cells)
+    console.print(
+        f"[dim]{edges} EDGE verdicts; about {chance:.1f} would appear by chance across the cells "
+        "with enough data. UNDETERMINED is the honest default.[/dim]"
+    )
+    for s in stops:
+        console.print(
+            f"stops ({s['leg']}): touched {s['observed']:.0%} of {s['n']} vs {s['expected']:.0%} "
+            f"implied by σ — {s['finding']}"
+        )
+    for prompt, s in stances.items():
+        console.print(f"stances (prompt {prompt}, {s['horizon']}): {s['finding']}")
+    for a in agree:
+        mark = "agrees with" if a["agrees"] else "OUTSIDE"
+        console.print(
+            f"live vs replay {a['group']} {a['horizon']}: live {a['live_excess']:+.2%} "
+            f"(n={a['live_n']}) {mark} replay [{a['replay_ci'][0]:+.2%}, {a['replay_ci'][1]:+.2%}]"
+        )
+
+
+@app.command("replay")
+def replay_cmd(
+    years: Annotated[float, typer.Option("--years", help="Replay window, ending today")] = 2.0,
+    symbols: Annotated[
+        Optional[str],
+        typer.Option("--symbols", help="Comma-separated; default the broad universe"),
+    ] = None,
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Run today's rules over history, day by day, with only what was known each day."""
+    from datetime import timedelta
+
+    from advisor.daemon.market_calendar import now_et
+    from advisor.learning.replay import MIN_HISTORY_BARS, ReplayStore, replay_path, run
+    from advisor.learning.universe import replay_universe
+    from advisor.research.config import get_settings
+
+    own: set[str] = set()
+    if symbols:
+        universe = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    else:
+        universe, own = replay_universe(_book_symbols())
+    end = now_et().date()
+    start = end - timedelta(days=int(365 * years))
+    conn = sqlite3.connect(str(replay_path(get_settings().db_path)))
+    try:
+        result = run(
+            ReplayStore(conn),
+            universe,
+            start,
+            end,
+            progress=None if output == "json" else lambda m: console.print(f"[dim]{m}[/dim]"),
+        )
+    finally:
+        conn.close()
+    summary = {**result.summary(), "run_id": result.run_id, "own_symbols": sorted(own)}
+    if output == "json":
+        output_json(summary)
+        return
+    console.print(
+        f"replay {result.run_id}: {result.replayed}/{result.symbols} symbols, "
+        f"{result.proposals} proposals, {result.setups} daily setups; "
+        f"no data: {', '.join(result.no_data) or 'none'}; "
+        f"under {MIN_HISTORY_BARS} sessions: {', '.join(result.short_history) or 'none'}; "
+        f"no SEC/Yahoo series (no zone): {', '.join(result.no_series) or 'none'}"
+    )
+    console.print(f"[dim]advisor learn report --replay {result.run_id}[/dim]")
+
+
+def _book_symbols() -> list[str]:
+    """Held names and watchlists, when a book is on file; [] otherwise."""
+    try:
+        from advisor.daemon.store import DaemonStore
+        from advisor.daemon.universe import research_symbols
+        from advisor.research.config import get_settings
+
+        store = DaemonStore(get_settings().db_path)
+        try:
+            book = store.load_latest_book()
+            return research_symbols(book)[0] if book is not None else []
+        finally:
+            store.close()
+    except Exception:  # noqa: BLE001
+        return []
+
+
+# ── Rule changes: propose, shadow, activate, reject, retire ───────────────
+
+
+def _changes():
+    from advisor.learning.actuator import ChangeStore
+
+    return ChangeStore(_db())
+
+
+def _print_change(c, output: str) -> None:
+    if output == "json":
+        output_json(c.model_dump(mode="json"))
+        return
+    console.print(
+        f"{c.id} {c.status.value}: {c.ruleset} {c.param} {c.previous} → {c.value} "
+        f"({c.source}){' — ' + c.note if c.note else ''}"
+    )
+
+
+@app.command("changes")
+def changes(
+    status: Annotated[
+        Optional[str],
+        typer.Option("--status", help="PENDING|SHADOW|ACTIVE|REJECTED|RETIRED|EXPIRED"),
+    ] = None,
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Rule changes on file and the entry/scanner thresholds in force."""
+    from dataclasses import asdict
+
+    from advisor.learning.actuator import (
+        Status,
+        active_entry_params,
+        active_session_thresholds,
+    )
+
+    store = _changes()
+    try:
+        rows = store.list(status=Status(status.upper()) if status else None)
+        entry = asdict(active_entry_params(store._conn))
+        session = asdict(active_session_thresholds(store._conn))
+    finally:
+        store._conn.close()
+    if output == "json":
+        output_json(
+            {
+                "changes": [
+                    {**c.model_dump(mode="json"), "expires_at": c.expires_at.isoformat()}
+                    for c in rows
+                ],
+                "active": {"entry": entry, "scanner.session": session},
+            }
+        )
+        return
+    table = Table(title="Rule changes")
+    for col in ("id", "status", "ruleset", "param", "from", "to", "source", "expires", "note"):
+        table.add_column(col)
+    for c in rows:
+        live = c.status.value in ("PENDING", "SHADOW", "ACTIVE")
+        table.add_row(
+            c.id,
+            c.status.value,
+            c.ruleset,
+            c.param,
+            str(c.previous),
+            str(c.value),
+            c.source,
+            c.expires_at.date().isoformat() if live else "—",
+            c.note,
+        )
+    console.print(table)
+
+
+@app.command("propose-change")
+def propose_change(
+    ruleset: Annotated[str, typer.Argument(help="entry | scanner.session")],
+    param: Annotated[str, typer.Argument(help="e.g. proposal.TRADE_STOP_SIGMAS")],
+    value: Annotated[float, typer.Argument()],
+    note: Annotated[str, typer.Option("--note", "-n")] = "",
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Propose a threshold change by hand. It does nothing until shadowed or activated."""
+    from advisor.learning.actuator import ChangeError
+
+    store = _changes()
+    try:
+        v = int(value) if float(value).is_integer() else value
+        c = store.propose(ruleset, param, v, source="user", note=note)
+    except ChangeError as exc:
+        output_error(str(exc))
+        return
+    finally:
+        store._conn.close()
+    _print_change(c, output)
+
+
+def _transition(change_id: str, action: str, note: str, output: str) -> None:
+    from advisor.learning.actuator import ChangeError
+
+    store = _changes()
+    try:
+        method = getattr(store, action)
+        c = method(change_id, note) if action in ("reject", "retire") else method(change_id)
+    except ChangeError as exc:
+        output_error(str(exc))
+        return
+    finally:
+        store._conn.close()
+    _print_change(c, output)
+
+
+@app.command("shadow")
+def shadow_cmd(
+    change_id: str, output: Annotated[str, typer.Option("--output", "-o")] = "table"
+) -> None:
+    """Run a proposed change beside the live rules, recorded apart, acted on by nobody."""
+    _transition(change_id, "shadow", "", output)
+
+
+@app.command("activate")
+def activate_cmd(
+    change_id: str, output: Annotated[str, typer.Option("--output", "-o")] = "table"
+) -> None:
+    """Make a change the rule the daemon runs (the next job picks it up)."""
+    _transition(change_id, "activate", "", output)
+
+
+@app.command("reject")
+def reject_cmd(
+    change_id: str,
+    note: Annotated[str, typer.Option("--note", "-n")] = "",
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Decline a proposed or shadowed change."""
+    _transition(change_id, "reject", note, output)
+
+
+@app.command("retire")
+def retire_cmd(
+    change_id: str,
+    note: Annotated[str, typer.Option("--note", "-n")] = "",
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Roll back an active or shadowed change: the code's value returns."""
+    _transition(change_id, "retire", note, output)
+
+
+@app.command("sweep")
+def sweep_cmd(
+    years: Annotated[float, typer.Option("--years", help="Replay window, ending today")] = 2.0,
+    symbols: Annotated[
+        Optional[str],
+        typer.Option("--symbols", help="Comma-separated; default the broad universe"),
+    ] = None,
+    target: Annotated[
+        Optional[list[str]], typer.Option("--target", help="Repeatable, e.g. 'trade stop'")
+    ] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Report, file no proposals")] = False,
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Search each threshold's grid over the replay; file what survives walk-forward (PENDING)."""
+    from datetime import timedelta
+
+    from advisor.daemon.market_calendar import now_et
+    from advisor.learning.actuator import ChangeStore, code_values_of_active
+    from advisor.learning.sweep import settle, sweep
+    from advisor.learning.universe import replay_universe
+
+    if symbols:
+        universe = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    else:
+        universe, _ = replay_universe(_book_symbols())
+    from advisor.learning.actuator import active_entry_params, active_session_thresholds
+
+    end = now_et().date()
+    start = end - timedelta(days=int(365 * years))
+    conn = _db()
+    try:
+        base_p, base_t = active_entry_params(conn), active_session_thresholds(conn)
+        also = code_values_of_active(ChangeStore(conn))
+    finally:
+        conn.close()
+    result = sweep(
+        universe,
+        start,
+        end,
+        only=set(target) if target else None,
+        base_params=base_p,
+        base_thresholds=base_t,
+        also=also,
+        progress=None if output == "json" else lambda m: console.print(f"[dim]{m}[/dim]"),
+    )
+    if not dry_run:
+        conn = _db()
+        try:
+            settle(result, ChangeStore(conn))
+        finally:
+            conn.close()
+    rows = [
+        {
+            "target": v.target,
+            "param": v.param,
+            "current": v.current,
+            "proposed": v.proposed,
+            "reason": v.reason,
+            "evidence": v.evidence,
+        }
+        for v in result.verdicts
+    ]
+    if output == "json":
+        output_json(
+            {
+                "symbols": result.symbols,
+                "used": result.used,
+                "verdicts": rows,
+                "filed": result.proposed,
+                "renewed": result.renewed,
+                "expired": result.expired,
+                "skipped": result.skipped,
+                "dry_run": dry_run,
+            }
+        )
+        return
+    table = Table(title=f"Sweep over {result.used}/{result.symbols} symbols")
+    for col in ("target", "param", "current", "proposed", "why", "OOS Δ", "wins", "tried"):
+        table.add_column(col)
+    for v in result.verdicts:
+        ev = v.evidence
+        delta = ev.get("pooled_oos_delta")
+        table.add_row(
+            v.target,
+            v.param,
+            str(v.current),
+            "—" if v.proposed is None else str(v.proposed),
+            v.reason,
+            "—" if delta is None else f"{delta:+.2%}",
+            str(ev.get("wins", "—")),
+            str(ev.get("variants_tested", "—")),
+        )
+    console.print(table)
+    if result.proposed:
+        console.print(f"filed PENDING: {', '.join(result.proposed)} — see `advisor learn changes`")
+    if result.renewed:
+        console.print(f"renewed (evidence current again): {', '.join(result.renewed)}")
+    if result.expired:
+        console.print(
+            f"[yellow]expired (the code's value returns): {', '.join(result.expired)}[/yellow]"
+        )
+    for s in result.skipped:
+        console.print(f"[dim]not filed: {s}[/dim]")
+    if dry_run:
+        console.print("[dim]dry run: nothing filed[/dim]")
+
+
+@app.command("hypotheses")
+def hypotheses_cmd(
+    generate: Annotated[
+        bool, typer.Option("--generate", help="Ask the model for new ones and test them")
+    ] = False,
+    replay: Annotated[
+        Optional[str], typer.Option("--replay", help="Test on a replay run too: id or 'latest'")
+    ] = "latest",
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Model-proposed hypotheses and the code's verdict on each. They change no rule."""
+    from advisor.learning.evaluate import (
+        Baselines,
+        evaluate,
+        load_live,
+        load_replay,
+        stop_calibration,
+        yahoo_closes,
+    )
+    from advisor.learning.hypotheses import HypothesisStore, generate_and_test
+    from advisor.learning.shadow import load_shadow
+    from advisor.research.config import get_settings
+
+    conn = _db()
+    try:
+        store = HypothesisStore(conn)
+        fresh = []
+        if generate:
+            path = get_settings().db_path
+            records = load_live(path) + load_shadow(path)
+            if replay:
+                _, replayed = load_replay(path, None if replay == "latest" else replay)
+                records += replayed
+            baselines = Baselines(yahoo_closes())
+            cells = evaluate(records, baselines)
+            try:
+                fresh = generate_and_test(
+                    records, cells, stop_calibration(records), baselines, store
+                )
+            except RuntimeError as exc:
+                output_error(str(exc))
+                return
+        rows = store.list()
+    finally:
+        conn.close()
+    if output == "json":
+        output_json({"generated": fresh, "all": rows})
+        return
+    table = Table(title="Hypotheses (proposed by the model, judged by the data)")
+    for col in ("id", "status", "group", "condition", "h", "expect", "matching", "rest", "why"):
+        table.add_column(col)
+
+    def side(s):
+        if not s or s.get("excess") is None:
+            return "—"
+        return f"{s['excess']:+.2%} (n={s['n']}, {s['windows']} win)"
+
+    for r in rows:
+        h, t = r["hypothesis"], r["test"]
+        table.add_row(
+            r["id"],
+            r["status"],
+            h["group"],
+            f"{h['feature']} {h['op']} {h['value']}",
+            h["horizon"],
+            h["expect"],
+            side(t.get("matching")),
+            side(t.get("rest")),
+            h["why"],
+        )
+    console.print(table)
+    console.print("[dim]A SUPPORTED hypothesis is a reason to look, not a rule change.[/dim]")

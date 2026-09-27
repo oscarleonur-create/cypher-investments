@@ -89,6 +89,8 @@ class TestStatus:
             "distress_midday",
             "trading_halts",
             "scan_outcomes",
+            "learning_sweep",
+            "rule_expiry",
             "heartbeat",
         } == names
 

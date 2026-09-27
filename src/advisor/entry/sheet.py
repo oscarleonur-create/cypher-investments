@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from advisor.daemon import market_calendar as mc
 from advisor.daemon.store import DaemonStore
+from advisor.entry.freshness import DISTRESS_JOBS, FILINGS_JOBS, Stale, assess, latest_ok
 from advisor.entry.zone import Absolute, RelativeZone, absolute_context, relative_zone
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,8 @@ class Sheet(BaseModel):
     # trading sessions until it: 0 means today. None when no date is known.
     next_earnings: date | None = None
     earnings_in: int | None = None
+    # Inputs too old to act on (``entry.freshness``), empty when all are current.
+    stale: list[Stale] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
 
     @property
@@ -386,4 +389,15 @@ def build_sheet(
         sheet.candidates = [
             c.id for c in scanner_store.list(session=now.date(), limit=500) if c.symbol == symbol
         ]
+
+    sheet.stale = assess(
+        now,
+        price_asof=sheet.move.asof if sheet.move else None,
+        book_asof=book.as_of if book is not None else None,
+        filings_ok=latest_ok(store, FILINGS_JOBS),
+        held=sheet.holding is not None,
+        distress_ok=latest_ok(store, DISTRESS_JOBS),
+        thesis=sheet.thesis,
+        valuation_asof=snapshot.asof if snapshot is not None else None,
+    )
     return sheet

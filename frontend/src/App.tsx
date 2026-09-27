@@ -5,6 +5,7 @@ import Signals from "./pages/Signals";
 import Ticker from "./pages/Ticker";
 import Theses from "./pages/Theses";
 import ThesisEditor from "./pages/ThesisEditor";
+import Tracking from "./pages/Tracking";
 import Watchlist from "./pages/Watchlist";
 import { useQuotes } from "./lib/useQuotes";
 import { cn } from "./lib/utils";
@@ -38,6 +39,9 @@ export default function App() {
               <NavLink to="/watchlist" className={tabClass}>
                 Watchlist
               </NavLink>
+              <NavLink to="/tracking" className={tabClass}>
+                Tracking
+              </NavLink>
               <NavLink to="/theses" className={tabClass}>
                 Theses
               </NavLink>
@@ -61,6 +65,7 @@ export default function App() {
           <Route path="/" element={<Portfolio quotes={quotes} />} />
           <Route path="/signals" element={<Signals />} />
           <Route path="/watchlist" element={<Watchlist quotes={quotes} />} />
+          <Route path="/tracking" element={<Tracking quotes={quotes} />} />
           <Route path="/theses" element={<Theses />} />
           <Route path="/theses/new" element={<ThesisEditor />} />
           <Route path="/theses/:id" element={<ThesisEditor />} />

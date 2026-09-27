@@ -73,8 +73,16 @@ def propose_all(
     reader=None,
     sheet_builder=build_sheet,
     explainer=None,
+    params=None,
+    shadow=None,
 ) -> tuple[list[Proposal], list[str]]:
-    """Proposals for ``symbols`` (default: held + watchlists). Returns (proposals, errors)."""
+    """Proposals for ``symbols`` (default: held + watchlists). Returns (proposals, errors).
+
+    ``params`` are the entry thresholds in force (default: the code's).
+    ``shadow(sheet, net_liq, reading)`` is called with each final sheet so a
+    challenger can decide on exactly what the live rules saw, reading
+    included; it may not raise into the live run.
+    """
     errors: list[str] = []
     book = daemon_store.load_latest_book()
     if symbols is None:
@@ -103,7 +111,8 @@ def propose_all(
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{symbol}: sheet failed: {exc}")
             continue
-        proposal = build_proposal(sheet, net_liq=net_liq)
+        proposal = build_proposal(sheet, net_liq=net_liq, params=params)
+        used_reading = None
         if read and (sheet.changed or proposal.action in WORTH_READING):
             try:
                 reading = reader(symbol)
@@ -124,7 +133,8 @@ def propose_all(
                 except Exception as exc:  # noqa: BLE001
                     errors.append(f"{symbol}: news pull failed: {exc}")
             if reading is not None and status == "OK":
-                proposal = build_proposal(sheet, net_liq=net_liq, reading=reading)
+                used_reading = reading
+                proposal = build_proposal(sheet, net_liq=net_liq, reading=reading, params=params)
             elif reading is not None:
                 proposal.gaps.append(f"reading {status or 'unavailable'}")
         if entry_store is not None:
@@ -132,5 +142,10 @@ def propose_all(
                 entry_store.add(proposal)
             except ValueError as exc:
                 errors.append(str(exc))
+        if shadow is not None:
+            try:
+                shadow(sheet, net_liq, used_reading)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{symbol}: shadow failed: {exc}")
         out.append(proposal)
     return out, errors
