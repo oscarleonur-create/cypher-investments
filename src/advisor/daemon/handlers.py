@@ -646,7 +646,11 @@ async def run_heartbeat(ctx: JobContext) -> JobResult:
     """Liveness tick — proves the supervisor loop is running between jobs.
 
     Advances the DAEMON watermark so `daemon status` can distinguish "the
-    daemon is up and quiet" from "the daemon died three hours ago".
+    daemon is up and quiet" from "the daemon died three hours ago". Its cursor
+    carries the code revision the daemon runs, read when it started, so the
+    frontend can say whether the daemon is behind main.
     """
-    ctx.store.set_watermark(EventSource.DAEMON, last_seen_ts=ctx.now)
+    from advisor.learning.rules import code_rev
+
+    ctx.store.set_watermark(EventSource.DAEMON, last_seen_ts=ctx.now, last_seen_cursor=code_rev())
     return JobResult(job="heartbeat", ok=True, detail="alive")
