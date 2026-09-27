@@ -545,9 +545,12 @@ def _with_scanner_store(db_path, fn, now):
 async def run_learning_sweep(ctx: JobContext) -> JobResult:
     """Monthly, evenings: search the thresholds over the replay; file survivors as PENDING.
 
-    Proposes only. Nothing here changes a rule: every transition past PENDING
-    is the user's (``advisor learn shadow|activate|reject``). Long — about
-    forty minutes over the broad universe — and entirely off the event loop.
+    Proposes only, with one exception the user chose (2026-09-27): each ACTIVE
+    change is re-judged against the code's value on the newest history, and one
+    the history no longer supports expires — the code's value returns and a
+    tier-B notice says so. Every other transition past PENDING is the user's
+    (``advisor learn shadow|activate|reject``). Long — about forty minutes over
+    the broad universe — and entirely off the event loop.
     """
     import asyncio
 
@@ -557,8 +560,8 @@ async def run_learning_sweep(ctx: JobContext) -> JobResult:
 
         from advisor.daemon.store import DaemonStore
         from advisor.daemon.universe import research_symbols
-        from advisor.learning.actuator import ChangeStore
-        from advisor.learning.sweep import file_proposals, sweep
+        from advisor.learning.actuator import ChangeStore, code_values_of_active
+        from advisor.learning.sweep import settle, sweep
         from advisor.learning.universe import replay_universe
 
         store = DaemonStore(db_path)
@@ -574,6 +577,7 @@ async def run_learning_sweep(ctx: JobContext) -> JobResult:
         conn = sqlite3.connect(str(db_path))
         try:
             base_p, base_t = active_entry_params(conn), active_session_thresholds(conn)
+            also = code_values_of_active(ChangeStore(conn))
         finally:
             conn.close()
         result = sweep(
@@ -582,22 +586,60 @@ async def run_learning_sweep(ctx: JobContext) -> JobResult:
             end,
             base_params=base_p,
             base_thresholds=base_t,
+            also=also,
         )
         conn = sqlite3.connect(str(db_path))
         try:
-            file_proposals(result, ChangeStore(conn))
+            expired = settle(result, ChangeStore(conn))
         finally:
             conn.close()
-        return result
+        return result, expired
 
-    result = await asyncio.to_thread(_run, ctx.store.db_path, ctx.now)
+    result, expired = await asyncio.to_thread(_run, ctx.store.db_path, ctx.now)
+    emitted = _notify_expired(ctx.store, expired)
     survived = [v for v in result.verdicts if v.proposed is not None]
     detail = (
         f"{result.used}/{result.symbols} symbols; {len(result.verdicts)} thresholds searched; "
-        f"{len(survived)} survived; filed PENDING: {', '.join(result.proposed) or 'none'}"
+        f"{len(survived)} survived; filed PENDING: {', '.join(result.proposed) or 'none'}; "
+        f"renewed: {', '.join(result.renewed) or 'none'}; "
+        f"expired: {', '.join(c.id for c in expired) or 'none'}"
     )
     logger.info("learning_sweep: %s", detail)
-    return JobResult(job="learning_sweep", ok=True, detail=detail)
+    return JobResult(job="learning_sweep", ok=True, detail=detail, events_emitted=emitted)
+
+
+def _notify_expired(store, changes) -> int:
+    from advisor.learning.actuator import expired_event
+
+    return store.emit_many([expired_event(c) for c in changes])
+
+
+async def run_rule_expiry(ctx: JobContext) -> JobResult:
+    """Daily: every rule change whose evidence no sweep renewed expires; say which.
+
+    The rules in force already ignore an expired change (``in_force``); this
+    marks it EXPIRED so ``learn changes`` and the frontend show it, and sends
+    the tier-B notice. Cheap and idempotent: a second run finds nothing.
+    """
+    import asyncio
+    import sqlite3
+
+    def _run(db_path):
+        from advisor.learning.actuator import ChangeStore
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            return ChangeStore(conn).expire_due()
+        finally:
+            conn.close()
+
+    expired = await asyncio.to_thread(_run, ctx.store.db_path)
+    emitted = _notify_expired(ctx.store, expired)
+    detail = (
+        f"expired: {', '.join(f'{c.id} {c.param}' for c in expired)}" if expired else "nothing due"
+    )
+    logger.info("rule_expiry: %s", detail)
+    return JobResult(job="rule_expiry", ok=True, detail=detail, events_emitted=emitted)
 
 
 async def run_heartbeat(ctx: JobContext) -> JobResult:

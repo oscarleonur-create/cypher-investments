@@ -443,7 +443,8 @@ def _print_change(c, output: str) -> None:
 @app.command("changes")
 def changes(
     status: Annotated[
-        Optional[str], typer.Option("--status", help="PENDING|SHADOW|ACTIVE|REJECTED|RETIRED")
+        Optional[str],
+        typer.Option("--status", help="PENDING|SHADOW|ACTIVE|REJECTED|RETIRED|EXPIRED"),
     ] = None,
     output: Annotated[str, typer.Option("--output", "-o")] = "table",
 ) -> None:
@@ -466,15 +467,19 @@ def changes(
     if output == "json":
         output_json(
             {
-                "changes": [c.model_dump(mode="json") for c in rows],
+                "changes": [
+                    {**c.model_dump(mode="json"), "expires_at": c.expires_at.isoformat()}
+                    for c in rows
+                ],
                 "active": {"entry": entry, "scanner.session": session},
             }
         )
         return
     table = Table(title="Rule changes")
-    for col in ("id", "status", "ruleset", "param", "from", "to", "source", "note"):
+    for col in ("id", "status", "ruleset", "param", "from", "to", "source", "expires", "note"):
         table.add_column(col)
     for c in rows:
+        live = c.status.value in ("PENDING", "SHADOW", "ACTIVE")
         table.add_row(
             c.id,
             c.status.value,
@@ -483,6 +488,7 @@ def changes(
             str(c.previous),
             str(c.value),
             c.source,
+            c.expires_at.date().isoformat() if live else "—",
             c.note,
         )
     console.print(table)
@@ -579,8 +585,8 @@ def sweep_cmd(
     from datetime import timedelta
 
     from advisor.daemon.market_calendar import now_et
-    from advisor.learning.actuator import ChangeStore
-    from advisor.learning.sweep import file_proposals, sweep
+    from advisor.learning.actuator import ChangeStore, code_values_of_active
+    from advisor.learning.sweep import settle, sweep
     from advisor.learning.universe import replay_universe
 
     if symbols:
@@ -594,6 +600,7 @@ def sweep_cmd(
     conn = _db()
     try:
         base_p, base_t = active_entry_params(conn), active_session_thresholds(conn)
+        also = code_values_of_active(ChangeStore(conn))
     finally:
         conn.close()
     result = sweep(
@@ -603,12 +610,13 @@ def sweep_cmd(
         only=set(target) if target else None,
         base_params=base_p,
         base_thresholds=base_t,
+        also=also,
         progress=None if output == "json" else lambda m: console.print(f"[dim]{m}[/dim]"),
     )
     if not dry_run:
         conn = _db()
         try:
-            file_proposals(result, ChangeStore(conn))
+            settle(result, ChangeStore(conn))
         finally:
             conn.close()
     rows = [
@@ -629,6 +637,8 @@ def sweep_cmd(
                 "used": result.used,
                 "verdicts": rows,
                 "filed": result.proposed,
+                "renewed": result.renewed,
+                "expired": result.expired,
                 "skipped": result.skipped,
                 "dry_run": dry_run,
             }
@@ -653,6 +663,12 @@ def sweep_cmd(
     console.print(table)
     if result.proposed:
         console.print(f"filed PENDING: {', '.join(result.proposed)} — see `advisor learn changes`")
+    if result.renewed:
+        console.print(f"renewed (evidence current again): {', '.join(result.renewed)}")
+    if result.expired:
+        console.print(
+            f"[yellow]expired (the code's value returns): {', '.join(result.expired)}[/yellow]"
+        )
     for s in result.skipped:
         console.print(f"[dim]not filed: {s}[/dim]")
     if dry_run:
