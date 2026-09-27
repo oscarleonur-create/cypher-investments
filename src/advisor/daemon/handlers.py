@@ -262,6 +262,60 @@ def _company_name(symbol: str) -> str | None:
 _NAME_CACHE: dict[str, str | None] = {}
 
 
+def _company_website(symbol: str) -> str | None:
+    """The website a company lists (yfinance), cached per process. None when unknown.
+
+    Used to tell the company's own newsroom from everyone else's reporting
+    (``news.google_news``).
+    """
+    if symbol not in _SITE_CACHE:
+        try:
+            import yfinance as yf
+
+            _SITE_CACHE[symbol] = (yf.Ticker(symbol).info or {}).get("website") or None
+        except Exception as exc:  # noqa: BLE001
+            logger.info("website lookup failed for %s: %s", symbol, exc)
+            return None  # not cached: a network blip should not stick for the process
+    return _SITE_CACHE[symbol]
+
+
+_SITE_CACHE: dict[str, str | None] = {}
+
+
+async def run_trading_halts(ctx: JobContext) -> JobResult:
+    """Every five minutes, 04:00-20:05 on trading days: the exchange's halt feed.
+
+    A halt on a held name that questions the company's standing (T12, H4, H9,
+    H10, H11) is an EXIT on the exchange's word; news pending (T1, T6) is a
+    REVIEW until trading resumes (``entry.exits``). The feed keeps a few
+    days, so a laptop asleep through a halt still sees it on waking.
+    """
+    import asyncio
+
+    from advisor.daemon.universe import build_universe
+    from advisor.news.halts import ended_halts, fetch, halt_events
+
+    try:
+        halts = await asyncio.to_thread(fetch)
+    except Exception as exc:  # noqa: BLE001
+        return JobResult(job="trading_halts", ok=False, detail=f"halt feed failed: {exc}")
+    book = ctx.store.load_latest_book()
+    if book is None:
+        return JobResult(job="trading_halts", ok=False, detail="no book snapshot stored")
+    universe = await asyncio.to_thread(build_universe, book)
+    held_long = {p.underlying.upper() for p in book.positions if p.quantity > 0}
+    watched = {s: s in held_long for s in universe.all_symbols}
+    events = halt_events(halts, watched)
+    events += ended_halts(ctx.store, halts, watched, ctx.now)
+    new = [e for e in events if ctx.store.emit(e)]
+    ours = sorted({f"{e.symbol} {e.payload.get('code')}" for e in new if e.kind == "TRADING_HALT"})
+    detail = f"{len(halts)} halts in the feed, {len(new)} new event(s) on watched names" + (
+        f": {', '.join(ours)}" if ours else ""
+    )
+    logger.info("trading_halts: %s", detail)
+    return JobResult(job="trading_halts", ok=True, detail=detail)
+
+
 async def run_reconcile(ctx: JobContext) -> JobResult:
     """Daily: check every input against an independent source.
 

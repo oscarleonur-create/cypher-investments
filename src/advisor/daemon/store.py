@@ -233,10 +233,14 @@ class DaemonStore:
         tier: EventTier | None = None,
         symbol: str | None = None,
         since: datetime | None = None,
+        kinds: tuple[str, ...] | None = None,
     ) -> list[Event]:
         """Most recent events first, optionally filtered."""
         sql = "SELECT * FROM events WHERE 1=1"
         params: list = []
+        if kinds:
+            sql += f" AND kind IN ({','.join('?' * len(kinds))})"
+            params.extend(kinds)
         if tier is not None:
             sql += " AND tier = ?"
             params.append(tier.value)

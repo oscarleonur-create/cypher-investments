@@ -266,7 +266,7 @@ class TestSweep:
     def test_every_name_is_read_and_graded_ones_stored(self, store):
         searched = []
 
-        def searcher(st, sym, company=None):
+        def searcher(st, sym, company=None, website=None):
             searched.append(sym)
             return 1
 
@@ -278,7 +278,13 @@ class TestSweep:
             )
 
         readings, errors = distress_all(
-            store, ["TE", "CRDO"], NOW, searcher=searcher, reader=reader, names=lambda s: None
+            store,
+            ["TE", "CRDO"],
+            NOW,
+            searcher=searcher,
+            reader=reader,
+            names=lambda s: None,
+            websites=lambda s: None,
         )
         assert searched == ["TE", "CRDO"] and errors == []
         assert [r.status for r in readings] == ["OK", "NO_ITEMS"]
@@ -286,7 +292,7 @@ class TestSweep:
         assert latest_distress(store, "CRDO", NOW) is None
 
     def test_a_failed_search_still_reads_what_is_archived(self, store):
-        def searcher(st, sym, company=None):
+        def searcher(st, sym, company=None, website=None):
             raise TimeoutError("tavily")
 
         readings, errors = distress_all(
@@ -296,6 +302,7 @@ class TestSweep:
             searcher=searcher,
             reader=lambda st, sym, now, company=None: graded(),
             names=lambda s: None,
+            websites=lambda s: None,
         )
         assert readings[0].status == "OK" and "distress search failed: tavily" in errors[0]
 
@@ -309,6 +316,134 @@ class TestSweep:
                 symbol=sym, as_of=now, status="UNAVAILABLE"
             ),
             names=lambda s: None,
+            websites=lambda s: None,
         )
         assert "distress reading UNAVAILABLE" in errors[0]
         assert latest_distress(store, "TE", NOW) is None
+
+
+class TestWires:
+    @pytest.mark.parametrize(
+        "provider",
+        [
+            "businesswire.com",
+            "PR Newswire",
+            "www.globenewswire.com",
+            "accesswire.com",
+            "EIN Presswire",
+        ],
+    )
+    def test_every_press_release_wire_is_one_outlet(self, provider):
+        """A wire distributes whoever pays, law firms' investor alerts included."""
+        assert outlet(provider) == "wire"
+
+    def test_three_wires_are_a_review_not_an_exit(self):
+        r = graded(outlets=("businesswire.com", "prnewswire.com", "globenewswire.com"))
+        r = r.model_copy(update={"outlets": sorted({outlet(i.provider) for i in r.cited})})
+        (c,) = exit_calls(held_sheet(r), net_liq=7_957.51)[0]
+        assert r.outlets == ["wire"] and c.action == "REVIEW"
+
+
+def own_word(outlets=("t1energy.com",)):
+    r = graded(outlets=outlets)
+    cited = [i.model_copy(update={"issuer": i.provider == "t1energy.com"}) for i in r.cited]
+    return r.model_copy(update={"cited": cited})
+
+
+class TestCompanyStatement:
+    def test_the_company_s_own_site_is_an_exit_on_its_own(self):
+        """User decision 2026-09-27: the company's own word needs no second outlet."""
+        (c,) = exit_calls(held_sheet(own_word()), net_liq=7_957.51)[0]
+        assert c.action == "EXIT" and c.rule == "news (company statement)" and c.shares == 50
+        assert "the company itself reports bankruptcy or a restructuring" in c.why
+        assert "t1energy.com" in c.why and "no SEC filing confirms it yet" in c.why
+
+    def test_a_filing_still_labels_it_confirmed(self):
+        f = EventLine(ts=NOW, kind="FILING_BANKRUPTCY", tier="A", text="8-K", items=["1.03"])
+        calls, _, _ = exit_calls(held_sheet(own_word(), filings=[f]), net_liq=7_957.51)
+        assert next(c for c in calls if c.rule.startswith("news")).rule == "news"
+
+    def test_one_outlet_that_is_not_the_company_stays_a_review(self):
+        (c,) = exit_calls(held_sheet(graded(outlets=("reuters",))), net_liq=7_957.51)[0]
+        assert c.action == "REVIEW" and not graded(outlets=("reuters",)).company_said
+
+    def test_the_issuer_flag_reaches_the_reading(self, store):
+        store.emit(
+            Event(
+                ts=NOW - timedelta(days=1),
+                source=EventSource.CALENDAR,
+                kind="NEWS_CONTEXT",
+                tier=EventTier.C,
+                symbol="TE",
+                dedup_key="own",
+                payload={
+                    "title": "T1 Energy files voluntary Chapter 11 petitions",
+                    "provider": "t1energy.com",
+                    "published_at": (NOW - timedelta(days=1)).isoformat(),
+                    "issuer": True,
+                },
+            )
+        )
+        seen = {}
+
+        def complete(system, user):
+            seen["user"] = user
+            return Draft(verdict="EXIT_GRADE", situation="BANKRUPTCY", fact_ids=["N1"])
+
+        r = read_distress(store, "TE", NOW, company="T1 Energy", complete=complete)
+        assert r.company_said and r.cited[0].issuer
+        assert "(t1energy.com, the company itself)" in seen["user"]
+
+
+class TestGoogleInTheSweep:
+    def test_the_sweep_adds_one_free_google_query_and_archives_it(self, store, monkeypatch):
+        from advisor.entry import distress
+        from advisor.news import ingest
+        from advisor.news.models import EntityMatch, MatchMethod, SourceItem, SourceTier
+
+        async def no_tavily(st, sym, **kw):
+            return []
+
+        monkeypatch.setattr(ingest, "explain_symbol", no_tavily)
+        asked = {}
+
+        def google(sym, query, *, company_name=None, website=None, days=3):
+            asked.update(sym=sym, query=query, website=website, days=days)
+            return [
+                SourceItem(
+                    tier=SourceTier.PRIMARY,
+                    provider="t1energy.com",
+                    url="https://news.google.com/rss/articles/abc",
+                    title="T1 Energy files voluntary Chapter 11 petitions",
+                    published_at=NOW - timedelta(hours=3),
+                    entity=EntityMatch(symbol="TE", method=MatchMethod.COMPANY_NAME),
+                    doc_type="COMPANY_STATEMENT",
+                )
+            ]
+
+        n = distress.sweep(
+            store, "TE", company="T1 Energy Inc.", website="https://www.t1energy.com", google=google
+        )
+        assert n == 1 and asked["website"] == "https://www.t1energy.com" and asked["days"] == 3
+        assert asked["query"].startswith('"t1 energy" (bankruptcy OR')
+        (item,) = news_items(store, "TE", NOW)
+        assert item.issuer and item.provider == "t1energy.com"
+
+    def test_a_failed_website_lookup_is_reported_and_the_search_still_runs(self, store):
+        searched = []
+
+        def boom(sym):
+            raise TimeoutError("yfinance")
+
+        _, errors = distress_all(
+            store,
+            ["TE"],
+            NOW,
+            searcher=lambda st, sym, company=None, website=None: searched.append(website),
+            reader=lambda st, sym, now, company=None: DistressReading(
+                symbol=sym, as_of=now, status="NO_ITEMS"
+            ),
+            names=lambda s: "T1 Energy Inc.",
+            websites=boom,
+        )
+        assert searched == [None] and "website lookup failed: yfinance" in errors[0]

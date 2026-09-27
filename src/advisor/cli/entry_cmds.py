@@ -233,7 +233,10 @@ def _print_proposals(proposals) -> None:
 def entry_distress(
     symbols: Annotated[Optional[list[str]], typer.Argument(help="Default: held names")] = None,
     search: Annotated[
-        bool, typer.Option("--search/--no-search", help="Run the Tavily distress search first")
+        bool,
+        typer.Option(
+            "--search/--no-search", help="Run the Tavily and Google News distress searches first"
+        ),
     ] = True,
     output: Annotated[str, typer.Option("--output", "-o")] = "table",
 ) -> None:
@@ -268,7 +271,64 @@ def entry_distress(
         if r.reason:
             console.print(f"  reading: {r.reason}", markup=False, emoji=False)
         for i in r.cited:
-            console.print(f"  {i.id} {i.date} [{i.provider}] {i.title}", markup=False, emoji=False)
+            who = f"{i.provider}, the company itself" if i.issuer else i.provider
+            console.print(f"  {i.id} {i.date} [{who}] {i.title}", markup=False, emoji=False)
+
+
+@app.command("halts")
+def entry_halts(
+    show_all: Annotated[
+        bool, typer.Option("--all", help="Show every halt in the feed, not only watched names")
+    ] = False,
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Exchange trading halts (Nasdaq Trader feed); those on watched names are stored.
+
+    The same step the daemon's ``trading_halts`` job runs every five minutes.
+    """
+    from advisor.daemon.market_calendar import now_et
+    from advisor.daemon.universe import build_universe
+    from advisor.news.halts import ended_halts, fetch, halt_events
+
+    store, scanner = _stores()
+    try:
+        book = store.load_latest_book()
+        if book is None:
+            raise typer.BadParameter("no book snapshot stored")
+        halts = fetch()
+        held_long = {p.underlying.upper() for p in book.positions if p.quantity > 0}
+        watched = {s: s in held_long for s in build_universe(book).all_symbols}
+        events = halt_events(halts, watched) + ended_halts(store, halts, watched, now_et())
+        stored = sum(store.emit(e) for e in events)
+    finally:
+        store.close()
+        scanner.close()
+    shown = [h for h in halts if show_all or h.symbol in watched]
+    if output == "json":
+        output_json(
+            {
+                "in_feed": len(halts),
+                "stored": stored,
+                "halts": [
+                    {**h.model_dump(mode="json"), "grade": h.grade, "held": watched.get(h.symbol)}
+                    for h in shown
+                ],
+            }
+        )
+        return
+    console.print(
+        f"{len(halts)} halts in the feed; {len(shown)} shown; {stored} new event(s) stored",
+        markup=False,
+    )
+    for h in shown:
+        where = "held" if watched.get(h.symbol) else "watched" if h.symbol in watched else ""
+        resumed = h.resumed_at.strftime("%m-%d %H:%M") if h.resumed_at else "still halted"
+        console.print(
+            f"  {h.symbol:<8} {h.code:<5} {h.grade or '-':<6} {h.market:<8} "
+            f"{h.halted_at:%m-%d %H:%M} ET → {resumed}  {where}  {h.label}",
+            markup=False,
+            emoji=False,
+        )
 
 
 @app.command("skip")

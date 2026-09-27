@@ -23,9 +23,14 @@ decisions (2026-09-26):
 Every call carries why, the evidence with its source, and what would change
 it. A call without a rationale is not a call (``EntryStore.add`` refuses it).
 
-Not here yet: news the SEC taxonomy does not map (a report of a possible
-bankruptcy before any filing). That needs the model's reading and a
-corroboration rule, and comes next.
+- **News the taxonomy does not map** (``entry.distress``): an exit-grade
+  report from two or more outlets is an EXIT labeled unconfirmed, one outlet
+  a REVIEW; the company's own website saying it is an EXIT on its own
+  (2026-09-27).
+- **An exchange halt that questions the company's standing** (T12, H4, H9,
+  H10, H11; ``news.halts``) is an EXIT on the exchange's word while it
+  lasts, and a REVIEW once trading resumes; a halt pending news (T1, T6) is
+  a REVIEW until it resumes (2026-09-27).
 """
 
 from __future__ import annotations
@@ -111,8 +116,63 @@ def _filing_call(action, what, label, e, sheet) -> ExitCall:
     )
 
 
+def _halt_calls(sheet) -> list[ExitCall]:
+    """The name's exchange halts: EXIT while a standing halt lasts, REVIEW otherwise."""
+    from advisor.news.halts import EXIT_CODES, REVIEW_CODES
+
+    calls: list[ExitCall] = []
+    seen: set[str] = set()
+    for h in sheet.halts:  # newest first: one call per code
+        code = str(h.get("code") or "")
+        if code in seen or code not in EXIT_CODES | REVIEW_CODES:
+            continue
+        seen.add(code)
+        resumed = h.get("resumed_at")
+        if code in REVIEW_CODES and resumed:
+            continue  # the news it waited for is out; the distress sweep reads it
+        exit_ = code in EXIT_CODES and not resumed
+        since = str(h.get("halted_at") or "")[:16].replace("T", " ")
+        label = EXIT_CODES.get(code) or REVIEW_CODES[code]
+        why = f"{sheet.symbol} {label} ({code} on {h.get('market') or 'its exchange'}, {since} ET)"
+        if exit_:
+            why += "; it cannot be sold while halted: sell when trading resumes"
+        elif resumed:
+            when = str(resumed)[:16].replace("T", " ")
+            why += (
+                f"; no longer in the exchange's halt list by {when} ET"
+                if h.get("resumed_inferred")
+                else f"; trading resumed {when} ET"
+            ) + ", and why the exchange stopped it is the question now"
+        else:
+            why += "; the news comes out when trading resumes"
+        calls.append(
+            ExitCall(
+                action="EXIT" if exit_ else "REVIEW",
+                rule="halt",
+                why=why,
+                evidence=[
+                    Reason(
+                        text=f"{code} halt, {since} ET"
+                        + (
+                            f", resumed {str(resumed)[:16].replace('T', ' ')} ET" if resumed else ""
+                        ),
+                        source=f"Nasdaq Trader trade halts {h.get('url') or ''}".strip(),
+                    )
+                ],
+                would_change=(
+                    "the exchange lifting it with the company's explanation: the halt is "
+                    "the exchange's word, not a report"
+                    if code in EXIT_CODES
+                    else "the news released when trading resumes"
+                ),
+                shares=int(sheet.holding.quantity) if exit_ else None,
+            )
+        )
+    return calls
+
+
 def _news_call(sheet) -> ExitCall | None:
-    """EXIT (unconfirmed) on an exit-grade report from 2+ outlets; REVIEW on one."""
+    """EXIT on an exit-grade report from 2+ outlets or the company's own site; REVIEW on one."""
     from advisor.entry.distress import MIN_OUTLETS_FOR_EXIT, DistressReading, Verdict
 
     if not sheet.distress:
@@ -121,18 +181,23 @@ def _news_call(sheet) -> ExitCall | None:
     if r.verdict is not Verdict.EXIT_GRADE or not r.cited:
         return None
     n = len(r.outlets)
-    exit_ = n >= MIN_OUTLETS_FOR_EXIT
+    own = r.company_said
+    exit_ = own or n >= MIN_OUTLETS_FOR_EXIT
     confirmed = any(c.rule == "filing" and c.action == "EXIT" for c in _filing_calls(sheet))
     status = "confirmed by a filing" if confirmed else "no SEC filing confirms it yet"
-    why = (
-        f"{n} independent outlet{'s' if n != 1 else ''} report {r.label} "
-        f"({', '.join(r.outlets)}); {status}"
-        + ("" if exit_ else f": one outlet is a REVIEW, {MIN_OUTLETS_FOR_EXIT} make an EXIT")
-        + (f". Reading: {r.reason}" if r.reason else "")
-    )
+    if own:
+        site = next(i.provider for i in r.cited if i.issuer)
+        why = f"the company itself reports {r.label} on its own website ({site}); {status}"
+    else:
+        why = (
+            f"{n} independent outlet{'s' if n != 1 else ''} report {r.label} "
+            f"({', '.join(r.outlets)}); {status}"
+            + ("" if exit_ else f": one outlet is a REVIEW, {MIN_OUTLETS_FOR_EXIT} make an EXIT")
+        )
+    why += f". Reading: {r.reason}" if r.reason else ""
     return ExitCall(
         action="EXIT" if exit_ else "REVIEW",
-        rule="news" if confirmed else "news (unconfirmed)",
+        rule="news" if confirmed else "news (company statement)" if own else "news (unconfirmed)",
         why=why,
         evidence=[
             Reason(
@@ -213,6 +278,9 @@ def exit_calls(sheet, *, net_liq: float | None) -> tuple[list[ExitCall], list[Re
     news = _news_call(sheet)
     if news is not None:
         calls.append(news)
+
+    # The exchange stopping the shares.
+    calls.extend(_halt_calls(sheet))
 
     # The user's own thesis.
     if sheet.thesis == "broken":

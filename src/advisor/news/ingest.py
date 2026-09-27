@@ -431,6 +431,8 @@ def context_events(items: list[SourceItem], *, reason: str) -> list[Event]:
                     "confidence": item.entity.confidence,
                     "explains": reason,
                     "lead": lead_for(item),
+                    # Published on the company's own website (news.google_news).
+                    "issuer": item.doc_type == "COMPANY_STATEMENT",
                 },
             )
         )
