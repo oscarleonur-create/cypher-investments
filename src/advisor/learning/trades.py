@@ -6,10 +6,21 @@ long it was held — because "the setup works" and "my trades on it work" are
 different claims, and the gap between them is where the user's own exits
 live.
 
-A trade is an **episode** per (account, instrument): from flat, through any
-adds and partial exits, back to flat. Scaling in and out is one trade, not
-several. An episode still open at the end of the history is OPEN and has no
-outcome yet.
+A trade is **one exit decision and the shares it closed**. Closing fills of
+one session with no opening fill between them are one exit (an order filled
+in pieces). Each exit closes lots: first those opened the same session (a
+buy and sell within a day is a day trade, even inside a longer holding), then
+the oldest (FIFO, the broker's own cost basis). What is still held is one
+OPEN trade at the cost of the lots that remain — the broker's average price.
+
+Why not flat to flat: AAOI was never flat from 2026-05-28 on. As one
+episode it showed 28 shares at $155 (the peak and every buy's average) with
+no outcome, while $1,184 had already been realized in three partial exits
+and the broker held 12 shares at $129.32. Realized money must reach a book
+when it is realized.
+
+An exit that closes lots of different ages is split by book, so a day
+trade on top of a holding counts as quick and the holding as hold.
 
 Books are kept apart (the user's two strategies are never analysed together):
 
@@ -88,9 +99,9 @@ class Trade(BaseModel):
     closed_at: datetime | None = None
     entry_session: date
     exit_session: date | None = None
-    quantity: float  # largest size held
-    entry_price: float  # size-weighted over the opening fills
-    exit_price: float | None = None  # size-weighted over the closing fills
+    quantity: float  # shares (contracts) closed by this exit; still held if OPEN
+    entry_price: float  # cost of those lots, size-weighted
+    exit_price: float | None = None  # size-weighted over the exit's fills
     pnl: float | None = None  # dollars, before fees
     ret: float | None = None  # on the entry price, in the trade's direction
     sessions_held: int | None = None  # trading sessions from entry to exit
@@ -107,7 +118,8 @@ class Trade(BaseModel):
 
     @property
     def id(self) -> str:
-        return f"{self.account}:{self.symbol}:{self.opened_at.isoformat()}"
+        end = self.closed_at.isoformat() if self.closed_at else "open"
+        return f"{self.account}:{self.symbol}:{self.opened_at.isoformat()}:{end}:{self.book.value}"
 
     @property
     def closed(self) -> bool:
@@ -138,11 +150,7 @@ def _next_session(day: date) -> date:
 def classify(t: Trade) -> Book:
     if t.multi_leg or t.sessions_held is None:
         return Book.UNCLASSIFIED
-    if t.sessions_held <= QUICK_MAX_SESSIONS:
-        return Book.QUICK
-    if t.sessions_held >= HOLD_MIN_SESSIONS:
-        return Book.HOLD
-    return Book.UNCLASSIFIED
+    return _book_for(t.sessions_held)
 
 
 def _vwap(fills: list[Execution]) -> float:
@@ -164,11 +172,21 @@ def option_expiry(symbol: str) -> date | None:
         return None
 
 
-def round_trips(executions: list[Execution], today: date | None = None) -> list[Trade]:
-    """Episodes per (account, instrument), flat to flat. Pure given ``today``.
+@dataclass
+class _Lot:
+    fill: Execution
+    left: float  # signed: + long, - short
 
-    A closing fill with no open position before it (history that starts
-    mid-position) is dropped: that trade's entry is outside the window and
+    @property
+    def session(self) -> date:
+        return mc.to_et(self.fill.executed_at).date()
+
+
+def round_trips(executions: list[Execution], today: date | None = None) -> list[Trade]:
+    """Closed trades per exit, and one OPEN trade per instrument still held. Pure given ``today``.
+
+    A close with no open lot before it (history that starts mid-position) is
+    dropped for the part it cannot match: that entry is outside the window and
     cannot be priced. An option still open after its expiry is left OPEN with
     a note: an expiry or assignment arrives as a non-trade transaction this
     does not read, and its price is not guessed.
@@ -184,66 +202,116 @@ def round_trips(executions: list[Execution], today: date | None = None) -> list[
             by_key[(e.account, e.symbol)].append(e)
 
     trades: list[Trade] = []
-    for (_account, _symbol), fills in by_key.items():
+    for fills in by_key.values():
         fills.sort(key=lambda f: f.executed_at)
-        position = 0.0
-        episode: list[Execution] = []
-        for f in fills:
-            if position == 0 and not f.opens:
-                continue  # entered before the window: unpriceable
-            episode.append(f)
-            position += f.signed
-            if abs(position) < 1e-9:
-                trades.append(_trade(episode, closed=True))
-                episode, position = [], 0.0
-        if episode:
-            trades.append(_trade(episode, closed=False))
+        lots: list[_Lot] = []
+        for exit_fills in _walk(fills, lots):
+            trades.extend(_close(exit_fills, lots))
+        if lots:
+            trades.append(_open_trade(lots))
 
     _flag_multi_leg(trades)
     for t in trades:
-        t.book = classify(t)
+        if t.closed:
+            t.book = classify(t)
         expiry = option_expiry(t.symbol) if t.instrument == "Equity Option" else None
         if not t.closed and today is not None and expiry is not None and expiry < today:
             t.notes.append(f"open past its {expiry} expiry: expired or assigned, not read")
-    return sorted(trades, key=lambda t: t.opened_at)
+    return sorted(trades, key=lambda t: (t.opened_at, t.closed_at or t.opened_at))
 
 
-def _trade(fills: list[Execution], *, closed: bool) -> Trade:
-    first = fills[0]
-    direction = "long" if first.action.startswith("Buy") else "short"
-    opens = [f for f in fills if f.opens]
-    closes = [f for f in fills if not f.opens]
-    running, peak = 0.0, 0.0
+def _walk(fills: list[Execution], lots: list[_Lot]):
+    """Yield each exit (its closing fills) in order; opening fills become lots."""
+    pending: list[Execution] = []
     for f in fills:
-        running += f.signed
-        peak = max(peak, abs(running))
-    mult = OPTION_MULTIPLIER if first.instrument == "Equity Option" else 1.0
-    entry = _vwap(opens)
-    t = Trade(
+        if f.opens:
+            if pending:
+                yield pending
+                pending = []
+            lots.append(_Lot(f, f.signed))
+            continue
+        day = mc.to_et(f.executed_at).date()
+        if pending and mc.to_et(pending[0].executed_at).date() != day:
+            yield pending
+            pending = []
+        pending.append(f)
+    if pending:
+        yield pending
+
+
+def _close(exit_fills: list[Execution], lots: list[_Lot]) -> list[Trade]:
+    """Close lots against one exit — same-session lots first, then FIFO. One trade per book."""
+    last = exit_fills[-1]
+    day = mc.to_et(last.executed_at).date()
+    exit_px = _vwap(exit_fills)
+    want = sum(f.quantity for f in exit_fills)
+    # Same-session lots, latest first; then the rest, oldest first.
+    order = [x for x in reversed(lots) if x.session == day] + [x for x in lots if x.session != day]
+    taken: list[tuple[_Lot, float]] = []
+    for lot in order:
+        if want <= 1e-9:
+            break
+        q = min(want, abs(lot.left))
+        if q <= 1e-9:
+            continue
+        taken.append((lot, q))
+        lot.left -= q if lot.left > 0 else -q
+        want -= q
+    lots[:] = [x for x in lots if abs(x.left) > 1e-9]
+    if not taken:
+        return []  # entered before the window: unpriceable
+
+    by_book: dict[Book, list[tuple[_Lot, float]]] = defaultdict(list)
+    for lot, q in taken:
+        held = sessions_between(lot.session, day)
+        by_book[_book_for(held)].append((lot, q))
+    out = []
+    for book, part in by_book.items():
+        first = min(part, key=lambda x: x[0].fill.executed_at)[0]
+        qty = sum(q for _, q in part)
+        cost = sum(q * lot.fill.price for lot, q in part) / qty
+        long_ = first.fill.action.startswith("Buy")
+        sign = 1.0 if long_ else -1.0
+        mult = OPTION_MULTIPLIER if first.fill.instrument == "Equity Option" else 1.0
+        t = _base(first.fill, qty, cost, executions=len(part) + len(exit_fills))
+        t.closed_at = last.executed_at
+        t.exit_session = day
+        t.exit_price = exit_px
+        t.pnl = sign * (exit_px - cost) * qty * mult
+        t.ret = sign * (exit_px / cost - 1) if cost > 0 else None
+        t.sessions_held = sessions_between(t.entry_session, day)
+        t.book = book
+        out.append(t)
+    return out
+
+
+def _open_trade(lots: list[_Lot]) -> Trade:
+    qty = sum(abs(x.left) for x in lots)
+    cost = sum(abs(x.left) * x.fill.price for x in lots) / qty
+    return _base(lots[0].fill, qty, cost, executions=len(lots))
+
+
+def _base(first: Execution, qty: float, cost: float, *, executions: int) -> Trade:
+    return Trade(
         account=first.account,
         underlying=first.underlying.upper(),
         symbol=first.symbol,
         instrument=first.instrument,
-        direction=direction,
+        direction="long" if first.action.startswith("Buy") else "short",
         opened_at=first.executed_at,
         entry_session=mc.to_et(first.executed_at).date(),
-        quantity=peak,
-        entry_price=entry,
-        executions=len(fills),
+        quantity=qty,
+        entry_price=cost,
+        executions=executions,
     )
-    if closed and closes:
-        last = fills[-1]
-        exit_ = _vwap(closes)
-        sign = 1.0 if direction == "long" else -1.0
-        bought = sum(f.price * f.quantity for f in fills if f.action.startswith("Buy"))
-        sold = sum(f.price * f.quantity for f in fills if f.action.startswith("Sell"))
-        t.closed_at = last.executed_at
-        t.exit_session = mc.to_et(last.executed_at).date()
-        t.exit_price = exit_
-        t.pnl = (sold - bought) * mult
-        t.ret = sign * (exit_ / entry - 1) if entry > 0 else None
-        t.sessions_held = sessions_between(t.entry_session, t.exit_session)
-    return t
+
+
+def _book_for(sessions_held: int) -> Book:
+    if sessions_held <= QUICK_MAX_SESSIONS:
+        return Book.QUICK
+    if sessions_held >= HOLD_MIN_SESSIONS:
+        return Book.HOLD
+    return Book.UNCLASSIFIED
 
 
 def _flag_multi_leg(trades: list[Trade]) -> None:
@@ -374,6 +442,7 @@ class SyncResult:
     closed: int = 0
     written: int = 0
     matched: int = 0
+    removed: int = 0
     error: str | None = None
 
     def summary(self) -> str:
@@ -381,7 +450,8 @@ class SyncResult:
             return f"broker unavailable: {self.error}"
         return (
             f"{self.executions} executions → {self.trades} trades ({self.closed} closed); "
-            f"{self.written} written; {self.matched} matched to a candidate or proposal"
+            f"{self.written} written, {self.removed} superseded; "
+            f"{self.matched} matched to a candidate or proposal"
         )
 
 
@@ -423,6 +493,10 @@ def sync_trades(
     )
     for t in trades:
         result.written += trade_store.upsert(t)
+    # Rebuilt whole: a row no longer produced (an OPEN trade whose lots have
+    # since closed, a trade under a superseded id) is gone from the broker's
+    # story and must not linger in the books.
+    result.removed = trade_store.keep_only({t.id for t in trades})
     return result
 
 

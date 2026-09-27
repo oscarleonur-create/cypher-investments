@@ -129,7 +129,7 @@ class RuleStore:
 
 _TRADES_SCHEMA = """\
 CREATE TABLE IF NOT EXISTS trades (
-    id            TEXT NOT NULL PRIMARY KEY,   -- account:instrument:opened_at
+    id            TEXT NOT NULL PRIMARY KEY,   -- account:instrument:opened:closed:book
     account       TEXT NOT NULL,
     underlying    TEXT NOT NULL,
     entry_session TEXT NOT NULL,
@@ -173,6 +173,13 @@ class TradeStore:
         )
         self._conn.commit()
         return 1
+
+    def keep_only(self, ids: set[str]) -> int:
+        """Delete every trade not in ``ids`` (the set just rebuilt). Rows deleted."""
+        stale = [r["id"] for r in self._conn.execute("SELECT id FROM trades") if r["id"] not in ids]
+        self._conn.executemany("DELETE FROM trades WHERE id = ?", [(i,) for i in stale])
+        self._conn.commit()
+        return len(stale)
 
     def list(self, *, book: str | None = None, since: date | None = None) -> list:
         from advisor.learning.trades import Trade

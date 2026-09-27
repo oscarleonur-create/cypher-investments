@@ -55,7 +55,7 @@ class TestEpisodes:
         assert t.pnl == pytest.approx(50) and t.ret == pytest.approx(0.05)
         assert t.sessions_held == 0 and t.book is Book.QUICK
 
-    def test_scaling_in_and_out_is_one_trade(self):
+    def test_one_sessions_exits_close_the_lots_as_one_trade(self):
         fills = [
             ex("Buy to Open", 10, 100, at(MON)),
             ex("Buy to Open", 10, 110, at(MON, 11)),
@@ -321,15 +321,20 @@ class TestStoreAndSync:
         yield c
         c.close()
 
-    def test_upsert_is_idempotent_and_an_open_trade_closes(self, conn):
+    def test_upsert_is_idempotent(self, conn):
         store = TradeStore(conn)
         (open_,) = round_trips([ex("Buy to Open", 1, 10, at(MON))])
         assert store.upsert(open_) == 1 and store.upsert(open_) == 0
-        (closed,) = round_trips(
-            [ex("Buy to Open", 1, 10, at(MON)), ex("Sell to Close", 1, 12, at(TUE))]
-        )
-        assert closed.id == open_.id
-        assert store.upsert(closed) == 1
+
+    def test_an_open_trade_that_closes_replaces_its_row(self, conn):
+        store = TradeStore(conn)
+        buy = ex("Buy to Open", 1, 10, at(MON))
+        sell = ex("Sell to Close", 1, 12, at(TUE))
+        sync_trades(store, None, None, MON, WED, fetch=lambda a, b: ([buy], None))
+        (held,) = store.list()
+        assert not held.closed
+        r = sync_trades(store, None, None, MON, WED, fetch=lambda a, b: ([buy, sell], None))
+        assert r.removed == 1
         (back,) = store.list()
         assert back.closed and back.pnl == pytest.approx(2)
 
@@ -361,3 +366,70 @@ class TestStoreAndSync:
             store.upsert(t)
         assert [t.underlying for t in store.list(book="quick")] == ["A"]
         assert [t.underlying for t in store.list(since=TUE)] == ["B"]
+
+
+class TestLots:
+    """Realized money reaches a book when it is realized (AAOI, 2026-09-27)."""
+
+    def aaoi(self):
+        d = [date(2026, 5, 28), date(2026, 6, 22), date(2026, 7, 2), date(2026, 8, 18)]
+        return [
+            ex("Buy to Open", 10, 170, at(d[0]), symbol="AAOI"),
+            ex("Buy to Open", 10, 161.5, at(d[1]), symbol="AAOI"),
+            ex("Sell to Close", 10, 162.5, at(d[1], 14), symbol="AAOI"),
+            ex("Sell to Close", 5, 116, at(d[2]), symbol="AAOI"),
+            ex("Buy to Open", 4, 133, at(d[3]), symbol="AAOI"),
+        ]
+
+    def test_a_partial_exit_is_realized_while_the_rest_is_held(self):
+        trades = round_trips(self.aaoi())
+        closed = [t for t in trades if t.closed]
+        (held,) = [t for t in trades if not t.closed]
+        assert sum(t.pnl for t in closed) == pytest.approx(10 * 1 + 5 * (116 - 170))
+        # What remains: 5 @ 170 and 4 @ 133, the broker's FIFO average.
+        assert held.quantity == 9
+        assert held.entry_price == pytest.approx((5 * 170 + 4 * 133) / 9)
+
+    def test_a_day_trade_inside_a_holding_is_quick(self):
+        trades = round_trips(self.aaoi())
+        day = next(t for t in trades if t.closed and t.exit_session == date(2026, 6, 22))
+        assert day.book is Book.QUICK and day.entry_price == 161.5
+        assert day.pnl == pytest.approx(10)
+        cut = next(t for t in trades if t.closed and t.exit_session == date(2026, 7, 2))
+        assert cut.book is Book.HOLD and cut.entry_price == 170
+
+    def test_one_exit_across_lots_of_different_ages_is_split_by_book(self):
+        fills = [
+            ex("Buy to Open", 10, 100, at(date(2026, 9, 1))),
+            ex("Buy to Open", 5, 90, at(WED)),
+            ex("Sell to Close", 15, 95, at(WED, 15)),
+        ]
+        trades = round_trips(fills)
+        books = {t.book: t for t in trades}
+        assert set(books) == {Book.QUICK, Book.HOLD}
+        assert books[Book.QUICK].quantity == 5 and books[Book.QUICK].pnl == pytest.approx(25)
+        assert books[Book.HOLD].quantity == 10 and books[Book.HOLD].pnl == pytest.approx(-50)
+        assert len({t.id for t in trades}) == 2
+
+    def test_a_close_partly_before_the_window_prices_only_what_it_can(self):
+        fills = [ex("Buy to Open", 2, 10, at(MON)), ex("Sell to Close", 5, 12, at(TUE))]
+        (t,) = round_trips(fills)
+        assert t.quantity == 2 and t.pnl == pytest.approx(4)
+
+    def test_short_option_lots(self):
+        occ = "AAPL  261016P00200000"
+        fills = [
+            ex("Sell to Open", 2, 3.0, at(MON), symbol=occ, instrument="Equity Option", u="AAPL"),
+            ex("Buy to Close", 1, 1.0, at(WED), symbol=occ, instrument="Equity Option", u="AAPL"),
+        ]
+        trades = round_trips(fills)
+        (closed,) = [t for t in trades if t.closed]
+        (held,) = [t for t in trades if not t.closed]
+        assert closed.direction == "short" and closed.pnl == pytest.approx(200)
+        assert not held.closed and held.quantity == 1 and held.direction == "short"
+
+    def test_ids_are_unique_and_stable(self):
+        a = round_trips(self.aaoi())
+        b = round_trips(list(reversed(self.aaoi())))
+        assert [t.id for t in a] == [t.id for t in b]
+        assert len({t.id for t in a}) == len(a)
