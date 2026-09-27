@@ -354,6 +354,7 @@ function BoardRow({ r }: { r: TrackRow }) {
               {r.held ? `held ${fmtPct(r.weight)}` : "watch"}
             </span>
           </div>
+          <NewsTally s={r.news_summary} />
         </td>
         <td className="px-2 py-2">
           <div className="flex items-center gap-1.5">
@@ -523,6 +524,7 @@ function RowDetail({ r }: { r: TrackRow }) {
             {r.held && r.cost != null && ` · ${fmtNum(r.quantity)} sh at ${fmtNum(r.cost)}`}
           </div>
         )}
+        <NewsList news={r.news} />
       </div>
       <div>
         <div className="text-xs uppercase tracking-wide text-muted">Trades</div>
@@ -571,5 +573,107 @@ function TradeRow({ t }: { t: TrackTrade }) {
         {t.call ? (followed ? `followed ${t.call}` : `against ${t.call}`) : "no call"}
       </td>
     </tr>
+  );
+}
+
+// ── The news agent: context only, measured before it may decide anything ───
+
+const DIR_STYLE: Record<string, string> = {
+  POSITIVE: "text-pos",
+  NEGATIVE: "text-neg",
+  MIXED: "text-warn",
+  NEUTRAL: "text-muted",
+};
+
+/** Material calls of the last week: ▲ positive, ▼ negative, and thesis hits. */
+function NewsTally({ s }: { s: TrackRow["news_summary"] }) {
+  if (!s || !s.items) return null;
+  const parts = [
+    s.positive ? (
+      <span key="p" className="text-pos">
+        ▲{s.positive}
+      </span>
+    ) : null,
+    s.negative ? (
+      <span key="n" className="text-neg">
+        ▼{s.negative}
+      </span>
+    ) : null,
+    s.mixed ? (
+      <span key="m" className="text-warn">
+        ◆{s.mixed}
+      </span>
+    ) : null,
+    s.against_thesis ? (
+      <span
+        key="a"
+        className="text-neg"
+        title="items the agent reads as evidence against your thesis"
+      >
+        ✕thesis {s.against_thesis}
+      </span>
+    ) : null,
+  ].filter(Boolean);
+  return (
+    <div
+      className="mt-0.5 flex items-center gap-1.5 text-[11px]"
+      title={`news, last 7 days: ${s.items} item(s), ${s.about ?? 0} about the company; material calls shown`}
+    >
+      <span className="text-muted">news</span>
+      {parts.length ? parts : <span className="text-muted">{s.items} low</span>}
+    </div>
+  );
+}
+
+const MATERIALITY = ["HIGH", "MEDIUM", "LOW"];
+
+function NewsList({ news }: { news: TrackRow["news"] }) {
+  if (!news || news.length === 0) return null;
+  const shown = [...news].sort(
+    (a, b) =>
+      Number(b.about_company) - Number(a.about_company) ||
+      MATERIALITY.indexOf(a.materiality) - MATERIALITY.indexOf(b.materiality)
+  );
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-wide text-muted">
+        News, last 7 days · news agent (context only, being measured)
+      </div>
+      <ul className="mt-1 space-y-1.5">
+        {shown.map((n) => (
+          <li key={`${n.published_at}-${n.title}`} className="text-xs">
+            <div className="flex flex-wrap items-baseline gap-1.5">
+              <span className={cn("font-medium", DIR_STYLE[n.direction])}>
+                {n.about_company ? n.direction.toLowerCase() : "off-topic"}
+              </span>
+              {n.about_company && (
+                <span className="text-muted">
+                  {n.materiality.toLowerCase()} · {n.event_type.toLowerCase()} ·{" "}
+                  {n.novelty.toLowerCase().replace("_", " ")} · {n.basis.toLowerCase()}
+                </span>
+              )}
+              {n.thesis.map((t) => (
+                <span key={t} className={t.startsWith("against") ? "text-neg" : "text-pos"}>
+                  {t} thesis
+                </span>
+              ))}
+            </div>
+            <div className={n.about_company ? "" : "text-muted"}>
+              {n.url ? (
+                <a href={n.url} target="_blank" rel="noreferrer" className="hover:underline">
+                  {n.title}
+                </a>
+              ) : (
+                n.title
+              )}{" "}
+              <span className="text-muted">
+                — {n.provider}, {fmtEt(n.published_at)}
+              </span>
+            </div>
+            {n.about_company && <div className="text-muted">{n.why}</div>}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

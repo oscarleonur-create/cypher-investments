@@ -963,7 +963,30 @@ export interface TrackLatest {
   legs: Record<string, unknown>[];
 }
 
+/** One news item judged by the news agent: context only, never an action. */
+export interface TrackNews {
+  published_at: string;
+  title: string;
+  provider: string;
+  url: string | null;
+  about_company: boolean;
+  direction: "POSITIVE" | "NEGATIVE" | "MIXED" | "NEUTRAL";
+  materiality: "HIGH" | "MEDIUM" | "LOW";
+  event_type: string;
+  novelty: string;
+  basis: string;
+  why: string;
+  thesis: string[];
+}
+
 export interface TrackRow {
+  news: TrackNews[];
+  news_summary: Partial<
+    Record<
+      "items" | "about" | "positive" | "negative" | "mixed" | "high" | "against_thesis" | "for_thesis",
+      number
+    >
+  >;
   symbol: string;
   held: boolean;
   quantity: number;

@@ -20,6 +20,7 @@ from advisor.entry.proposal import Action, Proposal, position_stop_pct
 
 TIMELINE_SESSIONS = 30
 CLOSED_TRADES_SHOWN = 10
+NEWS_DAYS = 7  # the news agent's judgments a row shows
 
 
 class Point(BaseModel):
@@ -68,6 +69,23 @@ class Latest(BaseModel):
     legs: list[dict] = Field(default_factory=list)
 
 
+class NewsLine(BaseModel):
+    """One judged item: context only, never an action (user decision, 2026-09-27)."""
+
+    published_at: datetime
+    title: str
+    provider: str
+    url: str | None = None
+    about_company: bool
+    direction: str
+    materiality: str
+    event_type: str
+    novelty: str
+    basis: str
+    why: str
+    thesis: list[str] = Field(default_factory=list)  # "against (INVALIDATION)" ...
+
+
 class Row(BaseModel):
     symbol: str
     held: bool
@@ -85,6 +103,8 @@ class Row(BaseModel):
     realized: float = 0.0  # dollars, every closed trade on file
     wins: int = 0
     losses: int = 0
+    news: list[NewsLine] = Field(default_factory=list)
+    news_summary: dict[str, int] = Field(default_factory=dict)
 
 
 def _latest(p: Proposal) -> Latest:
@@ -182,12 +202,39 @@ def _trade_line(t, calls: dict[tuple[str, date], str]) -> TradeLine:
     )
 
 
+def _news_line(j) -> NewsLine:
+    return NewsLine(
+        published_at=j.published_at,
+        title=j.title,
+        provider=j.provider,
+        url=j.url,
+        about_company=j.about_company,
+        direction=j.direction.value,
+        materiality=j.materiality.value,
+        event_type=j.event_type.value,
+        novelty=j.novelty.value,
+        basis=j.basis.value,
+        why=j.why,
+        thesis=[f"{'against' if c.against_thesis else 'for'} ({c.kind})" for c in j.claims],
+    )
+
+
 def build_board(
     proposals: list[Proposal],
     trades: list,
     book,
+    news: list | None = None,
 ) -> list[Row]:
-    """Every name held or proposed on, held names first, largest first."""
+    """Every name held or proposed on, held names first, largest first.
+
+    ``news``: the news agent's judgments; a name with news but no proposal and
+    no position is not given a row of its own.
+    """
+    from advisor.news.judge import summary
+
+    news_by: dict[str, list] = {}
+    for j in news or []:
+        news_by.setdefault(j.symbol.upper(), []).append(j)
     by_symbol: dict[str, list[Proposal]] = {}
     for p in proposals:
         by_symbol.setdefault(p.symbol.upper(), []).append(p)
@@ -242,6 +289,9 @@ def build_board(
         closed = sorted((t for t in mine if t.closed), key=lambda t: t.closed_at, reverse=True)
         row.open_trades = [_trade_line(t, calls) for t in mine if not t.closed]
         row.closed_trades = [_trade_line(t, calls) for t in closed[:CLOSED_TRADES_SHOWN]]
+        mine_news = sorted(news_by.get(sym, []), key=lambda j: j.published_at, reverse=True)
+        row.news = [_news_line(j) for j in mine_news]
+        row.news_summary = summary(mine_news) if mine_news else {}
         row.realized = sum(t.pnl or 0.0 for t in closed)
         row.wins = sum(1 for t in closed if (t.pnl or 0) > 0)
         row.losses = sum(1 for t in closed if (t.pnl or 0) < 0)
@@ -257,6 +307,7 @@ def load_board(db_path, now: datetime, *, sessions: int = TIMELINE_SESSIONS) -> 
     from advisor.daemon.store import DaemonStore
     from advisor.entry.store import EntryStore
     from advisor.learning.store import TradeStore
+    from advisor.news.judge import NewsJudgmentStore, prompt_version
 
     since = now.date() - timedelta(days=int(sessions * 1.6) + 7)
     entries, daemon = EntryStore(db_path), DaemonStore(db_path)
@@ -265,8 +316,11 @@ def load_board(db_path, now: datetime, *, sessions: int = TIMELINE_SESSIONS) -> 
         proposals = entries.list(since=since)
         book = daemon.load_latest_book()
         trades = TradeStore(conn).list()
+        news = NewsJudgmentStore(conn).list(
+            since=now - timedelta(days=NEWS_DAYS), version=prompt_version()
+        )
     finally:
         entries.close()
         daemon.close()
         conn.close()
-    return build_board(proposals, trades, book)
+    return build_board(proposals, trades, book, news)

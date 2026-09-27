@@ -642,6 +642,54 @@ async def run_rule_expiry(ctx: JobContext) -> JobResult:
     return JobResult(job="rule_expiry", ok=True, detail=detail, events_emitted=emitted)
 
 
+async def run_news_judge(ctx: JobContext) -> JobResult:
+    """Judge every new news item on held, watched and Swing names; fill what followed.
+
+    Context and measurement only (user decision, 2026-09-27): nothing is
+    emitted and no action changes. Reads only items already archived, so no
+    search credit is spent. Idempotent: an item is judged once per prompt.
+    """
+    import asyncio
+
+    book = ctx.store.load_latest_book()
+    if book is None:
+        return JobResult(job="news_judge", ok=True, detail="no book snapshot stored")
+    symbols, _errors = await _research_symbols(book)
+
+    def _run(db_path, now, symbols):
+        import sqlite3
+
+        from advisor.daemon.store import DaemonStore
+        from advisor.learning.evaluate import yahoo_closes
+        from advisor.news.judge import fill_outcomes, judge_all
+
+        store, conn = DaemonStore(db_path), sqlite3.connect(str(db_path))
+        try:
+            judged, problems = judge_all(store, conn, symbols, now, names=_company_name)
+            filled = fill_outcomes(conn, yahoo_closes(years=1))
+            return judged, problems, filled
+        finally:
+            store.close()
+            conn.close()
+
+    judged, problems, filled = await asyncio.to_thread(_run, ctx.store.db_path, ctx.now, symbols)
+    material = [j for j in judged if j.about_company and j.materiality.value != "LOW"]
+    detail = (
+        f"{len(symbols)} names; {len(judged)} item(s) judged, {len(material)} material"
+        + (
+            f" ({', '.join(f'{j.symbol} {j.direction.value}' for j in material[:5])})"
+            if material
+            else ""
+        )
+        + f"; outcomes filled on {filled}"
+    )
+    if problems:
+        detail += f"; {len(problems)} problem(s): {problems[0]}"
+    logger.info("news_judge: %s", detail)
+    failed = any("model failed" in p or "no model" in p for p in problems)
+    return JobResult(job="news_judge", ok=not (failed and not judged), detail=detail)
+
+
 async def run_heartbeat(ctx: JobContext) -> JobResult:
     """Liveness tick — proves the supervisor loop is running between jobs.
 

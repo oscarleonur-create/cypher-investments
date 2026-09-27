@@ -59,6 +59,8 @@ class TestRegistry:
             "distress_midday",
             "scan_outcomes",
             "learning_sweep",
+            "news_judge",
+            "news_judge_close",
             "rule_expiry",
             "heartbeat",
         }
