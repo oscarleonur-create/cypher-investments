@@ -89,6 +89,7 @@ def entry_sheet(
         "zone top",
         "in zone",
         "held",
+        "stale",
     ):
         table.add_column(col, no_wrap=True)
     for s in sheets:
@@ -107,6 +108,7 @@ def entry_sheet(
             "—" if z is None else f"{z.top:,.2f}",
             "—" if z is None else ("yes" if z.in_zone else f"no ({_pct(z.distance)})"),
             "—" if s.holding is None else f"{s.holding.weight * 100:.1f}%",
+            ", ".join(st.input for st in s.stale) or "—",
         )
     console.print(table)
     console.print("* = something changed today (tier A/B event, |z| ≥ 2, or a scanner candidate)")

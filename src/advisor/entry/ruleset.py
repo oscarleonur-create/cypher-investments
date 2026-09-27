@@ -4,8 +4,8 @@ The kinds follow the user's decisions of 2026-09-25: risk budgets, the book
 limit and the two-year window are theirs (``decided``) and the learning loop
 may never search them; what qualifies as a trigger and where a stop sits are
 ``threshold``s it may propose changing. A test fails if ``proposal``, ``zone``,
-``sheet`` or ``exits`` gains a constant that is neither declared here nor listed as not
-a rule.
+``sheet``, ``exits``, ``distress`` or ``freshness`` gains a constant that is
+neither declared here nor listed as not a rule.
 """
 
 from __future__ import annotations
@@ -58,6 +58,15 @@ DECLARED: dict[str, dict[str, Kind]] = {
         "REVIEW_KINDS": Kind.DECIDED,
         "SEVERITY": Kind.DECIDED,
     },
+    # How old an input may be before it cannot open a position (user decision,
+    # 2026-09-27): decided, so the loop can never loosen a guard on its own inputs.
+    "freshness": {
+        "BOOK_MAX_AGE_MINUTES": Kind.DECIDED,
+        "DISTRESS_MAX_AGE_HOURS": Kind.DECIDED,
+        "VALUATION_MAX_AGE_DAYS": Kind.DECIDED,
+        "FILINGS_JOBS": Kind.MODEL,
+        "DISTRESS_JOBS": Kind.MODEL,
+    },
     # News read for distress: the outlet count is the user's (2026-09-26); what
     # counts as exit-grade is the prompt, so the prompt is versioned too.
     "distress": {
@@ -80,6 +89,9 @@ NOT_RULES: dict[str, str] = {
     "distress.DISTRESS_REASONS": "the names of the searches, recorded on their events",
     "distress.LABELS": "display text for each situation",
     "proposal.PARAM_CONSTANTS": "a map from EntryParams fields to the constants above",
+    "freshness.ENTRY": "the name of what a stale input blocks",
+    "freshness.ADDING": "the name of what a stale input blocks",
+    "freshness.BONUS": "the name of what a stale input blocks",
 }
 
 
@@ -87,7 +99,7 @@ def entry_rules(params=None) -> RuleStamp:
     """The version of the rules ``build_proposal`` runs with ``params`` (default: the code's)."""
     from dataclasses import asdict
 
-    from advisor.entry import distress, exits, proposal, sheet, zone
+    from advisor.entry import distress, exits, freshness, proposal, sheet, zone
 
     modules = {
         "proposal": proposal,
@@ -95,6 +107,7 @@ def entry_rules(params=None) -> RuleStamp:
         "sheet": sheet,
         "exits": exits,
         "distress": distress,
+        "freshness": freshness,
     }
     declared = {
         f"{mod}.{name}": (getattr(modules[mod], name), kind)
