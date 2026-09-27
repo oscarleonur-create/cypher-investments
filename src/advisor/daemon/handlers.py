@@ -332,15 +332,18 @@ async def run_setup_scan(ctx: JobContext) -> JobResult:
     """
     import asyncio
 
-    from advisor.scanner.scan import run_scan
+    from advisor.learning.shadow import scan_with_shadows
 
     # yfinance, Tavily and EDGAR are blocking clients; run them off the loop.
     # The connection must be opened inside that worker thread — sqlite3
     # refuses a connection used from a thread other than its creator's.
-    result = await asyncio.to_thread(_with_scanner_store, ctx.store.db_path, run_scan, ctx.now)
+    # The active thresholds (approved rule changes) are applied; challengers
+    # in shadow decide on the same fetches and are recorded apart.
+    result, shadows = await asyncio.to_thread(scan_with_shadows, ctx.store.db_path, ctx.now)
     ok = result.source_error is None or result.movers_seen > 0
-    logger.info("scan: %s", result.summary())
-    return JobResult(job="scan", ok=ok, detail=result.summary())
+    detail = result.summary() + (f"; {'; '.join(shadows)}" if shadows else "")
+    logger.info("scan: %s", detail)
+    return JobResult(job="scan", ok=ok, detail=detail)
 
 
 async def run_premarket_scan(ctx: JobContext) -> JobResult:
@@ -389,7 +392,13 @@ async def run_scan_outcomes(ctx: JobContext) -> JobResult:
     )
     tracked = await asyncio.to_thread(_track_proposals, ctx.store.db_path, ctx.now, sessions)
     trades = await asyncio.to_thread(_sync_trades, ctx.store.db_path, ctx.now)
-    detail = f"{result.summary()}; {taken} newly taken from broker fills; {tracked}; {trades}"
+    from advisor.learning.shadow import fill_shadow_outcomes
+
+    shadow = await asyncio.to_thread(fill_shadow_outcomes, ctx.store.db_path, ctx.now)
+    detail = (
+        f"{result.summary()}; {taken} newly taken from broker fills; {tracked}; {trades}; "
+        f"shadow: {shadow}"
+    )
     logger.info("scan_outcomes: %s", detail)
     return JobResult(job="scan_outcomes", ok=True, detail=detail)
 
@@ -446,13 +455,23 @@ async def run_entry_proposals(ctx: JobContext) -> JobResult:
         from advisor.daemon.store import DaemonStore
         from advisor.entry.run import propose_all
         from advisor.entry.store import EntryStore
+        from advisor.learning.shadow import EntryShadows
         from advisor.scanner.store import ScannerStore
 
         entries, scanner = EntryStore(db_path), ScannerStore(db_path)
         daemon = DaemonStore(db_path)
+        shadows = EntryShadows(db_path)
         try:
-            return propose_all(daemon, now, entry_store=entries, scanner_store=scanner)
+            return propose_all(
+                daemon,
+                now,
+                entry_store=entries,
+                scanner_store=scanner,
+                params=shadows.params,
+                shadow=shadows,
+            )
         finally:
+            shadows.close()
             entries.close()
             scanner.close()
             daemon.close()
