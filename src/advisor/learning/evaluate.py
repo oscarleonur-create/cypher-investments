@@ -63,9 +63,46 @@ HORIZON_SESSIONS: dict[str, int] = {
     "d20": 20,
     "d60": 60,
     "d120": 120,
+    # Realized legs. trade_exit: the trade leg as its rule runs it (its stop if
+    # touched, else the next close). pos_exit: the position leg by its own
+    # exit rules; its length varies per record (pos_exit_sessions), so its
+    # baseline and blocks use each record's own holding period.
+    "trade_exit": 1,
+    "pos_exit": 0,
 }
 # The worst excursion that goes with each return horizon, where recorded.
 TAIL_FOR = {"close": "mae", "d20": "mae20", "d120": "mae120"}
+
+# A proposal is judged on the horizons of the legs it proposed. An entry out
+# by tomorrow's close is not judged on where the price was 60 sessions later.
+LEG_HORIZONS: dict[str, tuple[str, ...]] = {
+    "trade": ("trade_exit", "next_close"),
+    "position": ("pos_exit", "d20", "d60", "d120"),
+    "trade+position": ("trade_exit", "next_close", "pos_exit", "d20", "d60", "d120"),
+    # No leg (IN_ZONE, NONE): the reference the others are read against.
+    "no leg": ("next_close", "d5", "d20", "d60", "d120"),
+}
+
+
+def legs_label(horizons) -> str:
+    kinds = {h for h in horizons if h in ("trade", "position")}
+    if kinds == {"trade", "position"}:
+        return "trade+position"
+    return next(iter(kinds)) if kinds else "no leg"
+
+
+def _trade_exit(outcomes: dict, stop_pct: float | None) -> float | None:
+    """The trade leg's realized return: its stop if touched, else the next close."""
+    touched, nxt = outcomes.get("trade_stop"), outcomes.get("next_close")
+    if touched is None or stop_pct is None:
+        return None
+    return -stop_pct if touched >= 1.0 else nxt
+
+
+def horizons_for(group: str) -> tuple[str, ...]:
+    if " · " in group:
+        return LEG_HORIZONS.get(group.split(" · ", 1)[1], tuple(HORIZON_SESSIONS))
+    return tuple(h for h in HORIZON_SESSIONS if h not in ("trade_exit", "pos_exit"))
 
 
 class Verdict(StrEnum):
@@ -112,13 +149,16 @@ def from_proposal(p) -> Record:
     for horizon, g in legs.items():
         if g.entry:
             extra[f"{horizon}_stop_pct"] = 1 - g.stop / g.entry
+    outcomes = dict(p.outcomes)
+    if "trade" in legs:
+        outcomes["trade_exit"] = _trade_exit(outcomes, extra.get("trade_stop_pct"))
     return Record(
         ruleset=p.rules.ruleset if p.rules else "entry",
         version=p.rules.version if p.rules else PRE_REGISTRY,
-        group=f"action {p.action.value}",
+        group=f"action {p.action.value} · {legs_label(legs)}",
         session=p.session,
         symbol=p.symbol.upper(),
-        outcomes=dict(p.outcomes),
+        outcomes=outcomes,
         origin=getattr(getattr(p, "origin", None), "value", "live"),
         extra=extra,
     )
@@ -234,13 +274,18 @@ class Cell:
 def evaluate(
     records: list[Record], baselines: Baselines, horizons: tuple[str, ...] | None = None
 ) -> list[Cell]:
-    """One cell per (ruleset, version, group, origin, horizon) with any outcome."""
+    """One cell per (ruleset, version, group, origin, horizon) with any outcome.
+
+    Proposals are grouped by action *and* legs, and each group is judged only
+    on its legs' horizons (``LEG_HORIZONS``).
+    """
     groups: dict[tuple[str, str, str, str], list[Record]] = defaultdict(list)
     for r in records:
         groups[(r.ruleset, r.version, r.group, r.origin)].append(r)
     cells = []
     for (ruleset, version, group, origin), members in sorted(groups.items()):
-        for horizon, k in HORIZON_SESSIONS.items():
+        for horizon in horizons_for(group):
+            k = HORIZON_SESSIONS[horizon]
             if horizons and horizon not in horizons:
                 continue
             have = [r for r in members if r.outcomes.get(horizon) is not None]
@@ -249,13 +294,21 @@ def evaluate(
             rets = [r.outcomes[horizon] for r in have]
             excess, unbased = [], 0
             base_vals = []
+            held = []
             for r in have:
-                b = baselines.get(r.symbol, k)
+                kk = k
+                if horizon == "pos_exit":
+                    kk = int(r.outcomes.get("pos_exit_sessions") or 0)
+                    held.append(kk)
+                b = baselines.get(r.symbol, kk)
                 if b is None:
                     unbased += 1
                     continue
                 base_vals.append(b)
                 excess.append((r.session, r.outcomes[horizon] - b))
+            if horizon == "pos_exit":
+                # Blocks as long as the typical holding period.
+                k = max(1, int(statistics.median(held))) if held else 1
             windows = len(blocks_of(excess, k))
             # Resampling three windows gives an interval that looks precise and
             # is not: below MIN_SESSIONS independent windows no interval is shown.

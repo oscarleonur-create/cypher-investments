@@ -272,3 +272,49 @@ class TestCalibration:
         out = stance_calibration(recs, Baselines(flat_closes))
         assert set(out) == {"p1", "p2"}
         assert all(v["finding"].startswith("UNDETERMINED") for v in out.values())
+
+
+class TestByLeg:
+    """A proposal is judged on the horizons of the legs it proposed."""
+
+    def test_labels(self):
+        from advisor.learning.evaluate import legs_label
+
+        assert legs_label({"trade"}) == "trade"
+        assert legs_label({"position"}) == "position"
+        assert legs_label({"trade", "position"}) == "trade+position"
+        assert legs_label({}) == "no leg"
+
+    def test_a_one_day_entry_is_not_judged_at_sixty_sessions(self):
+        from advisor.learning.evaluate import horizons_for
+
+        h = horizons_for("action ENTER · trade")
+        assert "d60" not in h and "d20" not in h and "trade_exit" in h
+        assert "pos_exit" in horizons_for("action ENTER · position")
+        assert "trade_exit" not in horizons_for("setup C")
+
+    def test_trade_exit_is_the_stop_if_touched_else_the_next_close(self):
+        from advisor.learning.evaluate import _trade_exit
+
+        assert _trade_exit({"trade_stop": 1.0, "next_close": 0.05}, 0.03) == -0.03
+        assert _trade_exit({"trade_stop": 0.0, "next_close": 0.05}, 0.03) == 0.05
+        assert _trade_exit({"next_close": 0.05}, 0.03) is None
+
+    def test_cells_follow_the_legs(self):
+        trade = [
+            Record("entry", "v", "action ENTER · trade", d, "AAA",
+                   {"trade_exit": 0.01, "next_close": 0.01, "d60": 0.5})
+            for d in days(30)
+        ]  # fmt: skip
+        cells = evaluate(trade, Baselines(flat_closes))
+        assert {c.horizon for c in cells} == {"trade_exit", "next_close"}
+
+    def test_position_exit_uses_each_records_holding_period(self):
+        recs = [
+            Record("entry", "v", "action ENTER · position", d, "AAA",
+                   {"pos_exit": 0.05, "pos_exit_sessions": 20.0})
+            for d in days(250)
+        ]  # fmt: skip
+        (cell,) = evaluate(recs, Baselines(rising_closes), ("pos_exit",))
+        assert cell.excess == pytest.approx(0.05 - (1.001**20 - 1))
+        assert cell.windows == 13  # blocks of the median holding period (20)
