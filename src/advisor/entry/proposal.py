@@ -125,6 +125,10 @@ class Leg(BaseModel):
     notional: float
     exit_rules: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    # Position leg: the price at which a trim is reviewed (P/S at its 2-year
+    # 80th percentile). Kept as a number so the leg can be scored by its own
+    # exit rules, not only at fixed horizons.
+    target: float | None = None
 
 
 class Reason(BaseModel):
@@ -144,6 +148,10 @@ class Proposal(BaseModel):
     legs: list[Leg] = Field(default_factory=list)
     stance: str | None = None  # the model reading's stance, when one was read
     reading: list[str] = Field(default_factory=list)  # its sentences
+    # Which model and which prompt produced the stance: a stance can block an
+    # entry, so a change of either is a change of the rules.
+    reading_model: str | None = None
+    reading_prompt: str | None = None
     gaps: list[str] = Field(default_factory=list)
     net_liq: float | None = None
     # entry.exits.ExitCall, dumped: why, evidence, would_change, shares. Held names only.
@@ -260,6 +268,8 @@ def build_proposal(
     )
     if reading is not None and getattr(reading, "stance", None) is not None:
         p.stance = reading.stance.value
+        p.reading_model = getattr(reading, "model", None)
+        p.reading_prompt = getattr(reading, "prompt_version", None)
         p.reading = [s.text for s in reading.sentences]
     if m is None:
         p.blockers.append("no price")
@@ -372,6 +382,7 @@ def build_proposal(
                     f"review a trim above ${z.p80_price:,.2f} "
                     "(P/S at its 2-year 80th percentile)",
                 ],
+                target=z.p80_price,
             )
             at_limit = held and weight >= BOOK_LIMIT
             if sized and not at_limit:

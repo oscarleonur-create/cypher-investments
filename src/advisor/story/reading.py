@@ -108,6 +108,10 @@ class Reading(BaseModel):
     facts: list[Fact] = Field(default_factory=list)
     facts_hash: str = ""
     model: str | None = None
+    # Hash of the instructions the model was given. A reading written under
+    # another prompt is another reading: never served from cache as this one,
+    # and never pooled with it when stances are scored against outcomes.
+    prompt_version: str | None = None
     problems: list[str] = Field(default_factory=list)
     rejected_draft: list[Sentence] = Field(default_factory=list)
     generated_at: datetime = Field(default_factory=now_et)
@@ -568,6 +572,18 @@ def _openrouter() -> tuple[Complete, str] | None:
     return (lambda system, user: llm.complete(system, user, response_model=Draft)), config.llm_model
 
 
+def _prompt_version() -> str:
+    """Twelve hex of a hash over the system prompt and the user-prompt template."""
+    import hashlib
+    import inspect
+
+    body = SYSTEM_PROMPT + "\n--\n" + inspect.getsource(_user_prompt)
+    return hashlib.sha256(body.encode()).hexdigest()[:12]
+
+
+PROMPT_VERSION = _prompt_version()
+
+
 def read_symbol(
     store: DaemonStore,
     symbol: str,
@@ -596,7 +612,10 @@ def read_symbol(
         cached = store.load_reading(symbol, digest)
         if cached is not None:
             reading = Reading.model_validate_json(cached)
-            if not position_moved(reading.facts, facts):
+            # Readings cached before prompts were stamped carry None and are
+            # rewritten once under the current prompt.
+            same_prompt = reading.prompt_version == PROMPT_VERSION
+            if same_prompt and not position_moved(reading.facts, facts):
                 return reading.model_copy(update={"scorecard": scorecard})
 
     if complete is None:
@@ -617,7 +636,11 @@ def read_symbol(
         except Exception as exc:  # noqa: BLE001
             logger.warning("reading: model call failed for %s: %s", symbol, exc)
             return Reading(
-                status=ReadingStatus.UNAVAILABLE, problems=[str(exc)], model=model, **base
+                status=ReadingStatus.UNAVAILABLE,
+                problems=[str(exc)],
+                model=model,
+                prompt_version=PROMPT_VERSION,
+                **base,
             )
         objections = check(draft, facts)
         if not objections:
@@ -630,6 +653,7 @@ def read_symbol(
             problems=objections,
             rejected_draft=draft.sentences,
             model=model,
+            prompt_version=PROMPT_VERSION,
             **base,
         )
     else:
@@ -638,6 +662,7 @@ def read_symbol(
             stance=draft.stance,
             sentences=draft.sentences,
             model=model,
+            prompt_version=PROMPT_VERSION,
             **base,
         )
     store.save_reading(symbol, digest, reading.model_dump_json())
