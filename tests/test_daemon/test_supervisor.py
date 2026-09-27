@@ -58,6 +58,7 @@ class TestRegistry:
             "distress_premarket",
             "distress_midday",
             "scan_outcomes",
+            "learning_sweep",
             "heartbeat",
         }
 
