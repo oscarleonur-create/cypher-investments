@@ -213,6 +213,11 @@ class DaemonStore:
                 ),
             )
         except sqlite3.IntegrityError:
+            # The failed INSERT opened a transaction; left open, it holds the
+            # write lock and every other connection gets "database is locked"
+            # (found 2026-09-26: a re-run emitting only duplicates blocked the
+            # next store opened on the same file).
+            self._conn.rollback()
             return False
         self._conn.commit()
         return True

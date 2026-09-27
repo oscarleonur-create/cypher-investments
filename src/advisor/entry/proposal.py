@@ -67,6 +67,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from advisor.daemon import market_calendar as mc
 from advisor.entry.ruleset import entry_rules
 from advisor.entry.sheet import Sheet
 from advisor.learning.rules import Origin, RuleStamp
@@ -302,7 +303,7 @@ def build_proposal(
     m, z = sheet.move, sheet.zone
     p = Proposal(
         symbol=sheet.symbol,
-        session=sheet.built_at.date(),
+        session=mc.session_of(sheet.built_at),
         built_at=sheet.built_at,
         action=Action.CANNOT_SAY,
         price=m.price if m else None,

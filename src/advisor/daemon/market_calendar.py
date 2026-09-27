@@ -133,3 +133,16 @@ def previous_trading_day(day: date) -> date:
     while not is_trading_day(cursor):
         cursor -= timedelta(days=1)
     return cursor
+
+
+def session_of(moment: datetime) -> date:
+    """The session whose prices ``moment`` sees.
+
+    Today once its bell has rung; before the open, on a weekend or on a
+    holiday, the last session that traded — a Sunday reading of Friday's
+    close belongs to Friday, not to a day the market never opened.
+    """
+    et = to_et(moment)
+    if is_trading_day(et.date()) and et.time() >= REGULAR_OPEN:
+        return et.date()
+    return previous_trading_day(et.date())

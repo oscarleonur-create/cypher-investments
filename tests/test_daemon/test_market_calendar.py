@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time
+from zoneinfo import ZoneInfo
 
 from advisor.daemon import market_calendar as mc
 
@@ -90,3 +91,35 @@ class TestYearBoundary:
     def test_previous_trading_day_crosses_a_long_holiday_stretch(self):
         # Friday after Thanksgiving 2026 is a (short) session, not a closure.
         assert mc.previous_trading_day(date(2026, 11, 30)) == date(2026, 11, 27)
+
+
+class TestSessionOf:
+    """The session whose prices a moment sees (the AAOI run of Sunday 2026-09-27)."""
+
+    def at(self, d, h, m=0):
+        return datetime.combine(d, time(h, m), tzinfo=mc.MARKET_TZ)
+
+    def test_during_the_session_it_is_today(self):
+        assert mc.session_of(self.at(date(2026, 9, 25), 11)) == date(2026, 9, 25)
+
+    def test_at_the_bell_it_is_today(self):
+        assert mc.session_of(self.at(date(2026, 9, 25), 9, 30)) == date(2026, 9, 25)
+
+    def test_before_the_bell_it_is_the_last_session(self):
+        assert mc.session_of(self.at(date(2026, 9, 28), 9, 29)) == date(2026, 9, 25)
+
+    def test_after_the_close_it_is_still_today(self):
+        assert mc.session_of(self.at(date(2026, 9, 25), 20)) == date(2026, 9, 25)
+
+    def test_weekend_is_friday(self):
+        assert mc.session_of(self.at(date(2026, 9, 26), 12)) == date(2026, 9, 25)
+        assert mc.session_of(self.at(date(2026, 9, 27), 8, 29)) == date(2026, 9, 25)
+
+    def test_holiday_is_the_session_before(self):
+        # Thanksgiving 2026-11-26: the Wednesday
+        assert mc.session_of(self.at(date(2026, 11, 26), 12)) == date(2026, 11, 25)
+
+    def test_utc_input_is_read_in_new_york(self):
+        # 02:00 UTC Saturday is 22:00 ET Friday
+        utc = datetime(2026, 9, 26, 2, 0, tzinfo=ZoneInfo("UTC"))
+        assert mc.session_of(utc) == date(2026, 9, 25)
