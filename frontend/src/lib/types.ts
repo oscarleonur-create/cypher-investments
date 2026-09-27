@@ -915,3 +915,118 @@ export interface WatchAngle {
   source: string | null;
   updated_at: string;
 }
+
+// ── Tracking: entry, risk and close per name; whether the system is current ──
+
+export interface TrackPoint {
+  session: string;
+  action: string;
+  price: number | null;
+}
+
+export interface TrackTrade {
+  opened: string;
+  closed: string | null;
+  quantity: number;
+  entry_price: number;
+  exit_price: number | null;
+  pnl: number | null;
+  ret: number | null;
+  book: string;
+  /** The system's call the session the trade was opened (ENTER/ADD = followed). */
+  call: string | null;
+}
+
+export interface TrackRisk {
+  basis: "held" | "planned";
+  entry: number;
+  price: number | null;
+  stop: number | null;
+  stop_basis: string;
+  target: number | null;
+  shares: number;
+  to_stop: number | null;
+  at_risk: number | null;
+  at_risk_pct: number | null;
+  past_stop: boolean;
+}
+
+export interface TrackLatest {
+  session: string;
+  built_at: string;
+  action: string;
+  price: number | null;
+  blockers: string[];
+  reasons: string[];
+  stale: string[];
+  rules: string | null;
+  legs: Record<string, unknown>[];
+}
+
+export interface TrackRow {
+  symbol: string;
+  held: boolean;
+  quantity: number;
+  cost: number | null;
+  price: number | null;
+  weight: number | null;
+  unrealized: number | null;
+  unrealized_pct: number | null;
+  latest: TrackLatest | null;
+  risk: TrackRisk | null;
+  timeline: TrackPoint[];
+  open_trades: TrackTrade[];
+  closed_trades: TrackTrade[];
+  realized: number;
+  wins: number;
+  losses: number;
+}
+
+export interface TrackJob {
+  name: string;
+  description: string;
+  schedule: string;
+  state: "ok" | "late" | "failing" | "never" | "idle";
+  last_ok_at: string | null;
+  last_run_at: string | null;
+  due_since: string | null;
+  last_error: string;
+}
+
+export interface TrackRuleChange {
+  id: string;
+  ruleset: string;
+  param: string;
+  value: number;
+  previous: number;
+  status: string;
+  source: string;
+  note: string;
+  evidence_at: string | null;
+  expires_at: string;
+  days_left: number;
+  in_force: boolean;
+}
+
+export interface SystemStatus {
+  now: string;
+  ok: boolean;
+  problems: string[];
+  code: {
+    main: string | null;
+    daemon: string | null;
+    daemon_behind: number | null;
+    api: string | null;
+    api_behind: number | null;
+    dirty: string[];
+  };
+  jobs: TrackJob[];
+  rules: {
+    code_version: string | null;
+    proposals_version: string | null;
+    proposals_session: string | null;
+    changes: TrackRuleChange[];
+    expired_recently: TrackRuleChange[];
+  };
+  stale_inputs: Record<string, string[]>;
+}

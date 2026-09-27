@@ -20,6 +20,7 @@ def create_app() -> FastAPI:
         portfolio,
         research,
         theses,
+        tracking,
         watchlist,
     )
     from advisor.api.ws import router as ws_router
@@ -44,6 +45,7 @@ def create_app() -> FastAPI:
     app.include_router(agent.router)
     app.include_router(watchlist.router)
     app.include_router(theses.router)
+    app.include_router(tracking.router)
     app.include_router(ws_router)
 
     _mount_spa(app)

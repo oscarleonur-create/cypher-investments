@@ -30,6 +30,8 @@ import type {
   Thesis,
   ThesisInput,
   ThesisSummary,
+  SystemStatus,
+  TrackRow,
   WatchlistResponse,
 } from "./types";
 
@@ -156,6 +158,9 @@ export const api = {
       rate: number;
       by_symbol: { symbol: string; divergences: number; explained: number }[];
     }>("/api/daemon/coverage"),
+
+  trackingBoard: () => get<{ asof: string; rows: TrackRow[] }>("/api/tracking/board"),
+  trackingStatus: () => get<SystemStatus>("/api/tracking/status"),
 
   review: () =>
     get<{ review: PortfolioReview | null; fetched_at: string | null }>("/api/portfolio/review"),
