@@ -153,10 +153,19 @@ class TestFiling:
         assert r.proposed == [c.id] and c.status is Status.PENDING and c.source == "sweep"
         assert c.evidence == {"x": 1}
 
-    def test_not_filed_twice(self, store):
+    def test_found_again_is_renewed_not_filed_twice(self, store):
         file_proposals(self.survived(), store)
+        (before,) = store.list()
         r = file_proposals(self.survived(), store)
-        assert r.proposed == [] and "already on file" in r.skipped[0]
+        (after,) = store.list()
+        assert r.proposed == [] and r.renewed == [before.id]
+        assert after.evidence_at >= before.evidence_at
+
+    def test_an_active_value_is_not_filed_again(self, store):
+        file_proposals(self.survived(), store)
+        store.activate(store.list()[0].id)
+        r = file_proposals(self.survived(), store)
+        assert r.proposed == [] and "already active" in r.skipped[0]
 
     def test_a_recent_rejection_is_remembered(self, store):
         file_proposals(self.survived(), store)

@@ -25,6 +25,13 @@ What makes a proposal earn its place:
 - **Said as many times as it was tried.** The evidence records every value
   tested, so a proposal from 40 variants is read for what it is.
 
+**Old evidence does not decide** (user decision, 2026-09-27). Each sweep
+also re-judges every ACTIVE change on the newest history: its value against
+the code's, head to head, by the same walk-forward bar a proposal had to
+clear. One that still clears it is renewed; one that does not expires, and
+the code's value returns. A PENDING or SHADOW value found again is renewed;
+one not found again ages out (``actuator.EVIDENCE_TTL_DAYS``).
+
 Each target has its own measure, because thresholds do different jobs: a
 trade stop is judged by the trade it would have made (stopped or out at the
 next close), a trigger by the 20-session return of the positions it would
@@ -361,6 +368,13 @@ class SweepResult:
     used: int = 0
     proposed: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
+    renewed: list[str] = field(default_factory=list)
+    ran_on: date | None = None
+    expired: list[str] = field(default_factory=list)
+    # Every record measured, per target and value: what a re-judgment reads.
+    records: dict = field(default_factory=dict, repr=False)
+    sessions: dict = field(default_factory=dict, repr=False)
+    targets: list = field(default_factory=list, repr=False)
 
 
 def sweep(
@@ -374,16 +388,22 @@ def sweep(
     progress: Callable[[str], None] | None = None,
     base_params=None,
     base_thresholds=None,
+    also: dict[str, tuple] | None = None,
 ) -> SweepResult:
     """Measure every target's grid over the symbols, then walk each forward.
 
     ``base_params``/``base_thresholds``: the rules in force (approved changes
     applied); default the code's. The comparison is always against them.
+    ``also``: more values to measure per declared parameter, outside the grid
+    (the code's value of a parameter an ACTIVE change moved), for ``rejudge``.
     """
     chosen = [t for t in targets(base_params, base_thresholds) if not only or t.name in only]
     records: dict[str, dict] = {t.name: defaultdict(list) for t in chosen}
     sessions: dict[str, list] = {t.name: [] for t in chosen}
-    result = SweepResult(symbols=len(symbols))
+    values = {t.name: sorted(set(t.grid) | set((also or {}).get(t.param, ()))) for t in chosen}
+    result = SweepResult(
+        symbols=len(symbols), records=records, sessions=sessions, targets=chosen, ran_on=end
+    )
     today = end
     for n, sym in enumerate(symbols, 1):
         data = loader(sym, start - timedelta(days=history_days), today)
@@ -394,15 +414,53 @@ def sweep(
         drifts = {h: drift(closes, h) for h in {1, 20}}
         sheets = day_sheets(data, start, end)
         for t in chosen:
-            for v in t.grid:
+            for v in values[t.name]:
                 recs = measure(t, v, data, sheets, drifts, base_params, base_thresholds)
                 records[t.name][v].extend(recs)
-                sessions[t.name].extend(d for d, _ in recs)
+                if v in t.grid:
+                    sessions[t.name].extend(d for d, _ in recs)
         if progress:
             progress(f"{n}/{len(symbols)} {sym}")
     for t in chosen:
         current = _current(t, base_params, base_thresholds)
-        result.verdicts.append(walk_forward(t, current, records[t.name], sessions[t.name]))
+        on_grid = {v: r for v, r in records[t.name].items() if v in t.grid}
+        result.verdicts.append(walk_forward(t, current, on_grid, sessions[t.name]))
+    return result
+
+
+def rejudge(result: SweepResult, change) -> Verdict | None:
+    """An ACTIVE change against the code's value, head to head, on this sweep's history.
+
+    The same walk-forward a proposal had to clear, with the code's value as
+    the incumbent: the change survives only if it would be proposed again
+    today. None when the sweep did not search its parameter.
+    """
+    target = next((t for t in result.targets if t.param == change.param), None)
+    if target is None:
+        return None
+    by_value = result.records.get(target.name, {})
+    code, active = change.previous, change.value
+    pair = {code: by_value.get(code, []), active: by_value.get(active, [])}
+    days = [d for recs in pair.values() for d, _ in recs]
+    head = replace(target, grid=tuple(sorted(pair)))
+    return walk_forward(head, code, pair, days)
+
+
+def revalidate(result: SweepResult, store) -> SweepResult:
+    """Renew the ACTIVE changes this sweep still supports; expire the rest."""
+    from advisor.learning.actuator import Status
+
+    for c in store.list(status=Status.ACTIVE):
+        v = rejudge(result, c)
+        if v is None:
+            continue  # not searched this time: its evidence simply ages
+        when = result.ran_on.isoformat() if result.ran_on else "this sweep"
+        if v.proposed == c.value:
+            store.renew(c.id, v.evidence, note=f"re-judged {when}: still {v.reason}")
+            result.renewed.append(c.id)
+        else:
+            store.expire(c.id, f"re-judged {when}: {v.reason}; the code's {c.previous} returns")
+            result.expired.append(c.id)
     return result
 
 
@@ -425,8 +483,14 @@ def file_proposals(result: SweepResult, store) -> SweepResult:
         if v.proposed is None:
             continue
         same = [c for c in existing if c.param == v.param and c.value == v.proposed]
-        if any(c.status in (Status.PENDING, Status.SHADOW, Status.ACTIVE) for c in same):
-            result.skipped.append(f"{v.param}={v.proposed}: already on file")
+        waiting = [c for c in same if c.status in (Status.PENDING, Status.SHADOW)]
+        if waiting:
+            # Found again: its evidence is this sweep's now.
+            store.renew(waiting[-1].id, v.evidence, note=f"{v.target}: {v.reason}")
+            result.renewed.append(waiting[-1].id)
+            continue
+        if any(c.status is Status.ACTIVE for c in same):
+            result.skipped.append(f"{v.param}={v.proposed}: already active")
             continue
         recent_no = [
             c
@@ -453,6 +517,16 @@ def file_proposals(result: SweepResult, store) -> SweepResult:
         except ChangeError as exc:
             result.skipped.append(f"{v.param}={v.proposed}: {exc}")
     return result
+
+
+def settle(result: SweepResult, store) -> list:
+    """After a sweep: file survivors, renew what it still supports, expire the rest.
+
+    Returns every change that expired, for the notice.
+    """
+    file_proposals(result, store)
+    revalidate(result, store)
+    return [store.get(i) for i in result.expired] + store.expire_due()
 
 
 def _parse(iso: str):

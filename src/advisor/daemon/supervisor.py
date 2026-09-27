@@ -156,6 +156,14 @@ def build_registry() -> JobRegistry:
     )
     reg.register(
         Job(
+            name="rule_expiry",
+            trigger=DailyAt(time(6, 40), trading_days_only=False, grace_hours=18.0),
+            handler=handlers.run_rule_expiry,
+            description="expire rule changes whose evidence no sweep renewed; notify",
+        )
+    )
+    reg.register(
+        Job(
             name="heartbeat",
             trigger=EveryMinutes(5, during_session_only=False),
             handler=handlers.run_heartbeat,

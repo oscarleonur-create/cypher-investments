@@ -13,8 +13,20 @@ A change is one threshold, one value, and moves through
               ACTIVE change of the same parameter
     REJECTED  declined; the sweep will not propose the same value again soon
     RETIRED   was ACTIVE or SHADOW, stopped — the rollback
+    EXPIRED   its evidence grew old, or a newer sweep no longer supports it:
+              the system took it back and the code's value returned
 
-Every transition past PENDING is the user's (CLI today, Telegram later).
+Every transition past PENDING is the user's (CLI today, Telegram later), with
+one exception the user chose (2026-09-27): **a change expires on its own**.
+"We cannot have old hypotheses making new decisions" — so every change
+carries the date of its evidence (``evidence_at``) and lives
+``EVIDENCE_TTL_DAYS`` from it. Each monthly sweep renews what it still
+supports: a PENDING or SHADOW value it finds again, and an ACTIVE value that
+still beats the code's out of sample on the newest history. What it does not
+renew expires; an ACTIVE change that fails the re-judgment expires at once.
+Going back is the safe direction, so it needs no approval; re-approving is
+the user's. An expired ACTIVE change stops applying the moment it is due,
+whether or not anything has marked it yet (``in_force``).
 Only parameters declared ``threshold`` can be changed, and only those the
 code can actually take at run time: the entry rules' ``EntryParams`` and the
 session scanner's ``Thresholds``. Risk budgets, the book limit and the
@@ -30,11 +42,12 @@ import json
 import sqlite3
 import uuid
 from dataclasses import fields, replace
+from datetime import datetime, timedelta
 from enum import StrEnum
 
 from pydantic import BaseModel
 
-from advisor.daemon.market_calendar import now_et
+from advisor.daemon.market_calendar import now_et, to_et
 from advisor.learning.rules import Kind
 
 
@@ -44,6 +57,13 @@ class Status(StrEnum):
     ACTIVE = "ACTIVE"
     REJECTED = "REJECTED"
     RETIRED = "RETIRED"
+    EXPIRED = "EXPIRED"
+
+
+# A monthly sweep plus a week of slack: one sweep late is tolerated, a missed
+# one is not. User decision (2026-09-27): evidence that no sweep renews expires.
+EVIDENCE_TTL_DAYS = 35
+LIVE = (Status.PENDING, Status.SHADOW, Status.ACTIVE)
 
 
 ENTRY = "entry"
@@ -62,7 +82,8 @@ CREATE TABLE IF NOT EXISTS rule_changes (
     evidence_json TEXT NOT NULL DEFAULT '{}',
     note          TEXT NOT NULL DEFAULT '',
     created_at    TEXT NOT NULL,              -- ISO, tz-aware ET
-    decided_at    TEXT
+    decided_at    TEXT,
+    evidence_at   TEXT                        -- when its evidence was last current
 );
 CREATE INDEX IF NOT EXISTS idx_rule_changes_status ON rule_changes(ruleset, status);
 """
@@ -80,6 +101,17 @@ class RuleChange(BaseModel):
     note: str = ""
     created_at: str
     decided_at: str | None = None
+    evidence_at: str | None = None
+
+    @property
+    def expires_at(self) -> datetime:
+        """When it stops applying unless a sweep renews it."""
+        # In ET wall time, so 35 days is 35 days across a DST change.
+        start = to_et(datetime.fromisoformat(self.evidence_at or self.created_at))
+        return start + timedelta(days=EVIDENCE_TTL_DAYS)
+
+    def expired(self, now: datetime) -> bool:
+        return now >= self.expires_at
 
 
 class ChangeError(ValueError):
@@ -152,6 +184,11 @@ class ChangeStore:
         conn.row_factory = sqlite3.Row
         self._conn = conn
         conn.executescript(_SCHEMA)
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(rule_changes)")}
+        if "evidence_at" not in cols:  # a table from before expiry: evidence dates from filing
+            conn.execute("ALTER TABLE rule_changes ADD COLUMN evidence_at TEXT")
+            conn.execute("UPDATE rule_changes SET evidence_at = created_at")
+            conn.commit()
 
     def propose(
         self,
@@ -177,9 +214,11 @@ class ChangeStore:
             note=note,
             created_at=now_et().isoformat(),
         )
+        change.evidence_at = change.created_at
         self._conn.execute(
             "INSERT INTO rule_changes (id, ruleset, param, value_json, previous_json, status, "
-            "source, evidence_json, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "source, evidence_json, note, created_at, evidence_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 change.id,
                 ruleset,
@@ -191,6 +230,7 @@ class ChangeStore:
                 json.dumps(change.evidence, sort_keys=True),
                 note,
                 change.created_at,
+                change.evidence_at,
             ),
         )
         self._conn.commit()
@@ -233,9 +273,28 @@ class ChangeStore:
         return self.get(change.id)
 
     def activate(self, change_id: str) -> RuleChange:
-        """PENDING/SHADOW → ACTIVE. The previous ACTIVE change of the parameter is retired."""
+        """PENDING/SHADOW → ACTIVE. The previous ACTIVE change of the parameter is retired.
+
+        A sweep's change is activated on the sweep's evidence, so evidence past
+        its date is refused. A change the user proposed by hand is backed by
+        the user's decision: activating it dates its evidence now, and from
+        then on the sweep must keep supporting it like any other.
+        """
         change = self._require(change_id, {Status.PENDING, Status.SHADOW})
+        now = now_et()
+        if change.expired(now):
+            self._expire(change, f"evidence from {change.evidence_at[:10]} expired before approval")
+            self._conn.commit()
+            raise ChangeError(
+                f"{change_id}: its evidence ({change.evidence_at[:10]}) is older than "
+                f"{EVIDENCE_TTL_DAYS} days; wait for the next sweep to find it again"
+            )
         validate(change.ruleset, change.param, change.value)  # the code may have moved on
+        if change.source == "user":
+            self._conn.execute(
+                "UPDATE rule_changes SET evidence_at = ? WHERE id = ?",
+                (now.isoformat(), change_id),
+            )
         for other in self.list(status=Status.ACTIVE, ruleset=change.ruleset):
             if other.param == change.param:
                 self._set(other.id, Status.RETIRED, f"replaced by {change.id}")
@@ -255,6 +314,50 @@ class ChangeStore:
         self._set(change_id, Status.RETIRED, note or None)
         self._conn.commit()
         return self.get(change_id)
+
+    # ── Expiry ────────────────────────────────────────────────────────────
+
+    def in_force(self, ruleset: str, now: datetime | None = None) -> list[RuleChange]:
+        """The ACTIVE changes whose evidence is still current: what the daemon applies."""
+        now = now or now_et()
+        return [c for c in self.list(status=Status.ACTIVE, ruleset=ruleset) if not c.expired(now)]
+
+    def renew(self, change_id: str, evidence: dict | None = None, note: str = "") -> RuleChange:
+        """A sweep supports it again: its evidence is current from now."""
+        change = self._require(change_id, set(LIVE))
+        self._conn.execute(
+            "UPDATE rule_changes SET evidence_at = ?, evidence_json = ?, note = ? WHERE id = ?",
+            (
+                now_et().isoformat(),
+                json.dumps(evidence if evidence is not None else change.evidence, sort_keys=True),
+                note or change.note,
+                change_id,
+            ),
+        )
+        self._conn.commit()
+        return self.get(change_id)
+
+    def expire(self, change_id: str, reason: str) -> RuleChange:
+        """The system takes it back: the code's value returns."""
+        change = self._require(change_id, set(LIVE))
+        self._expire(change, reason)
+        self._conn.commit()
+        return self.get(change_id)
+
+    def expire_due(self, now: datetime | None = None) -> list[RuleChange]:
+        """Every live change past its evidence date, marked EXPIRED. Idempotent."""
+        now = now or now_et()
+        out = []
+        for c in self.list():
+            if c.status in LIVE and c.expired(now):
+                since = (c.evidence_at or c.created_at)[:10]
+                self._expire(c, f"no sweep renewed its evidence since {since}")
+                out.append(self.get(c.id))
+        self._conn.commit()
+        return out
+
+    def _expire(self, change: RuleChange, reason: str) -> None:
+        self._set(change.id, Status.EXPIRED, reason)
 
     def _require(self, change_id: str, allowed: set[Status]) -> RuleChange:
         change = self.get(change_id)
@@ -279,6 +382,7 @@ def _row(r) -> RuleChange:
         note=r["note"],
         created_at=r["created_at"],
         decided_at=r["decided_at"],
+        evidence_at=r["evidence_at"],
     )
 
 
@@ -305,30 +409,62 @@ def _apply_session(base, changes: list[RuleChange]):
     return replace(base, **updates) if updates else base
 
 
-def active_entry_params(conn: sqlite3.Connection | None):
-    """The entry thresholds in force: the code's, with every ACTIVE change applied."""
+def active_entry_params(conn: sqlite3.Connection | None, now: datetime | None = None):
+    """The entry thresholds in force: the code's, with every current ACTIVE change applied."""
     from advisor.entry.proposal import current_params
 
     base = current_params()
     if conn is None:
         return base
-    return _apply_entry(base, ChangeStore(conn).list(status=Status.ACTIVE, ruleset=ENTRY))
+    return _apply_entry(base, ChangeStore(conn).in_force(ENTRY, now))
 
 
-def active_session_thresholds(conn: sqlite3.Connection | None):
+def active_session_thresholds(conn: sqlite3.Connection | None, now: datetime | None = None):
     from advisor.scanner.detect import DEFAULT
 
     if conn is None:
         return DEFAULT
-    return _apply_session(DEFAULT, ChangeStore(conn).list(status=Status.ACTIVE, ruleset=SESSION))
+    return _apply_session(DEFAULT, ChangeStore(conn).in_force(SESSION, now))
+
+
+def code_values_of_active(store: ChangeStore) -> dict[str, tuple]:
+    """{param: (the code's value,)} for each ACTIVE change: what a sweep must also measure."""
+    return {c.param: (c.previous,) for c in store.list(status=Status.ACTIVE)}
+
+
+def expired_event(change: RuleChange):
+    """The notice for a change the system took back: tier B, so it reaches the digest."""
+    from advisor.daemon.models import Event, EventSource, EventTier
+
+    return Event(
+        source=EventSource.DAEMON,
+        kind="RULE_CHANGE_EXPIRED",
+        tier=EventTier.B,
+        payload={
+            "change_id": change.id,
+            "ruleset": change.ruleset,
+            "param": change.param,
+            "value": change.value,
+            "restored": change.previous,
+            "reason": change.note,
+            "label": (
+                f"rule change {change.id} expired: {change.param} {change.value} → "
+                f"the code's {change.previous} ({change.note})"
+            ),
+        },
+        dedup_key=change.id,
+    )
 
 
 def challengers(conn: sqlite3.Connection, ruleset: str) -> list[tuple[str, object]]:
     """(change id, parameters) for each SHADOW change: the active rules plus that one change."""
     store = ChangeStore(conn)
-    active = store.list(status=Status.ACTIVE, ruleset=ruleset)
+    now = now_et()
+    active = store.in_force(ruleset, now)
     out = []
     for c in store.list(status=Status.SHADOW, ruleset=ruleset):
+        if c.expired(now):
+            continue
         others = [a for a in active if a.param != c.param]
         if ruleset == ENTRY:
             from advisor.entry.proposal import current_params
