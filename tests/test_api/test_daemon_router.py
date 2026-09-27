@@ -90,6 +90,8 @@ class TestStatus:
             "trading_halts",
             "scan_outcomes",
             "learning_sweep",
+            "news_judge",
+            "news_judge_close",
             "rule_expiry",
             "heartbeat",
         } == names

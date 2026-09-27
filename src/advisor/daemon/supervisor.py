@@ -164,6 +164,22 @@ def build_registry() -> JobRegistry:
     )
     reg.register(
         Job(
+            name="news_judge",
+            trigger=DailyAt(time(8, 30), trading_days_only=False, grace_hours=12.0),
+            handler=handlers.run_news_judge,
+            description="judge each new news item (context only, measured); fill outcomes",
+        )
+    )
+    reg.register(
+        Job(
+            name="news_judge_close",
+            trigger=DailyAt(time(17, 0), grace_hours=6.0),
+            handler=handlers.run_news_judge,
+            description="the same after the close: the day's news, and the day's prices",
+        )
+    )
+    reg.register(
+        Job(
             name="rule_expiry",
             trigger=DailyAt(time(6, 40), trading_days_only=False, grace_hours=18.0),
             handler=handlers.run_rule_expiry,
