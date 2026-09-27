@@ -117,6 +117,10 @@ class SourceItem(BaseModel):
     item_codes: list[str] = Field(default_factory=list)  # 8-K items, e.g. ["5.02"]
     accession: str | None = None  # SEC accession number — a perfect dedup key
     summary: str | None = None
+    # news.verify: CONFIRMED | CORRECTED | CORROBORATED | UNVERIFIED, and the
+    # date the source claimed before it was checked (published_at is the checked one).
+    verified: str | None = None
+    claimed_at: datetime | None = None
 
     def dedup_key(self) -> str:
         """Stable identity for this item.

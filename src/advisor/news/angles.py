@@ -111,6 +111,7 @@ class AngleScan:
 def angle_event(item: SourceItem, term: str) -> Event:
     """One tier-C context row for an article found through an angle."""
     return Event(
+        ts=item.published_at,  # at publication, like every news event (news.verify)
         source=EventSource.CALENDAR,
         kind="NEWS_ANGLE",
         tier=capped_tier(item.tier, EventTier.C),
@@ -126,6 +127,8 @@ def angle_event(item: SourceItem, term: str) -> Event:
             "confidence": item.entity.confidence,
             "angle": term,
             "lead": lead_for(item),
+            "verified": item.verified,
+            "claimed_at": item.claimed_at.isoformat() if item.claimed_at else None,
         },
     )
 
@@ -138,6 +141,7 @@ def scan_angles(
     company_names: dict[str, str | None] | None = None,
     days: int = SCAN_DAYS,
     budget: int = DAILY_QUERY_BUDGET,
+    verifier=None,
 ) -> AngleScan:
     """Search each confirmed angle of each symbol once, within ``budget`` queries.
 
@@ -146,6 +150,8 @@ def scan_angles(
     """
     if search is None:
         from advisor.news.tavily import search_news as search
+    if verifier is None:
+        from advisor.news.verify import verify_items as verifier
 
     result = AngleScan()
     names = company_names or {}
@@ -163,7 +169,7 @@ def scan_angles(
             except Exception as exc:  # noqa: BLE001
                 result.errors.append(f"{symbol}:{term}: {exc}")
                 continue
-            for item in items:
+            for item in verifier(items, store=store):
                 if store.save_source_item(item):
                     result.items_stored += 1
                 event = angle_event(item, term)

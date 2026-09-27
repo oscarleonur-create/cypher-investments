@@ -38,7 +38,9 @@ def store(tmp_path: Path):
     s.close()
 
 
-def news(store, title, provider, days_ago=1, symbol="TE", kind="NEWS_CONTEXT"):
+def news(
+    store, title, provider, days_ago=1, symbol="TE", kind="NEWS_CONTEXT", verified="CONFIRMED"
+):
     store.emit(
         Event(
             ts=NOW - timedelta(days=days_ago),
@@ -52,6 +54,7 @@ def news(store, title, provider, days_ago=1, symbol="TE", kind="NEWS_CONTEXT"):
                 "provider": provider,
                 "url": f"https://{provider}/x",
                 "published_at": (NOW - timedelta(days=days_ago)).isoformat(),
+                "verified": verified,
             },
         )
     )
@@ -381,6 +384,7 @@ class TestCompanyStatement:
                     "provider": "t1energy.com",
                     "published_at": (NOW - timedelta(days=1)).isoformat(),
                     "issuer": True,
+                    "verified": "CONFIRMED",
                 },
             )
         )
@@ -407,7 +411,7 @@ class TestGoogleInTheSweep:
         monkeypatch.setattr(ingest, "explain_symbol", no_tavily)
         asked = {}
 
-        def google(sym, query, *, company_name=None, website=None, days=3):
+        def google(sym, query, *, company_name=None, website=None, days=3, title_filter=None):
             asked.update(sym=sym, query=query, website=website, days=days)
             return [
                 SourceItem(
@@ -421,11 +425,20 @@ class TestGoogleInTheSweep:
                 )
             ]
 
+        page = '<script>{"datePublished": "%s"}</script>' % (NOW - timedelta(hours=3)).isoformat()
         n = distress.sweep(
-            store, "TE", company="T1 Energy Inc.", website="https://www.t1energy.com", google=google
+            store,
+            "TE",
+            company="T1 Energy Inc.",
+            website="https://www.t1energy.com",
+            google=google,
+            verify_kwargs={
+                "fetch": lambda url: page,
+                "resolve": lambda link: "https://t1energy.com/pr",
+            },
         )
         assert n == 1 and asked["website"] == "https://www.t1energy.com" and asked["days"] == 3
-        assert asked["query"].startswith('"t1 energy" (bankruptcy OR')
+        assert asked["query"].startswith('"T1 Energy" (bankruptcy OR')
         (item,) = news_items(store, "TE", NOW)
         assert item.issuer and item.provider == "t1energy.com"
 
@@ -447,3 +460,49 @@ class TestGoogleInTheSweep:
             websites=boom,
         )
         assert searched == [None] and "website lookup failed: yfinance" in errors[0]
+
+
+class TestCheckedNewsOnly:
+    def test_a_syndicated_story_is_one_outlet(self, store):
+        """In the store 2026-09-27: one Zacks piece also ran on TradingView."""
+        news(store, "T1 Energy misses interest payment, enters grace period", "zacks.com")
+        news(store, "T1 Energy misses interest payment, enters grace period", "tradingview.com")
+        r = read_distress(
+            store, "TE", NOW, complete=says(Verdict.EXIT_GRADE, Situation.DEFAULT, ["N1", "N2"])
+        )
+        assert r.outlets == ["zacks"] or r.outlets == ["tradingview"]
+        (c,) = exit_calls(held_sheet(r), net_liq=7_957.51)[0]
+        assert c.action == "REVIEW"
+
+    def test_two_independent_stories_are_two_outlets(self, store):
+        news(store, "T1 Energy misses interest payment, enters grace period", "reuters.com")
+        news(store, "T1 Energy hires restructuring advisers after skipped coupon", "bloomberg.com")
+        r = read_distress(
+            store, "TE", NOW, complete=says(Verdict.EXIT_GRADE, Situation.DEFAULT, ["N1", "N2"])
+        )
+        assert r.outlets == ["bloomberg", "reuters"]
+
+    @pytest.mark.parametrize("verified", ["UNVERIFIED", None])
+    def test_unchecked_news_is_not_read(self, store, verified):
+        news(store, "T1 Energy files for Chapter 11", "reuters.com", verified=verified)
+        assert news_items(store, "TE", NOW) == []
+
+    def test_a_story_whose_checked_date_is_old_is_not_read(self, store):
+        """The TradingKey case: claimed yesterday, the page says three months ago."""
+        store.emit(
+            Event(
+                ts=NOW - timedelta(days=1),  # a legacy row still dated at ingestion
+                source=EventSource.CALENDAR,
+                kind="NEWS_CONTEXT",
+                tier=EventTier.C,
+                symbol="TE",
+                dedup_key="stale",
+                payload={
+                    "title": "T1 Energy faces default",
+                    "provider": "tradingkey.com",
+                    "published_at": (NOW - timedelta(days=90)).isoformat(),
+                    "verified": "CORRECTED",
+                },
+            )
+        )
+        assert news_items(store, "TE", NOW) == []

@@ -262,6 +262,23 @@ def _company_name(symbol: str) -> str | None:
 _NAME_CACHE: dict[str, str | None] = {}
 
 
+def _verify_stored_news(store, now) -> None:
+    """Check stored news whose date was never checked, within the reading's window.
+
+    Readings and distress counts use only checked news (news.verify); this is
+    what keeps news archived before that rule from vanishing from them.
+    """
+    from datetime import timedelta
+
+    from advisor.news.verify import backfill
+    from advisor.story.reading import WINDOW_DAYS
+
+    try:
+        backfill(store, now - timedelta(days=WINDOW_DAYS))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("news verification backfill failed: %s", exc)
+
+
 def _company_website(symbol: str) -> str | None:
     """The website a company lists (yfinance), cached per process. None when unknown.
 
@@ -481,6 +498,7 @@ async def run_entry_proposals(ctx: JobContext) -> JobResult:
         entries, scanner = EntryStore(db_path), ScannerStore(db_path)
         daemon = DaemonStore(db_path)
         try:
+            _verify_stored_news(daemon, now)
             return propose_all(daemon, now, entry_store=entries, scanner_store=scanner)
         finally:
             entries.close()
@@ -522,6 +540,7 @@ async def run_distress_sweep(ctx: JobContext) -> JobResult:
             book = store.load_latest_book()
             if book is None:
                 return [], ["no book snapshot stored"]
+            _verify_stored_news(store, now)
             held = sorted({p.underlying.upper() for p in book.positions if p.quantity > 0})
             return distress_all(store, held, now)
         finally:

@@ -131,9 +131,18 @@ def _halt_calls(sheet) -> list[ExitCall]:
         if code in REVIEW_CODES and resumed:
             continue  # the news it waited for is out; the distress sweep reads it
         exit_ = code in EXIT_CODES and not resumed
-        since = str(h.get("halted_at") or "")[:16].replace("T", " ")
+        # The feed's time is when the exchange listed the halt, not when trading
+        # stopped: 15 of 19 halts on 2026-09-27 read 19:50, SEC suspensions
+        # issued that morning among them. The day is reliable; the hour is not.
+        stamp = str(h.get("halted_at") or "")
+        since = f"{stamp[:10]}, listed {stamp[11:16]} ET"
         label = EXIT_CODES.get(code) or REVIEW_CODES[code]
-        why = f"{sheet.symbol} {label} ({code} on {h.get('market') or 'its exchange'}, {since} ET)"
+        why = f"{sheet.symbol} {label} ({code} on {h.get('market') or 'its exchange'}, {since})"
+        if code == "T1":
+            why += (
+                "; Nasdaq also lists T1 halts ahead of corporate actions: all seven on "
+                "2026-09-25 preceded a reverse split, so read the latest filing"
+            )
         if exit_:
             why += "; it cannot be sold while halted: sell when trading resumes"
         elif resumed:
@@ -145,20 +154,29 @@ def _halt_calls(sheet) -> list[ExitCall]:
             ) + ", and why the exchange stopped it is the question now"
         else:
             why += "; the news comes out when trading resumes"
+        evidence = [
+            Reason(
+                text=f"{code} halt, {since}"
+                + (f", resumed {str(resumed)[:16].replace('T', ' ')} ET" if resumed else ""),
+                source=f"Nasdaq Trader trade halts {h.get('url') or ''}".strip(),
+            )
+        ]
+        if sheet.filings:
+            # The company's own word is the halt's likely reason (MCTA, EFTY:
+            # "On November 11, 2025 … the SEC … suspension").
+            latest = max(sheet.filings, key=lambda f: f.ts)
+            evidence.append(
+                Reason(
+                    text=f"latest filing {latest.ts.date().isoformat()}: {latest.text[:200]}",
+                    source="SEC EDGAR",
+                )
+            )
         calls.append(
             ExitCall(
                 action="EXIT" if exit_ else "REVIEW",
                 rule="halt",
                 why=why,
-                evidence=[
-                    Reason(
-                        text=f"{code} halt, {since} ET"
-                        + (
-                            f", resumed {str(resumed)[:16].replace('T', ' ')} ET" if resumed else ""
-                        ),
-                        source=f"Nasdaq Trader trade halts {h.get('url') or ''}".strip(),
-                    )
-                ],
+                evidence=evidence,
                 would_change=(
                     "the exchange lifting it with the company's explanation: the halt is "
                     "the exchange's word, not a report"

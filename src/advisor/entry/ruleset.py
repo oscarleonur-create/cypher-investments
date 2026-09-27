@@ -82,7 +82,12 @@ DECLARED: dict[str, dict[str, Kind]] = {
     "google_news": {
         "DISTRESS_TERMS": Kind.MODEL,
         "MAX_RESULTS": Kind.MODEL,
-        "_HOST_NOISE": Kind.MODEL,
+        "DISTRESS_TITLE_PATTERN": Kind.MODEL,
+    },
+    # How a headline names each company: the holder reviews the list.
+    "names": {
+        "COMPANY_NAMES": Kind.DECIDED,
+        "MARKET_WORDS": Kind.MODEL,
     },
 }
 
@@ -94,13 +99,14 @@ NOT_RULES: dict[str, str] = {
     "halts.FEED_URL": "where the feed is fetched",
     "halts._NS": "the feed's XML namespace",
     "google_news.SEARCH_URL": "where the search is sent",
+    "google_news.DISTRESS_TITLE": "the compiled form of DISTRESS_TITLE_PATTERN",
 }
 
 
 def entry_rules() -> RuleStamp:
     """The version of the rules ``build_proposal`` runs now."""
     from advisor.entry import distress, exits, proposal, sheet, zone
-    from advisor.news import google_news, halts
+    from advisor.news import google_news, halts, names
 
     modules = {
         "proposal": proposal,
@@ -110,6 +116,7 @@ def entry_rules() -> RuleStamp:
         "distress": distress,
         "halts": halts,
         "google_news": google_news,
+        "names": names,
     }
     return stamp(
         RULESET,

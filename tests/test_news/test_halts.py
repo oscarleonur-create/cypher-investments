@@ -244,3 +244,25 @@ class TestExit:
     def test_the_proposal_exits_with_its_rationale(self):
         p = build_proposal(sheet(halt("T12")), net_liq=7_957.51)
         assert p.action is Action.EXIT and p.reasons[0].source == "exit rule: halt"
+
+
+class TestRationaleText:
+    def test_the_day_is_stated_and_the_hour_is_the_listing_time(self):
+        (c,) = exit_calls(sheet(halt("T12", at=datetime(2026, 9, 25, 19, 50, tzinfo=mc.MARKET_TZ))),
+                          net_liq=7_957.51)[0]  # fmt: skip
+        assert "2026-09-25, listed 19:50 ET" in c.why
+
+    def test_t1_says_it_also_precedes_corporate_actions(self):
+        (c,) = exit_calls(sheet(halt("T1")), net_liq=7_957.51)[0]
+        assert "ahead of corporate actions" in c.why and "reverse split" in c.why
+
+    def test_the_latest_filing_is_part_of_the_evidence(self):
+        from advisor.entry.sheet import EventLine
+
+        s = sheet(halt("T12"))
+        s.filings = [
+            EventLine(ts=NOW - timedelta(days=2), kind="FILING_OTHER", tier="B",
+                      text="6-K: On September 26 the Company received a Nasdaq letter"),
+        ]  # fmt: skip
+        (c,) = exit_calls(s, net_liq=7_957.51)[0]
+        assert c.evidence[-1].source == "SEC EDGAR" and "Nasdaq letter" in c.evidence[-1].text

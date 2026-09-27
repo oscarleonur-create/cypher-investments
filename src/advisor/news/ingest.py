@@ -328,6 +328,7 @@ async def explain_symbol(
     reason: str,
     company_name: str | None = None,
     days: int = 7,
+    verifier=None,
 ) -> list[SourceItem]:
     """Pull news to explain something that already fired, and archive it.
 
@@ -350,6 +351,10 @@ async def explain_symbol(
     except Exception as exc:  # noqa: BLE001
         logger.warning("news: yfinance context failed for %s: %s", symbol, exc)
 
+    if verifier is None:
+        from advisor.news.verify import verify_items as verifier
+
+    items = verifier(items, store=store)
     for item in items:
         store.save_source_item(item)
     items.sort(key=lambda i: i.published_at, reverse=True)
@@ -415,6 +420,9 @@ def context_events(items: list[SourceItem], *, reason: str) -> list[Event]:
     for item in items:
         events.append(
             Event(
+                # Dated at publication, not ingestion: a story from June pulled
+                # today must fall outside "the last seven days".
+                ts=item.published_at,
                 source=EventSource.YFINANCE
                 if item.tier is SourceTier.UNTAGGED
                 else EventSource.CALENDAR,
@@ -433,6 +441,9 @@ def context_events(items: list[SourceItem], *, reason: str) -> list[Event]:
                     "lead": lead_for(item),
                     # Published on the company's own website (news.google_news).
                     "issuer": item.doc_type == "COMPANY_STATEMENT",
+                    # news.verify: whether this item may support a decision.
+                    "verified": item.verified,
+                    "claimed_at": item.claimed_at.isoformat() if item.claimed_at else None,
                 },
             )
         )

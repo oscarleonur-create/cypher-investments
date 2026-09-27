@@ -275,6 +275,29 @@ def entry_distress(
             console.print(f"  {i.id} {i.date} [{who}] {i.title}", markup=False, emoji=False)
 
 
+@app.command("verify-news")
+def entry_verify_news(
+    days: Annotated[int, typer.Option("--days", help="How far back")] = 45,
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Check the dates of stored news never checked (news.verify); counts per status."""
+    from datetime import timedelta
+
+    from advisor.daemon.market_calendar import now_et
+    from advisor.news.verify import backfill
+
+    store, scanner = _stores()
+    try:
+        counts = backfill(store, now_et() - timedelta(days=days))
+    finally:
+        store.close()
+        scanner.close()
+    if output == "json":
+        output_json(counts)
+        return
+    console.print(f"checked: {counts or 'nothing unchecked'}", markup=False)
+
+
 @app.command("halts")
 def entry_halts(
     show_all: Annotated[

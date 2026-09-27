@@ -39,9 +39,10 @@ An EXIT_GRADE reading keeps asking for 14 days, like an exit filing: a
 bankruptcy report does not expire because a week passed. A later reading of
 NONE does not clear it; the user answers it (``advisor entry skip``).
 
-Known limits: two newsrooms carrying one agency story count as two outlets;
-publisher names are normalised, and wires folded into one, but outlets are
-not deduplicated by ownership.
+Outlets are counted per story (``independent_outlets``): one article
+syndicated under the same title on several sites is one outlet, and the
+wires count as one between them. Known limit: two newsrooms rewriting one
+agency story under different titles still count as two.
 """
 
 from __future__ import annotations
@@ -210,12 +211,14 @@ _ALIASES = {
 
 def news_items(store, symbol: str, now: datetime) -> list[Item]:
     """The name's archived news of the last READ_WINDOW_DAYS, newest first, numbered."""
+    from advisor.news.verify import usable
+
     since = now - timedelta(days=READ_WINDOW_DAYS)
     items, seen = [], set()
-    for e in store.recent_events(symbol=symbol, since=since, limit=500):
-        if e.kind not in _NEWS_KINDS:
-            continue
+    for e in store.recent_events(symbol=symbol, since=since, limit=500, kinds=_NEWS_KINDS):
         p = e.payload or {}
+        if not usable(p) or _published(p, e) < since:
+            continue  # unverified, or its checked date is older than the window
         title = str(p.get("title") or "").strip()
         if not title or title.lower() in seen:
             continue
@@ -233,6 +236,36 @@ def news_items(store, symbol: str, now: datetime) -> list[Item]:
         if len(items) >= MAX_ITEMS:
             break
     return items
+
+
+def independent_outlets(cited: list[Item]) -> list[str]:
+    """The outlets that reported independently: one per story, not per copy. Pure.
+
+    A syndicated piece runs under one title on several sites — in the store on
+    2026-09-27, "Cerebras Drops 19% in 3 Months" on Zacks and TradingView, a
+    Motley Fool piece on The Globe and Mail — and counting each site would let
+    one article make an EXIT. Items whose titles are the same story
+    (``news.verify.same_story``) count once, under their earliest outlet.
+    """
+    from advisor.news.verify import same_story
+
+    stories: list[list[Item]] = []
+    for item in sorted(cited, key=lambda i: i.date):
+        for story in stories:
+            if same_story(story[0].title, item.title):
+                story.append(item)
+                break
+        else:
+            stories.append([item])
+    return sorted({outlet(story[0].provider) for story in stories})
+
+
+def _published(p: dict, e) -> datetime:
+    raw = p.get("published_at")
+    try:
+        return datetime.fromisoformat(raw) if raw else e.ts
+    except ValueError:
+        return e.ts
 
 
 def _user_prompt(symbol: str, company: str | None, items: list[Item]) -> str:
@@ -303,7 +336,7 @@ def read_distress(
         verdict=draft.verdict,
         situation=draft.situation,
         cited=cited,
-        outlets=sorted({outlet(i.provider) for i in cited}),
+        outlets=independent_outlets(cited),
         reason=draft.reason,
         model=model,
         **base,
@@ -367,6 +400,7 @@ def sweep(
     company: str | None = None,
     website: str | None = None,
     google=None,
+    verify_kwargs: dict | None = None,
 ) -> int:
     """The distress searches for one name, archived and emitted. Returns items found."""
     import asyncio
@@ -389,7 +423,11 @@ def sweep(
         company_name=company,
         website=website,
         days=SWEEP_DAYS,
+        title_filter=google_news.DISTRESS_TITLE,
     )
+    from advisor.news.verify import verify_items
+
+    items = verify_items(items, store=store, **(verify_kwargs or {}))
     for item in items:
         store.save_source_item(item)
     for event in context_events(items, reason="DISTRESS"):

@@ -19,9 +19,10 @@ Two things set an item apart:
   on the same wires, so a wire is an outlet like any other.
 
 The feed carries titles only. Matching is on the title, like every other
-source (``news.entities``), plus the brand in the company's web address
-when it is one word ("spacex" for Space Exploration Technologies, whose
-registered name no headline uses).
+source (``news.entities``, with the reviewed names of ``news.names``). For the
+distress sweep a title must also name the situation (``DISTRESS_TITLE``):
+Google matches the terms anywhere in the article, and on 2026-09-27 most of
+what came back was ordinary commentary whose body happened to say "default".
 
 Free and unmetered, so it is not under the Tavily budget; any failure returns
 nothing, because a news outage must never stop the pillars.
@@ -39,7 +40,8 @@ from urllib.parse import quote, urlparse
 
 from advisor.daemon.market_calendar import now_et
 from advisor.news.entities import is_ambiguous, normalize_name, resolve_entity
-from advisor.news.models import EntityMatch, MatchMethod, SourceItem, SourceTier
+from advisor.news.models import SourceItem, SourceTier
+from advisor.news.names import query_names
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +61,12 @@ DISTRESS_TERMS = (
     "restructuring",
 )
 
-# Hosting labels that are not a brand ("www.ao-inc.com" -> "ao-inc" is kept,
-# but not its "www").
-_HOST_NOISE = {"www", "investors", "investor", "ir", "newsroom", "news", "press"}
+# A distress headline says so in its title; the model reads titles only.
+DISTRESS_TITLE_PATTERN = (
+    r"bankrupt|chapter 11|default|delist|going concern|fraud|investigat|restructur|"
+    r"insolv|receivership|halt|suspend|subpoena|probe|liquidat|covenant|missed payment"
+)
+DISTRESS_TITLE = re.compile(DISTRESS_TITLE_PATTERN, re.IGNORECASE)
 
 
 def domain(url: str | None) -> str:
@@ -75,26 +80,17 @@ def domain(url: str | None) -> str:
     return ".".join(labels[-2:])
 
 
-def brand(website: str | None) -> str | None:
-    """The one-word brand in a company's web address, if it is one: spacex.com -> 'spacex'."""
-    d = domain(website)
-    stem = d.split(".")[0] if d else ""
-    if len(stem) >= 4 and stem.isalpha() and stem not in _HOST_NOISE:
-        return stem
-    return None
-
-
 def distress_query(symbol: str, company: str | None, website: str | None = None) -> str:
     """One boolean query: the company's names, and the distress terms."""
-    names = []
-    core = normalize_name(company or "")
-    if len(core) >= 4:
-        names.append(f'"{core}"')
-    b = brand(website)
-    if b and b not in core.replace(" ", ""):
-        names.append(b)
+    listed = query_names(symbol)
+    names = [f'"{n}"' if " " in n else n for n in listed]
+    if not listed:
+        core = normalize_name(company or "")
+        if len(core) >= 4:
+            names.append(f'"{core}"')
     if not is_ambiguous(symbol) or not names:
         names.append(symbol.upper())
+    names = list(dict.fromkeys(names))
     who = names[0] if len(names) == 1 else f"({' OR '.join(names)})"
     return f"{who} ({' OR '.join(DISTRESS_TERMS)})"
 
@@ -140,6 +136,7 @@ def search_news(
     website: str | None = None,
     days: int = 3,
     now: datetime | None = None,
+    title_filter: re.Pattern | None = None,
     get: Callable[[str], str] = _http_get,
 ) -> list[SourceItem]:
     """Dated, entity-resolved items for ``symbol``, newest first. Never raises."""
@@ -152,9 +149,8 @@ def search_news(
         return []
 
     own = domain(website)
-    b = brand(website)
     out: list[SourceItem] = []
-    undated = unresolved = 0
+    undated = unresolved = off_topic = 0
     for row in rows[:MAX_RESULTS]:
         published = row["published"]
         if published is None or published.tzinfo is None:
@@ -163,9 +159,10 @@ def search_news(
         if published < now - timedelta(days=days + 1) or not row["title"] or not row["link"]:
             continue
         title = row["title"]
+        if title_filter is not None and not title_filter.search(title):
+            off_topic += 1
+            continue
         entity = resolve_entity(symbol, text=title, company_name=company_name)
-        if not entity.resolved and b and re.search(rf"(?<![a-z0-9]){b}(?![a-z0-9])", title.lower()):
-            entity = EntityMatch(symbol=symbol.upper(), method=MatchMethod.COMPANY_NAME)
         if not entity.resolved:
             unresolved += 1
             continue
@@ -182,11 +179,12 @@ def search_news(
                 doc_type="COMPANY_STATEMENT" if issuer else "NEWS",
             )
         )
-    if undated or unresolved:
+    if undated or unresolved or off_topic:
         logger.info(
-            "google news %s: dropped %d undated, %d not naming the company",
+            "google news %s: dropped %d undated, %d off the filter, %d not naming the company",
             symbol,
             undated,
+            off_topic,
             unresolved,
         )
     out.sort(key=lambda i: i.published_at, reverse=True)

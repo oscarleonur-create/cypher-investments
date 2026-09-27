@@ -218,7 +218,13 @@ def gather_facts(
     context = 0
     per_angle: dict[str, int] = {}
     events = []
+    from advisor.news.verify import usable
+
     for event in store.recent_events(symbol=symbol, since=since, limit=200):
+        if event.kind in _NEWS_KINDS and not usable(event.payload or {}):
+            # An unchecked date may not rest under a decision (news.verify):
+            # a stale story read as new can block an entry or fake an exit.
+            continue
         if event.kind in _STANDING_KINDS:
             if event.kind in seen_standing:
                 continue

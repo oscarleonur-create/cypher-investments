@@ -7,7 +7,7 @@ from email.utils import format_datetime
 
 import pytest
 from advisor.daemon import market_calendar as mc
-from advisor.news.google_news import brand, distress_query, domain, parse, search_news
+from advisor.news.google_news import DISTRESS_TITLE, distress_query, domain, parse, search_news
 from advisor.news.models import MatchMethod, SourceTier
 
 NOW = datetime(2026, 9, 27, 9, 0, tzinfo=mc.MARKET_TZ)
@@ -48,36 +48,23 @@ class TestDomain:
     def test_registrable_part(self, url, expected):
         assert domain(url) == expected
 
-    @pytest.mark.parametrize(
-        "site,expected",
-        [
-            ("https://www.spacex.com", "spacex"),
-            ("https://www.ao-inc.com", None),  # not one word
-            ("https://www.t1energy.com", None),  # a digit
-            ("https://ir.io", None),
-            (None, None),
-        ],
-    )
-    def test_brand(self, site, expected):
-        assert brand(site) == expected
-
 
 class TestQuery:
     def test_a_short_ticker_is_left_out_when_the_name_is_known(self):
-        """TE is a common word: the name carries the query."""
+        """TE is a common word: the listed name carries the query."""
         q = distress_query("TE", "T1 Energy Inc.", "https://www.t1energy.com")
-        assert q.startswith('"t1 energy" (bankruptcy OR "Chapter 11" OR')
+        assert q.startswith('"T1 Energy" (bankruptcy OR "Chapter 11" OR')
 
-    def test_the_web_brand_is_added_when_no_headline_uses_the_registered_name(self):
-        q = distress_query("SPCX", "SPACE EXPLORATION TECHNOLOGIES CORP", "https://www.spacex.com")
-        assert q.startswith('("space exploration" OR spacex OR SPCX) (')
+    def test_the_listed_names_replace_the_registered_one(self):
+        q = distress_query("SPCX", "SPACE EXPLORATION TECHNOLOGIES CORP")
+        assert q.startswith('(SpaceX OR "Space Exploration Technologies" OR SPCX) (')
 
-    def test_a_brand_already_in_the_name_is_not_repeated(self):
-        q = distress_query("NBIS", "Nebius Group N.V.", "https://nebius.com")
-        assert q.startswith('("nebius" OR NBIS) (')
+    def test_an_unlisted_symbol_falls_back_to_the_registered_name(self):
+        q = distress_query("ZZZZ", "Zeta Widgets Inc.")
+        assert q.startswith('("zeta widgets" OR ZZZZ) (')
 
-    def test_without_a_name_the_ticker_is_all_there_is(self):
-        assert distress_query("TE", None).startswith("TE (")
+    def test_without_any_name_the_ticker_is_all_there_is(self):
+        assert distress_query("QQ", None).startswith("QQ (")
 
     def test_the_window_goes_in_the_query(self):
         seen = []
@@ -123,12 +110,45 @@ class TestSearch:
     def test_an_item_that_does_not_name_the_company_is_dropped(self):
         assert search(rss(item("Optical stocks slide", "Reuters", "https://www.reuters.com"))) == []
 
-    def test_the_web_brand_matches_a_headline_the_registered_name_never_would(self):
+    def test_a_listed_name_matches_a_headline_the_registered_name_never_would(self):
         xml = rss(item("SpaceX misses a debt payment", "CNBC", "https://www.cnbc.com"))
         (i,) = search(xml, "SPCX", "SPACE EXPLORATION TECHNOLOGIES CORP", "https://www.spacex.com")
         assert i.entity.method is MatchMethod.COMPANY_NAME
 
-    def test_the_brand_must_be_a_whole_word(self):
+    def test_space_exploration_in_general_is_not_spacex(self):
+        """Audit 2026-09-27: ESA, a merit badge and an astronomy club were kept as SPCX."""
+        xml = rss(item("A call to boost European space exploration", "ESA", "https://www.esa.int"))
+        assert search(xml, "SPCX", "SPACE EXPLORATION TECHNOLOGIES CORP") == []
+
+    def test_the_title_filter_keeps_only_what_names_the_situation(self):
+        xml = rss(
+            item(
+                "Applied Optoelectronics misses a coupon payment, default looms",
+                "Reuters",
+                "https://www.reuters.com",
+                link="https://news.google.com/rss/articles/a",
+            ),
+            item(
+                "Applied Optoelectronics rides the AI boom",
+                "Zacks",
+                "https://www.zacks.com",
+                link="https://news.google.com/rss/articles/b",
+            ),
+        )
+        items = search_news(
+            "AAOI",
+            "q",
+            company_name="APPLIED OPTOELECTRONICS, INC.",
+            days=3,
+            now=NOW,
+            title_filter=DISTRESS_TITLE,
+            get=lambda url: xml,
+        )
+        assert [i.title for i in items] == [
+            "Applied Optoelectronics misses a coupon payment, default looms"
+        ]
+
+    def test_the_name_must_be_a_whole_word(self):
         xml = rss(item("SpaceXAI ships Grok", "CNBC", "https://www.cnbc.com"))
         assert (
             search(xml, "SPCX", "SPACE EXPLORATION TECHNOLOGIES CORP", "https://www.spacex.com")
