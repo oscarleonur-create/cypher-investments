@@ -16,6 +16,8 @@ import pytest
 from advisor.entry import distress, exits, freshness, proposal, sheet, zone
 from advisor.entry import ruleset as entry_ruleset
 from advisor.learning.rules import Kind
+from advisor.news import google_news, halts
+from advisor.news import names as company_names
 from advisor.scanner import detect, premarket, scan, sources
 from advisor.scanner import ruleset as scanner_ruleset
 
@@ -44,6 +46,9 @@ ENTRY_MODULES = {
     "sheet": sheet,
     "exits": exits,
     "distress": distress,
+    "halts": halts,
+    "google_news": google_news,
+    "names": company_names,
     "freshness": freshness,
 }
 

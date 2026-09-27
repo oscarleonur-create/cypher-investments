@@ -14,7 +14,8 @@ What keeps a judgment honest:
 
 - **It reads only what was ingested.** No searches of its own: the items are
   the ones already archived (``source_items``) for held names, the watchlist
-  and Swing, so the Tavily budget is untouched.
+  and Swing, so the Tavily budget is untouched. News is judged only once
+  ``news.verify`` has accepted its date, and at the checked date.
 - **It must quote.** Every judgment carries a verbatim span of the item that
   supports it; a quote the item does not contain voids the judgment.
 - **No number it cannot show.** A number in the explanation must appear in
@@ -213,16 +214,45 @@ def _text(item) -> str:
     return f"{item.title} {item.summary or ''}"
 
 
+def checked_dates(store, symbol: str, since: datetime) -> dict[str, datetime]:
+    """URL -> checked publication date, for this name's news whose date ``news.verify`` accepted.
+
+    The check is recorded on the news event (``set_news_verification``), not
+    on the archived item, so the two are joined by URL.
+    """
+    from advisor.news.verify import usable
+
+    out = {}
+    for e in store.recent_events(symbol=symbol, since=since - timedelta(days=2), limit=2000):
+        p = e.payload or {}
+        if p.get("url") and usable(p):
+            out[p["url"]] = e.ts
+    return out
+
+
 def items_to_judge(store, conn, symbol: str, now: datetime) -> list:
-    """The name's archived items of the last JUDGE_WINDOW_DAYS not judged under this prompt."""
+    """The name's archived items of the last JUDGE_WINDOW_DAYS not judged under this prompt.
+
+    News is judged only once its date has been checked (user decision,
+    2026-09-27: an unverified date may support nothing), and is dated at the
+    checked publication. A filing is the regulator's own record and needs no check.
+    """
     since = now - timedelta(days=JUDGE_WINDOW_DAYS)
     done = NewsJudgmentStore(conn).keys(symbol, prompt_version())
+    checked = checked_dates(store, symbol, since)
     out, seen = [], set()
-    for item in store.source_items_between(symbol, since, now + timedelta(days=1)):
+    for item in store.source_items_between(symbol, since - timedelta(days=2), now):
         if item.tier.value not in JUDGED_TIERS:
             continue
-        if item.tier.value == "PRIMARY" and not item.summary:
-            continue  # a filing with no lead has nothing to judge but its form
+        if item.tier.value == "PRIMARY":
+            if not item.summary:
+                continue  # a filing with no lead has nothing to judge but its form
+        elif item.url in checked:
+            item = item.model_copy(update={"published_at": checked[item.url]})
+        else:
+            continue  # its date is unchecked or failed the check
+        if item.published_at < since:
+            continue
         title = item.title.strip().lower()
         if item.dedup_key() in done or title in seen:
             continue

@@ -57,6 +57,7 @@ class TestRegistry:
             "entry_proposals",
             "distress_premarket",
             "distress_midday",
+            "trading_halts",
             "scan_outcomes",
             "learning_sweep",
             "news_judge",
@@ -64,6 +65,21 @@ class TestRegistry:
             "rule_expiry",
             "heartbeat",
         }
+
+    def test_halts_are_polled_from_the_premarket_to_the_evening_on_trading_days(self):
+        """The feed keeps a few days, so a sleeping laptop catches up on waking."""
+        from datetime import datetime
+
+        from advisor.daemon import market_calendar as mc
+
+        trig = {j.name: j.trigger for j in build_registry()}["trading_halts"]
+        at = lambda d, h, m: datetime(2026, 9, d, h, m, tzinfo=mc.MARKET_TZ)  # noqa: E731
+        assert trig.is_due(at(28, 4, 0), None)  # Monday, 04:00
+        assert trig.is_due(at(28, 20, 0), None)  # after-hours halts land until 20:00
+        assert not trig.is_due(at(28, 20, 10), None)
+        assert not trig.is_due(at(27, 12, 0), None)  # Sunday: no halts
+        assert not trig.is_due(at(28, 10, 3), at(28, 10, 0))
+        assert trig.is_due(at(28, 10, 5), at(28, 10, 0))
 
     def test_reconcile_runs_before_the_brief_reads_anything(self):
         """Checking the inputs after advising on them would be pointless."""

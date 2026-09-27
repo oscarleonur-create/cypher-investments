@@ -75,6 +75,9 @@ class Sheet(BaseModel):
     thesis_broken: list[str] = Field(default_factory=list)
     # The distress reading an exit acts on (entry.distress.latest_distress), dumped.
     distress: dict | None = None
+    # Exchange halts still in force, of any age, and those of the last
+    # FILINGS_LOOKBACK_DAYS that ended (with resumed_at); newest first.
+    halts: list[dict] = Field(default_factory=list)
     # The next results date on or after today (yfinance calendar) and the
     # trading sessions until it: 0 means today. None when no date is known.
     next_earnings: date | None = None
@@ -355,6 +358,13 @@ def build_sheet(
         except Exception as exc:  # noqa: BLE001
             logger.info("sheet: thesis status unavailable for %s: %s", symbol, exc)
             sheet.gaps.append("thesis written but its status could not be read")
+
+    try:
+        from advisor.news.halts import active_halts
+
+        sheet.halts = active_halts(store, symbol, now - timedelta(days=FILINGS_LOOKBACK_DAYS))
+    except Exception as exc:  # noqa: BLE001
+        logger.info("sheet: halts unavailable for %s: %s", symbol, exc)
 
     try:
         from advisor.entry.distress import latest_distress

@@ -87,6 +87,7 @@ class TestStatus:
             "entry_proposals",
             "distress_premarket",
             "distress_midday",
+            "trading_halts",
             "scan_outcomes",
             "learning_sweep",
             "news_judge",

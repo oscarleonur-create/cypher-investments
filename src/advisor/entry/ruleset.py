@@ -4,8 +4,9 @@ The kinds follow the user's decisions of 2026-09-25: risk budgets, the book
 limit and the two-year window are theirs (``decided``) and the learning loop
 may never search them; what qualifies as a trigger and where a stop sits are
 ``threshold``s it may propose changing. A test fails if ``proposal``, ``zone``,
-``sheet``, ``exits``, ``distress`` or ``freshness`` gains a constant that is
-neither declared here nor listed as not a rule.
+``sheet``, ``exits``, ``distress``, ``freshness``, or the news modules a
+decision reads (``news.halts``, ``news.google_news``, ``news.names``) gains a
+constant that is neither declared here nor listed as not a rule.
 """
 
 from __future__ import annotations
@@ -81,6 +82,22 @@ DECLARED: dict[str, dict[str, Kind]] = {
         "_SUFFIXES": Kind.MODEL,
         "_NEWS_KINDS": Kind.MODEL,
     },
+    # Exchange halts: which codes end the case and which ask, the user's (2026-09-27).
+    "halts": {
+        "EXIT_CODES": Kind.DECIDED,
+        "REVIEW_CODES": Kind.DECIDED,
+    },
+    # The free aggregator of the distress sweep: what it asks and how it reads a site.
+    "google_news": {
+        "DISTRESS_TERMS": Kind.MODEL,
+        "MAX_RESULTS": Kind.MODEL,
+        "DISTRESS_TITLE_PATTERN": Kind.MODEL,
+    },
+    # How a headline names each company: the holder reviews the list.
+    "names": {
+        "COMPANY_NAMES": Kind.DECIDED,
+        "MARKET_WORDS": Kind.MODEL,
+    },
 }
 
 # Constants of the rule modules that decide nothing about a proposal.
@@ -92,6 +109,10 @@ NOT_RULES: dict[str, str] = {
     "freshness.ENTRY": "the name of what a stale input blocks",
     "freshness.ADDING": "the name of what a stale input blocks",
     "freshness.BONUS": "the name of what a stale input blocks",
+    "halts.FEED_URL": "where the feed is fetched",
+    "halts._NS": "the feed's XML namespace",
+    "google_news.SEARCH_URL": "where the search is sent",
+    "google_news.DISTRESS_TITLE": "the compiled form of DISTRESS_TITLE_PATTERN",
 }
 
 
@@ -100,6 +121,8 @@ def entry_rules(params=None) -> RuleStamp:
     from dataclasses import asdict
 
     from advisor.entry import distress, exits, freshness, proposal, sheet, zone
+    from advisor.news import google_news, halts
+    from advisor.news import names as company_names
 
     modules = {
         "proposal": proposal,
@@ -108,6 +131,9 @@ def entry_rules(params=None) -> RuleStamp:
         "exits": exits,
         "distress": distress,
         "freshness": freshness,
+        "halts": halts,
+        "google_news": google_news,
+        "names": company_names,
     }
     declared = {
         f"{mod}.{name}": (getattr(modules[mod], name), kind)

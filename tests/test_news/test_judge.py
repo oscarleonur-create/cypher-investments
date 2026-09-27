@@ -148,6 +148,28 @@ def stores(db):
     conn.close()
 
 
+def save(s, it, verified="CONFIRMED", checked_at=None):
+    """Archive an item and, for news, the event ``news.verify`` records its date on."""
+    s.save_source_item(it)
+    if it.tier is SourceTier.PRIMARY or verified is None:
+        return
+    from advisor.daemon.models import Event, EventSource, EventTier
+
+    when = checked_at or it.published_at
+    s.emit(
+        Event(
+            ts=when,
+            source=EventSource.YFINANCE,
+            kind="NEWS_CONTEXT",
+            tier=EventTier.C,
+            symbol=it.entity.symbol,
+            payload={"url": it.url, "title": it.title, "verified": verified,
+                     "published_at": when.isoformat()},
+            dedup_key=it.url,
+        )
+    )  # fmt: skip
+
+
 def fake(calls):
     seen = []
 
@@ -162,7 +184,7 @@ def fake(calls):
 class TestJudgeSymbol:
     def test_judges_stores_and_never_twice(self, stores):
         s, conn = stores
-        s.save_source_item(item())
+        save(s, item())
         c = fake([call()])
         js, problems = judge_symbol(s, conn, "NBIS", NOW, complete=c, model="m")
         assert len(js) == 1 and problems == [] and js[0].model == "m"
@@ -177,38 +199,66 @@ class TestJudgeSymbol:
 
     def test_old_items_are_left_alone(self, stores):
         s, conn = stores
-        s.save_source_item(item(days_ago=judge.JUDGE_WINDOW_DAYS + 1))
+        save(s, item(days_ago=judge.JUDGE_WINDOW_DAYS + 1))
         assert judge_symbol(s, conn, "NBIS", NOW, complete=fake([call()]))[0] == []
+
+    def test_news_with_an_unverified_date_is_not_judged(self, stores):
+        """User decision 2026-09-27: an unchecked date may support nothing."""
+        s, conn = stores
+        save(s, item(url="https://u"), verified="UNVERIFIED")
+        save(s, item(url="https://n", title="never checked"), verified=None)
+        c = fake([call()])
+        assert judge_symbol(s, conn, "NBIS", NOW, complete=c)[0] == []
+        assert c.seen == []
+
+    def test_a_corrected_date_is_the_one_used(self, stores):
+        """The page said Sept 20, not the claimed Sept 26: judged at the checked date."""
+        s, conn = stores
+        checked = datetime(2026, 9, 25, 14, 0, tzinfo=ET)
+        save(s, item(days_ago=1), verified="CORRECTED", checked_at=checked)
+        js, _ = judge_symbol(s, conn, "NBIS", NOW, complete=fake([call()]))
+        assert js[0].published_at == checked
+
+    def test_a_date_corrected_out_of_the_window_is_left_alone(self, stores):
+        s, conn = stores
+        old = NOW - timedelta(days=judge.JUDGE_WINDOW_DAYS + 3)
+        save(s, item(days_ago=1), verified="CORRECTED", checked_at=old)
+        assert judge_symbol(s, conn, "NBIS", NOW, complete=fake([call()]))[0] == []
+
+    def test_a_filing_needs_no_date_check(self, stores):
+        s, conn = stores
+        save(s, item(tier=SourceTier.PRIMARY), verified=None)
+        assert len(judge_symbol(s, conn, "NBIS", NOW, complete=fake([call()]))[0]) == 1
 
     def test_a_filing_without_a_lead_is_not_judged(self, stores):
         s, conn = stores
-        s.save_source_item(item(tier=SourceTier.PRIMARY, summary=None))
+        save(s, item(tier=SourceTier.PRIMARY, summary=None))
         assert judge_symbol(s, conn, "NBIS", NOW, complete=fake([call()]))[0] == []
 
     def test_the_same_headline_twice_is_judged_once(self, stores):
         s, conn = stores
-        s.save_source_item(item(url="https://a"))
-        s.save_source_item(item(url="https://b"))
+        save(s, item(url="https://a"))
+        save(s, item(url="https://b"))
         c = fake([call()])
         js, _ = judge_symbol(s, conn, "NBIS", NOW, complete=c)
         assert len(js) == 1 and c.seen[0].count("Nebius to hike prices") == 1
 
     def test_an_item_the_model_skipped_is_named(self, stores):
         s, conn = stores
-        s.save_source_item(item())
+        save(s, item())
         js, problems = judge_symbol(s, conn, "NBIS", NOW, complete=fake([]))
         assert js == [] and "not judged by the model" in problems[0]
 
     def test_a_rejected_judgment_is_retried_next_run(self, stores):
         s, conn = stores
-        s.save_source_item(item())
+        save(s, item())
         judge_symbol(s, conn, "NBIS", NOW, complete=fake([call(quote="invented")]))
         js, _ = judge_symbol(s, conn, "NBIS", NOW, complete=fake([call()]))
         assert len(js) == 1
 
     def test_a_model_failure_is_a_problem_not_a_crash(self, stores):
         s, conn = stores
-        s.save_source_item(item())
+        save(s, item())
 
         def boom(system, user):
             raise TimeoutError("slow")
@@ -219,7 +269,7 @@ class TestJudgeSymbol:
     def test_batches_of_ten(self, stores):
         s, conn = stores
         for n in range(12):
-            s.save_source_item(item(title=f"story {n}", url=f"https://x/{n}",
+            save(s, item(title=f"story {n}", url=f"https://x/{n}",
                                     summary=f"GPU prices rise 10% case {n}"))  # fmt: skip
         c = fake([call(id=f"N{n}", why="Prices rise 10%.") for n in range(1, 11)])
         js, _ = judge_symbol(s, conn, "NBIS", NOW, complete=c)
@@ -227,7 +277,7 @@ class TestJudgeSymbol:
 
     def test_claims_are_offered_with_their_kind(self, stores):
         s, conn = stores
-        s.save_source_item(item())
+        save(s, item())
         s.save_claim("NBIS", Claim(kind=ClaimKind.INVALIDATION, text="raises over 10%"))
         c = fake([call()])
         judge_symbol(s, conn, "NBIS", NOW, complete=c)
@@ -235,7 +285,7 @@ class TestJudgeSymbol:
 
     def test_a_new_prompt_rejudges(self, stores, monkeypatch):
         s, conn = stores
-        s.save_source_item(item())
+        save(s, item())
         judge_symbol(s, conn, "NBIS", NOW, complete=fake([call()]))
         monkeypatch.setattr(judge, "SYSTEM_PROMPT", judge.SYSTEM_PROMPT + " v2")
         js, _ = judge_symbol(s, conn, "NBIS", NOW, complete=fake([call()]))
