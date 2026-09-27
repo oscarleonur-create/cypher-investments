@@ -159,3 +159,57 @@ class TestCacheByPrompt:
         model = FakeModel(GOOD)
         again = read_symbol(store, "AAOI", complete=model, model="fake")
         assert len(model.prompts) == 1 and again.prompt_version == "000000000000"
+
+
+class TestPositionExit:
+    """The position leg scored by its own exit rules: stop, else trim target, else time."""
+
+    def leg(self, stop=90.0, target=120.0):
+        from advisor.entry.proposal import Leg
+
+        return Leg(horizon="position", entry=100.0, stop=stop, stop_basis="", risk_pct=0.02,
+                   shares=1, notional=100.0, target=target)  # fmt: skip
+
+    def run(self, path, leg, n_after=None):
+        from advisor.entry.track import position_exit
+
+        p = build_proposal(sheet(), net_liq=10_000)
+        days, d = [], SESSION
+        for _ in range(len(path)):
+            d = nth_trading_day(d, 1)
+            days.append(d)
+        bars = [Bar(SESSION, 100, 100, 100)] + [
+            Bar(day, hi, lo, c) for day, (hi, lo, c) in zip(days, path)
+        ]
+        return position_exit(p, leg, bars, closed_after(n_after or len(path) + 1))
+
+    def test_stopped(self):
+        out = self.run([(101, 99, 100), (100, 89, 91)], self.leg())
+        assert out["pos_exit"] == pytest.approx(-0.10) and out["pos_exit_stop"] == 1.0
+        assert out["pos_exit_sessions"] == 2.0
+
+    def test_trimmed_at_the_target(self):
+        out = self.run([(110, 99, 108), (121, 105, 118)], self.leg())
+        assert out["pos_exit"] == pytest.approx(0.20) and out["pos_exit_target"] == 1.0
+
+    def test_a_day_touching_both_counts_as_stopped(self):
+        out = self.run([(125, 85, 100)], self.leg())
+        assert out["pos_exit_stop"] == 1.0 and out["pos_exit"] == pytest.approx(-0.10)
+
+    def test_closed_at_the_time_cap(self):
+        from advisor.entry.track import POSITION_CAP
+
+        path = [(105, 95, 100)] * (POSITION_CAP - 1) + [(106, 96, 103)]
+        out = self.run(path, self.leg())
+        assert out["pos_exit"] == pytest.approx(0.03) and out["pos_exit_sessions"] == POSITION_CAP
+        assert out["pos_exit_stop"] == 0.0 and out["pos_exit_target"] == 0.0
+
+    def test_still_open_is_pending(self):
+        assert self.run([(105, 95, 100)] * 5, self.leg()) == {}
+
+    def test_a_proposal_with_a_position_leg_waits_for_its_exit(self):
+        from advisor.entry.track import POS_EXIT_KEYS, keys_for
+
+        p = build_proposal(sheet(), net_liq=10_000)
+        p.legs = [self.leg()]
+        assert set(POS_EXIT_KEYS) <= set(keys_for(p))

@@ -124,6 +124,10 @@ class Leg(BaseModel):
     notional: float
     exit_rules: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    # Position leg: the price at which a trim is reviewed (P/S at its 2-year
+    # 80th percentile). Kept as a number so the leg can be scored by its own
+    # exit rules, not only at fixed horizons.
+    target: float | None = None
 
 
 class Reason(BaseModel):
@@ -377,6 +381,7 @@ def build_proposal(
                     f"review a trim above ${z.p80_price:,.2f} "
                     "(P/S at its 2-year 80th percentile)",
                 ],
+                target=z.p80_price,
             )
             at_limit = held and weight >= BOOK_LIMIT
             if sized and not at_limit:

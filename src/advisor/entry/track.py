@@ -15,6 +15,12 @@ proposal's price, long.
                  stop (the next session's close), else 0.0
     pos_stop20   1.0 if the position leg's stop was touched within 20
                  sessions, else 0.0
+    pos_exit     the position leg as its own rules would have run it: out at
+                 its stop, else at its trim target, else at the close
+                 POSITION_CAP sessions later. With pos_exit_sessions (how
+                 long it was held) and pos_exit_stop / pos_exit_target (1.0
+                 for the way it left). Fixed horizons say whether the price
+                 was good; this says what the position would have made.
 
 A key is written once it is knowable and never rewritten.
 """
@@ -49,6 +55,12 @@ KEY_SESSIONS = {
     "d60": 60,
     "d120": 120,
     "mae120": 120,
+    # A position leg can leave any day: checked daily while it is open (one
+    # download per symbol per run, the same as every other key).
+    "pos_exit": 1,
+    "pos_exit_sessions": 1,
+    "pos_exit_stop": 1,
+    "pos_exit_target": 1,
 }
 LONGEST = max(KEY_SESSIONS.values())
 SETTLE = timedelta(minutes=15)
@@ -66,9 +78,53 @@ def _closed(day: date, now: datetime) -> bool:
     return now >= datetime.combine(day, mc.session_close(day), tzinfo=mc.MARKET_TZ) + SETTLE
 
 
+POSITION_CAP = 120  # sessions a position leg is followed before it is closed at market
+POS_EXIT_KEYS = ("pos_exit", "pos_exit_sessions", "pos_exit_stop", "pos_exit_target")
+
+
 def keys_for(p: Proposal) -> tuple[str, ...]:
-    extra = tuple({"trade": "trade_stop", "position": "pos_stop20"}[leg.horizon] for leg in p.legs)
+    extra: tuple[str, ...] = ()
+    for leg in p.legs:
+        if leg.horizon == "trade":
+            extra += ("trade_stop",)
+        elif leg.horizon == "position":
+            extra += ("pos_stop20", *POS_EXIT_KEYS)
     return KEYS + extra
+
+
+def position_exit(p: Proposal, leg, bars: list[Bar], now: datetime) -> dict[str, float]:
+    """The position leg run by its own rules; {} while it is still open.
+
+    Each session after the entry, in order: the stop is checked before the
+    target (a day that touched both is scored as stopped — the cautious
+    reading, since daily bars cannot say which came first), then the target;
+    at POSITION_CAP sessions it is closed at that day's close. A stop is
+    filled at the stop price: daily bars carry no open, so a gap through it
+    is not charged (an optimistic fill, said here).
+    """
+    cap = nth_trading_day(p.session, POSITION_CAP)
+    held = 0
+    for b in sorted(bars, key=lambda x: x.day):
+        if b.day <= p.session or b.day > cap:
+            continue
+        held += 1
+        if not _closed(b.day, now):
+            return {}
+        if b.low <= leg.stop:
+            px, how = leg.stop, "stop"
+        elif leg.target and b.high >= leg.target:
+            px, how = leg.target, "target"
+        elif b.day == cap:
+            px, how = b.close, "time"
+        else:
+            continue
+        return {
+            "pos_exit": px / leg.entry - 1,
+            "pos_exit_sessions": float(held),
+            "pos_exit_stop": 1.0 if how == "stop" else 0.0,
+            "pos_exit_target": 1.0 if how == "target" else 0.0,
+        }
+    return {}
 
 
 def score(p: Proposal, bars: list[Bar], now: datetime) -> dict[str, float | None]:
@@ -111,6 +167,8 @@ def score(p: Proposal, bars: list[Bar], now: datetime) -> dict[str, float | None
                 out["trade_stop"] = 1.0 if min(b.low for b in span) <= leg.stop else 0.0
         if leg.horizon == "position" and _closed(d20, now) and window:
             out["pos_stop20"] = 1.0 if min(b.low for b in window) <= leg.stop else 0.0
+        if leg.horizon == "position":
+            out.update(position_exit(p, leg, bars, now))
     return out
 
 
