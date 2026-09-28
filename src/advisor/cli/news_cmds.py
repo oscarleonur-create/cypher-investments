@@ -112,6 +112,71 @@ def list_cmd(
     _table(rows, f"News judgments, last {days} days (prompt {prompt_version()})")
 
 
+@app.command("show")
+def show_cmd(
+    symbol: Annotated[str, typer.Argument()],
+    days: Annotated[int, typer.Option("--days", "-d")] = 7,
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """One name in full: the week's synthesis, then each item's analysis."""
+    from advisor.daemon.market_calendar import now_et
+    from advisor.news.judge import NewsJudgmentStore, prompt_version
+
+    store, conn = _stores()
+    try:
+        judged = NewsJudgmentStore(conn)
+        rows = judged.list(
+            symbol=symbol, since=now_et() - timedelta(days=days), version=prompt_version()
+        )
+        week = judged.latest_summary(symbol)
+    finally:
+        store.close()
+        conn.close()
+    if output == "json":
+        output_json(
+            {
+                "week": week.model_dump(mode="json") if week else None,
+                "items": [j.model_dump(mode="json") for j in rows],
+            }
+        )
+        return
+    sym = symbol.upper()
+    if week is not None:
+        console.print(f"[bold]{sym} — {week.net.value.lower()}: {week.headline}[/bold]")
+        console.print(f"[dim]{week.day}, from {week.items} item(s)[/dim]")
+        console.print(week.text)
+        if week.thesis:
+            console.print(f"[bold]Thesis / position:[/bold] {week.thesis}")
+        for w in week.watch:
+            console.print(f"  • watch: {w}")
+        console.print()
+    elif not rows:
+        console.print(f"No news judged for {sym} in the last {days} days.")
+        return
+    for j in rows:
+        if not j.about_company:
+            console.print(f"[dim]{j.published_at.date()}  off-topic — {j.title}[/dim]")
+            continue
+        links = ", ".join(f"{'AGAINST' if c.against_thesis else 'for'} {c.kind}" for c in j.claims)
+        console.print(
+            f"[bold]{j.published_at.date()}  {j.direction.value.lower()} "
+            f"{j.materiality.value.lower()}[/bold] · {j.event_type.value.lower()} · "
+            f"{j.novelty.value.lower()} · {j.basis.value.lower()} · market "
+            f"{j.market_read.value.lower()} · read from {j.read_from}"
+            + (f" · thesis: {links}" if links else "")
+        )
+        console.print(f"  {j.title} — {j.provider}")
+        for label, text in (
+            ("what", j.what),
+            ("size", j.magnitude),
+            ("why", j.why),
+            ("watch", j.watch),
+        ):
+            if text:
+                console.print(f"  [dim]{label}:[/dim] {text}")
+        console.print()
+
+
 @app.command("report")
 def report_cmd(output: Annotated[str, typer.Option("--output", "-o")] = "table") -> None:
     """Are its calls worth anything? Excess over each name's own drift, per call."""

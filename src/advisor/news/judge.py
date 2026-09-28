@@ -18,8 +18,22 @@ What keeps a judgment honest:
   ``news.verify`` has accepted its date, and at the checked date.
 - **It must quote.** Every judgment carries a verbatim span of the item that
   supports it; a quote the item does not contain voids the judgment.
-- **No number it cannot show.** A number in the explanation must appear in
-  the item (thousands separators ignored, the lesson of "38,311.8 m²").
+- **It reads the article and knows the position** (2026-09-28, the user found
+  the first judgments "escueto"; 17 of 21 had been judged from a headline and
+  a teaser). A thin item is read from the publisher's page (``news.article``);
+  each name comes with a computed context (``news.context``): the position
+  and its exit stop, the company's size, what the price did the first session
+  after each item, and the last 30 days of filings and headlines. Each
+  judgment says what happened, how big it is against the company, why it
+  matters for this holder and what would confirm it; a weekly synthesis per
+  name weighs them. It describes; it never recommends.
+- **No number it cannot show.** A number the judgment writes must be in the
+  item or the context, a rounding of one, or arithmetic on two (a share of
+  shares outstanding); product names ("800G") and periods ("Q3") are not
+  quantities. A stray number voids the judgment — or, in "watch", only the
+  watch: a made-up lock-up date must not survive, the rest of the call may.
+- **The market's read is computed**, not asked: the first session's move in
+  the name's own sigma (``read_market``).
 - **Thesis links are to claims that exist.** An unknown claim id is dropped.
 - **Off-topic is neutral.** An item the model says is not about the company
   keeps no direction, materiality or thesis link.
@@ -49,10 +63,11 @@ logger = logging.getLogger(__name__)
 
 # Items published this many days back are judged; older ones are left alone.
 JUDGE_WINDOW_DAYS = 7
-# Items per model call; a name with more is judged in several calls.
-BATCH = 10
-# Characters of an item's summary shown to the model.
-SUMMARY_CHARS = 1200
+# A name never judged under the current prompt starts from this far back, so
+# the first reading of a position is a month of its news, not a week.
+FIRST_RUN_DAYS = 30
+# Items per model call: each can carry a full article now, so fewer per call.
+BATCH = 5
 # The item tiers judged: news and the company's own filings with a lead.
 JUDGED_TIERS = ("AGGREGATOR", "UNTAGGED", "PRIMARY")
 # Sessions after the judgment over which the price is scored.
@@ -119,6 +134,37 @@ class ClaimLink(BaseModel):
 THREATS = frozenset({"INVALIDATION", "RISK"})
 
 
+class MarketRead(StrEnum):
+    """What the price had done by the first session after the item. Computed, not asked.
+
+    The model called a +5.1% (0.8 sigma) day after a NEGATIVE lock-up story
+    "moved with" it; this is arithmetic on the market line, so the code does it.
+    """
+
+    MOVED_WITH = "MOVED_WITH"  # beyond MOVE_SIGMAS, in the news' direction
+    MOVED_AGAINST = "MOVED_AGAINST"  # beyond MOVE_SIGMAS, the other way
+    MOVED = "MOVED"  # beyond MOVE_SIGMAS, news with no single direction
+    QUIET = "QUIET"  # within its usual daily range
+    UNKNOWN = "UNKNOWN"  # no session has traded on it yet, or no volatility estimate
+
+
+# A first-session move this many of the name's daily sigmas is the market reading it.
+MOVE_SIGMAS = 1.0
+
+
+def read_market(direction: Direction, move: float | None, z: float | None) -> MarketRead:
+    """The market's read of an item from its first session's move. Pure."""
+    if move is None or z is None:
+        return MarketRead.UNKNOWN
+    if abs(z) < MOVE_SIGMAS:
+        return MarketRead.QUIET
+    if direction is Direction.POSITIVE:
+        return MarketRead.MOVED_WITH if move > 0 else MarketRead.MOVED_AGAINST
+    if direction is Direction.NEGATIVE:
+        return MarketRead.MOVED_WITH if move < 0 else MarketRead.MOVED_AGAINST
+    return MarketRead.MOVED
+
+
 class ItemCall(BaseModel):
     """What the model returns for one item."""
 
@@ -131,7 +177,11 @@ class ItemCall(BaseModel):
     basis: Basis
     claims: list[ClaimLink] = Field(default_factory=list)
     quote: str  # verbatim words of the item that carry the judgment
-    why: str  # one sentence: why this direction and materiality
+    what: str = ""  # what happened, in one or two sentences, with its numbers
+    magnitude: str = ""  # how big it is against the company or the position
+    why: str  # why it matters (or not) for this holder: thesis, position, size
+    watch: str = ""  # what would confirm or refute it, and when
+    market_read: MarketRead = MarketRead.UNKNOWN
 
 
 class Draft(BaseModel):
@@ -157,6 +207,14 @@ class Judgment(BaseModel):
     claims: list[ClaimLink] = Field(default_factory=list)
     quote: str
     why: str
+    what: str = ""
+    magnitude: str = ""
+    watch: str = ""
+    market_read: MarketRead = MarketRead.UNKNOWN
+    # How the item was read: "article" (the publisher's page), "feed" (the
+    # feed's own text) or "headline" (nothing more could be read).
+    read_from: str = "feed"
+    market: str | None = None  # the market line it was shown
     model: str | None = None
     prompt_version: str
     judged_at: datetime
@@ -174,33 +232,54 @@ class Judgment(BaseModel):
 
 
 SYSTEM_PROMPT = """\
-You judge news items about one listed company for a long-term holder.
+You are the news analyst for a long-term holder of one listed company. You \
+are given what is known about the company and the holder's position (lines \
+C1, C2, ...), the holder's thesis claims if any, and the news items (N1, \
+N2, ...), each with its text and what the share price did on the first \
+session after it.
 
-For EACH numbered item return one judgment:
-- about_company: is the item really about this company (not only a list or \
-the sector that mentions it)?
-- event_type: what happened (RESULTS, GUIDANCE, CUSTOMER, PRODUCT, \
-REGULATORY, LEGAL, FINANCING, DEAL, MANAGEMENT, INSIDER, ANALYST, SECTOR, \
-PRICE, OTHER). PRICE is a story about the share price with no new fact about \
-the business.
+For EACH item return one judgment:
+- about_company: is the item really about this company, or only a list, a \
+comparison or a sector piece that mentions it?
+- event_type: RESULTS, GUIDANCE, CUSTOMER (a customer, contract, order or \
+partnership), PRODUCT, REGULATORY, LEGAL, FINANCING (equity or debt raised, \
+buybacks), DEAL, MANAGEMENT, INSIDER (insiders or lock-ups; not a fund \
+buying), ANALYST (ratings, targets, estimates, funds' positions), SECTOR, \
+PRICE (a story about the share price with no new business fact), OTHER.
 - direction: is the FACT good or bad for the BUSINESS (revenue, margins, \
 solvency, share count, competitive position)? Judge the fact, not the tone \
-of the headline or the share-price move. POSITIVE, NEGATIVE, MIXED or NEUTRAL.
+of the headline or the share-price move. POSITIVE, NEGATIVE, MIXED, NEUTRAL.
 - materiality: HIGH only if it could change revenue, margins, solvency or the \
-share count in a way a holder must act on; MEDIUM if it adds real information; \
-LOW otherwise (opinion pieces, lists, price recaps are LOW).
-- novelty: NEW fact, FOLLOW_UP on a known story, or REHASH of old news.
-- basis: COMPANY (the company itself said it), REPORTED (journalist reporting \
-a fact), OPINION, or RUMOR.
-- claims: only if the item bears on one of the holder's thesis claims listed \
-below, the claim id and SUPPORTS (the item is evidence the claim's text is \
-true) or CONTRADICTS (evidence it is false). A claim marked INVALIDATION or \
-RISK describes what would go wrong. Otherwise an empty list.
-- quote: copy, word for word, the few words of the item that your judgment \
-rests on.
-- why: one sentence. Use only numbers that appear in the item.
+share count enough that a holder must act; MEDIUM if it adds real \
+information; LOW otherwise (opinion, lists, price recaps).
+- novelty: NEW fact, FOLLOW_UP on a known story, or REHASH. Judge it against \
+"Earlier on this name" in the context.
+- basis: COMPANY (the company said it), REPORTED (a journalist reports a \
+fact), OPINION, or RUMOR.
+- claims: only if the item bears on a thesis claim, its id and SUPPORTS (the \
+item is evidence the claim's text is true) or CONTRADICTS. INVALIDATION and \
+RISK claims describe what would go wrong.
+- quote: copy, word for word, the few words of the item your judgment rests on.
+- what: what happened, in one or two sentences, with the item's own numbers \
+(amounts, dates, percentages). Not the headline restated.
+- magnitude: how big it is AGAINST THE COMPANY (market cap, revenue, shares \
+outstanding in the context) or the holder's position — e.g. "14.6M shares, \
+about 5% of shares outstanding" — or "not quantifiable from the item".
+- why: two or three sentences for THIS holder: what it changes for the \
+business and for the thesis or position (weight, distance to the stop). Say \
+plainly when it changes nothing.
+- watch: the concrete, dated or checkable thing that would confirm or refute \
+it (a filing, a results date, a lock-up date, a price level from the context).
 
-Do not invent facts. If the item says too little, judge it NEUTRAL and LOW."""
+The context lines are facts about the holder's position and the company: \
+never contradict them (C1 states where the price stands against the exit \
+stop). Describe and weigh; do NOT recommend buying, selling, holding, \
+trimming or tightening anything — the holder's own rules decide that.
+
+Use only numbers that appear in the item, the context lines or the item's \
+market line; derive a ratio only from two of those. Do not invent facts. If \
+the item says too little (read from the headline only), judge it NEUTRAL and \
+LOW and say so."""
 
 
 def prompt_version() -> str:
@@ -237,8 +316,8 @@ def items_to_judge(store, conn, symbol: str, now: datetime) -> list:
     2026-09-27: an unverified date may support nothing), and is dated at the
     checked publication. A filing is the regulator's own record and needs no check.
     """
-    since = now - timedelta(days=JUDGE_WINDOW_DAYS)
     done = NewsJudgmentStore(conn).keys(symbol, prompt_version())
+    since = now - timedelta(days=JUDGE_WINDOW_DAYS if done else FIRST_RUN_DAYS)
     checked = checked_dates(store, symbol, since)
     out, seen = [], set()
     for item in store.source_items_between(symbol, since - timedelta(days=2), now):
@@ -261,18 +340,48 @@ def items_to_judge(store, conn, symbol: str, now: datetime) -> list:
     return out
 
 
-def user_prompt(symbol: str, company: str | None, items: list, claims: list) -> str:
+class Entry(BaseModel):
+    """One item as the model is shown it: its text, how it was read, what the price did."""
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    item: object
+    text: str
+    read_from: str
+    market: str
+    move: float | None = None  # first-session close-to-close move
+    z: float | None = None  # the same, in the name's daily sigma
+
+    @property
+    def full_text(self) -> str:
+        return f"{self.item.title} {self.text}"
+
+
+_READ_LABEL = {
+    "article": "full article",
+    "feed": "feed summary only",
+    "headline": "HEADLINE ONLY - nothing more could be read",
+}
+
+
+def user_prompt(
+    symbol: str, company: str | None, entries: list, claims: list, context: list[str] = ()
+) -> str:
     lines = [f"Company: {company or symbol} ({symbol})", ""]
+    if context:
+        lines += [f"C{n}: {c}" for n, c in enumerate(context, 1)]
+        lines.append("")
     if claims:
         lines.append("The holder's thesis claims:")
         lines += [f"{c.id} [{c.kind.value}]: {c.text}" for c in claims if c.id]
         lines.append("")
     lines.append("Items:")
-    for n, item in enumerate(items, 1):
-        summary = (item.summary or "").strip().replace("\n", " ")[:SUMMARY_CHARS]
+    for n, e in enumerate(entries, 1):
+        it = e.item
         lines.append(
-            f"N{n} [{item.published_at.date().isoformat()}] ({item.provider}, "
-            f"{item.doc_type or 'NEWS'}) {item.title}" + (f"\n    {summary}" if summary else "")
+            f"N{n} [{it.published_at.date().isoformat()}] ({it.provider}, "
+            f"{it.doc_type or 'NEWS'}; {_READ_LABEL[e.read_from]}) {it.title}\n"
+            f"    {e.market}" + (f"\n    Text: {e.text.strip()}" if e.text.strip() else "")
         )
     return "\n".join(lines)
 
@@ -315,25 +424,124 @@ def _close_to(x: str, known: set[str]) -> bool:
     return False
 
 
+# Names, not quantities: periods ("Q3", "H2", "FY2027"), the SEC's form names
+# ("10-Q", "8-K", "Form 4", "13G", "424B5" — "watch the next 10-Q" dropped nine
+# watches in the first live run), and the prompt's own line ids ("C2", "N3").
+_LABELS = re.compile(
+    r"\b(?:Q[1-4]|H[12]|[FC]Y\s?'?\d{2,4})\b"
+    r"|\b(?:10-[KQ]|8-K|6-K|20-F|40-F|S-[134]|424B\d|13[DFG]|Form\s?\d{1,3}|144)\b"
+    r"|\b[CNJF]\d{1,2}\b",
+    re.IGNORECASE,
+)
+# A number written as a share or a multiple: "6.1%", "about 9x", "3 times".
+_SCALED = re.compile(r"(\d[\d,]*\.?\d*)\s*(?:%|x\b|times\b)", re.IGNORECASE)
+# A number fused to letters ("800G", "1.6T", "224G") is a product name: it is
+# known only if the same token is.
+_TOKEN = re.compile(r"\b\d[\d.,]*[A-Za-z]+\b|\b[A-Za-z]+\d[\w.]*\b")
+
+
 def _numbers(text: str) -> set[str]:
     out = set()
-    for m in _NUM.findall(text):
+    for m in _NUM.findall(_LABELS.sub(" ", text)):
         n = m.replace(",", "").rstrip(".")
         if n:
             out.add(n.rstrip("0").rstrip(".") if "." in n else n)
     return out
 
 
-def check(call: ItemCall, item, claim_ids) -> tuple[ItemCall | None, list[str]]:
-    """Keep what the item supports. Pure. (None, problems) when the judgment is void."""
+def _tokens(text: str) -> set[str]:
+    return {t.lower() for t in _TOKEN.findall(_LABELS.sub(" ", text))}
+
+
+def _floats(nums: set[str]) -> list[float]:
+    out = []
+    for n in nums:
+        try:
+            f = abs(float(n))
+        except ValueError:
+            continue
+        if f and not (1900 <= f <= 2100 and f == int(f)):  # a year is not a size
+            out.append(f)
+    return out
+
+
+def _derivable(x: str, item_nums: set[str], context_nums: set[str]) -> bool:
+    """``x`` is a share or multiple of an item number against a context number (1.5%).
+
+    The prompt asks for size against the company — "14.6M shares, about 6% of
+    the 237.6M outstanding" — which is one number from the item over one from
+    the context. Nothing wider: over every pair of every known number, almost
+    any figure is "derivable" (an invented "99 waves" passed that way).
+    """
+    try:
+        v = abs(float(x))
+    except ValueError:
+        return False
+    for a in _floats(item_nums):
+        for b in _floats(context_nums):
+            for c in (a / b * 100, b / a * 100, a / b, b / a):
+                if c and abs(v - c) / c <= 0.015:
+                    return True
+    return False
+
+
+def _stray(
+    fields: dict[str, str],
+    known: set[str],
+    tokens: set[str] = frozenset(),
+    *,
+    item_nums: set[str] = frozenset(),
+    context_nums: set[str] = frozenset(),
+):
+    """Numbers in each field that are not known, a rounding of one, or (for a share or
+    a multiple only) an item number against a context number."""
+    out = {}
+    for name, value in fields.items():
+        text = value
+        for t in _tokens(value):
+            if t in tokens:  # a product name the item or context uses: not a quantity
+                text = re.sub(re.escape(t), " ", text, flags=re.IGNORECASE)
+        scaled = _numbers(" ".join(_SCALED.findall(_LABELS.sub(" ", text))))
+        bad = sorted(
+            n
+            for n in _numbers(text) - known
+            if not _close_to(n, known)
+            and not (n in scaled and _derivable(n, item_nums, context_nums))
+        )
+        if bad:
+            out[name] = bad
+    return out
+
+
+def check(
+    call: ItemCall, item, claim_ids, *, known_text: str = ""
+) -> tuple[ItemCall | None, list[str]]:
+    """Keep what the item supports. Pure. (None, problems) when the judgment is void.
+
+    ``item`` is the text the model read (a SourceItem, or the full text of an
+    Entry). The quote must be in it; every number the judgment writes must be
+    in it, in ``known_text`` (the context and market lines), or a rounding of one.
+    """
     problems = []
-    text = _text(item)
+    text = item if isinstance(item, str) else _text(item)
     if not quoted(call.quote, text):
         return None, [f"{call.id}: the quote is not in the item"]
-    known = _numbers(text)
-    stray = {n for n in _numbers(call.why) - known if not _close_to(n, known)}
+    item_nums, context_nums = _numbers(text), _numbers(known_text)
+    known = item_nums | context_nums
+    tokens = _tokens(text) | _tokens(known_text)
+    sizes = {"item_nums": item_nums, "context_nums": context_nums}
+    fields = {"what": call.what, "magnitude": call.magnitude, "why": call.why}
+    stray = _stray(fields, known, tokens, **sizes)
     if stray:
-        return None, [f"{call.id}: 'why' uses {sorted(stray)}, not in the item"]
+        where = "; ".join(f"'{k}' uses {v}" for k, v in stray.items())
+        return None, [f"{call.id}: {where}, not in the item or its context"]
+    # What to watch is forward-looking: a date or level the item does not give
+    # (a lock-up day it made up) loses the watch, not the whole judgment.
+    watch = _stray({"watch": call.watch}, known, tokens, **sizes) if call.watch else {}
+    if watch:
+        bad = watch["watch"]
+        problems.append(f"{call.id}: 'watch' dropped, it uses {bad} not in the item or context")
+        call = call.model_copy(update={"watch": ""})
     kinds = claim_ids if isinstance(claim_ids, dict) else dict.fromkeys(claim_ids)
     kept = [
         c.model_copy(update={"effect": c.effect.upper(), "kind": kinds[c.claim_id]})
@@ -359,7 +567,8 @@ def check(call: ItemCall, item, claim_ids) -> tuple[ItemCall | None, list[str]]:
 Complete = Callable[[str, str], Draft]
 
 
-def _openrouter() -> tuple[Complete, str] | None:
+def _openrouter() -> tuple[Complete, Callable, str] | None:
+    """(judge, summarize, model) over the configured model; None when none is."""
     from research_agent.config import ResearchConfig
     from research_agent.llm import OpenRouterLLM
 
@@ -367,7 +576,11 @@ def _openrouter() -> tuple[Complete, str] | None:
     if not config.openrouter_api_key:
         return None
     llm = OpenRouterLLM(config)
-    return (lambda s, u: llm.complete(s, u, response_model=Draft)), config.llm_model
+    return (
+        (lambda s, u: llm.complete(s, u, response_model=Draft)),
+        (lambda s, u: llm.complete(s, u, response_model=SummaryDraft)),
+        config.llm_model,
+    )
 
 
 def judge_symbol(
@@ -378,9 +591,20 @@ def judge_symbol(
     *,
     company: str | None = None,
     complete: Complete | None = None,
+    summarize: Callable | None = None,
     model: str | None = None,
+    closes: Callable | None = None,
+    fetch=None,
 ) -> tuple[list[Judgment], list[str]]:
-    """Judge and store every unjudged item of ``symbol``. Returns (judgments, problems)."""
+    """Judge and store every unjudged item of ``symbol``, then its weekly synthesis.
+
+    ``closes(symbol)`` -> [(date, close)] for the market lines (default: yfinance);
+    ``fetch(url)`` -> html for thin items (default: the publisher's page). A test
+    that passes ``complete`` and no ``summarize`` gets no synthesis.
+    """
+    from advisor.news.article import ArticleCache, text_for
+    from advisor.news.context import closes_for, market_move, name_context, sigma_of
+
     symbol = symbol.upper()
     items = items_to_judge(store, conn, symbol, now)
     if not items:
@@ -389,36 +613,51 @@ def judge_symbol(
         configured = _openrouter()
         if configured is None:
             return [], [f"{symbol}: no model configured"]
-        complete, model = configured
+        complete, summarize, model = configured
+    history = closes_for(symbol, closes)
+    sigma = sigma_of(history)
+    cache = ArticleCache(conn)
+    entries = []
+    for it in items:
+        text, read_from = text_for(it, cache, fetch=fetch)
+        line, move, z = market_move(it.published_at, history, sigma)
+        entries.append(Entry(item=it, text=text, read_from=read_from, market=line, move=move, z=z))
+    judged = {i.url for i in items} | {i.title.strip().lower() for i in items}
+    context = name_context(store, symbol, now, history, exclude=judged)
     claims = [c for c in store.load_claims(symbol) if c.id]
     claim_ids = {c.id: c.kind.value for c in claims}
     out, problems = [], []
     judgments = NewsJudgmentStore(conn)
-    for start in range(0, len(items), BATCH):
-        batch = items[start : start + BATCH]
+    for start in range(0, len(entries), BATCH):
+        batch = entries[start : start + BATCH]
         try:
-            draft = complete(SYSTEM_PROMPT, user_prompt(symbol, company, batch, claims))
+            draft = complete(SYSTEM_PROMPT, user_prompt(symbol, company, batch, claims, context))
         except Exception as exc:  # noqa: BLE001
             problems.append(f"{symbol}: model failed: {exc}")
             continue
         by_id = {c.id: c for c in draft.judgments}
-        for n, item in enumerate(batch, 1):
+        for n, e in enumerate(batch, 1):
             call = by_id.get(f"N{n}")
             if call is None:
                 problems.append(f"{symbol} N{n}: not judged by the model")
                 continue
-            kept, why = check(call, item, claim_ids)
+            known = "\n".join([*context, e.market, *(c.text for c in claims)])
+            kept, why = check(call, e.full_text, claim_ids, known_text=known)
             problems += [f"{symbol} {p}" for p in why]
             if kept is None:
                 continue
+            it = e.item
+            kept = kept.model_copy(update={"market_read": read_market(kept.direction, e.move, e.z)})
             j = Judgment(
-                key=item.dedup_key(),
+                key=it.dedup_key(),
                 symbol=symbol,
-                published_at=item.published_at,
-                title=item.title,
-                provider=item.provider,
-                tier=item.tier.value,
-                url=item.url,
+                published_at=it.published_at,
+                title=it.title,
+                provider=it.provider,
+                tier=it.tier.value,
+                url=it.url,
+                read_from=e.read_from,
+                market=e.market,
                 model=model,
                 prompt_version=prompt_version(),
                 judged_at=mc.now_et(),
@@ -427,7 +666,122 @@ def judge_symbol(
             )
             judgments.add(j)
             out.append(j)
+    if out and summarize is not None:
+        _, ps = synthesize(conn, symbol, now, context, summarize=summarize, model=model)
+        problems += ps
     return out, problems
+
+
+# ── The week, per name ────────────────────────────────────────────────────
+
+
+class SummaryDraft(BaseModel):
+    """What the model returns for a name's week of judged news."""
+
+    net: Direction
+    headline: str  # one line: the week for this holder
+    text: str  # three to five sentences
+    thesis: str = ""  # what the week does to the thesis or the position; "" if nothing
+    watch: list[str] = Field(default_factory=list)  # the next things to check
+
+
+class NameSummary(BaseModel):
+    symbol: str
+    day: date
+    net: Direction
+    headline: str
+    text: str
+    thesis: str = ""
+    watch: list[str] = Field(default_factory=list)
+    items: int  # judgments it was written from
+    model: str | None = None
+    prompt_version: str
+    generated_at: datetime
+    problems: list[str] = Field(default_factory=list)
+
+
+SUMMARY_PROMPT = """\
+You write the weekly news synthesis for a long-term holder of one company, \
+from the judgments of the individual items (J1, J2, ...) and the context \
+(C1, C2, ...). Weigh the items by materiality and basis: a company filing \
+outweighs an opinion piece; off-topic items do not count.
+
+Return: net (POSITIVE, NEGATIVE, MIXED, NEUTRAL for the business over the \
+week); headline (one line); text (three to five sentences: what actually \
+changed, what is noise, and how big the changes are against the company); \
+thesis (what the week does to the holder's thesis claims or position — its \
+weight and distance to the stop — or "" when nothing); watch (up to three \
+concrete next things to check, with dates where the items give them).
+
+The context lines are facts about the position and the company: never \
+contradict them. Describe and weigh; do NOT recommend buying, selling, \
+holding, trimming or tightening anything — the holder's own rules decide that.
+
+Use only numbers that appear in the judgments or the context. If nothing \
+material happened, say so in one sentence."""
+
+
+def summary_version() -> str:
+    return hashlib.sha256((SYSTEM_PROMPT + SUMMARY_PROMPT).encode()).hexdigest()[:12]
+
+
+def _judgment_line(n: int, j: Judgment) -> str:
+    if not j.about_company:
+        return f"J{n} [{j.published_at.date()}] off-topic: {j.title}"
+    links = ", ".join(f"{'against' if c.against_thesis else 'for'} {c.kind} {c.claim_id}"
+                      for c in j.claims)  # fmt: skip
+    return (
+        f"J{n} [{j.published_at.date()}] {j.direction.value} {j.materiality.value} "
+        f"{j.event_type.value} ({j.basis.value}, {j.novelty.value}; market "
+        f"{j.market_read.value}){' thesis: ' + links if links else ''} | {j.title}\n"
+        f"    quote: {j.quote}\n"
+        f"    what: {j.what}\n    magnitude: {j.magnitude}\n    why: {j.why}\n"
+        f"    watch: {j.watch}"
+    )
+
+
+def synthesize(
+    conn,
+    symbol: str,
+    now: datetime,
+    context: list[str],
+    *,
+    summarize: Callable,
+    model: str | None = None,
+) -> tuple[NameSummary | None, list[str]]:
+    """The week's synthesis for ``symbol`` from its stored judgments. Gated like an item."""
+    store = NewsJudgmentStore(conn)
+    week = store.list(
+        symbol=symbol, since=now - timedelta(days=JUDGE_WINDOW_DAYS), version=prompt_version()
+    )
+    if not any(j.about_company for j in week):
+        return None, []
+    lines = [_judgment_line(n, j) for n, j in enumerate(week, 1)]
+    user = "\n".join(
+        [f"Company: {symbol}", *[f"C{n}: {c}" for n, c in enumerate(context, 1)], "", *lines]
+    )
+    try:
+        draft = summarize(SUMMARY_PROMPT, user)
+    except Exception as exc:  # noqa: BLE001
+        return None, [f"{symbol}: synthesis failed: {exc}"]
+    known = _numbers(user)
+    fields = {"headline": draft.headline, "text": draft.text, "thesis": draft.thesis,
+              **{f"watch{i}": w for i, w in enumerate(draft.watch)}}  # fmt: skip
+    stray = _stray(fields, known, _tokens(user))
+    if stray:
+        where = "; ".join(f"'{k}' uses {v}" for k, v in stray.items())
+        return None, [f"{symbol} synthesis: {where}, not in the judgments or context"]
+    summary = NameSummary(
+        symbol=symbol,
+        day=now.date(),
+        items=len(week),
+        model=model,
+        prompt_version=summary_version(),
+        generated_at=mc.now_et(),
+        **draft.model_dump(),
+    )
+    store.save_summary(summary)
+    return summary, []
 
 
 def judge_all(
@@ -460,6 +814,13 @@ CREATE TABLE IF NOT EXISTS news_judgments (
     PRIMARY KEY (key, prompt_version)
 );
 CREATE INDEX IF NOT EXISTS idx_news_judgments_symbol ON news_judgments(symbol, published_at);
+CREATE TABLE IF NOT EXISTS news_summaries (
+    symbol         TEXT NOT NULL,
+    day            TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    payload_json   TEXT NOT NULL,            -- news.judge.NameSummary
+    PRIMARY KEY (symbol, day, prompt_version)
+);
 """
 
 
@@ -492,6 +853,25 @@ class NewsJudgmentStore:
             (j.model_dump_json(), j.key, j.prompt_version),
         )
         self._conn.commit()
+
+    def save_summary(self, summary: "NameSummary") -> None:
+        """One synthesis per name, day and prompt: the day's last one wins."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO news_summaries (symbol, day, prompt_version, payload_json) "
+            "VALUES (?, ?, ?, ?)",
+            (summary.symbol, summary.day.isoformat(), summary.prompt_version,
+             summary.model_dump_json()),
+        )  # fmt: skip
+        self._conn.commit()
+
+    def latest_summary(self, symbol: str, version: str | None = None) -> "NameSummary | None":
+        version = version or summary_version()
+        row = self._conn.execute(
+            "SELECT payload_json FROM news_summaries WHERE symbol = ? AND prompt_version = ? "
+            "ORDER BY day DESC LIMIT 1",
+            (symbol.upper(), version),
+        ).fetchone()
+        return NameSummary.model_validate_json(row["payload_json"]) if row else None
 
     def keys(self, symbol: str, version: str) -> set[str]:
         rows = self._conn.execute(

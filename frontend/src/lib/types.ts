@@ -977,10 +977,29 @@ export interface TrackNews {
   basis: string;
   why: string;
   thesis: string[];
+  what: string;
+  magnitude: string;
+  watch: string;
+  market_read: "MOVED_WITH" | "MOVED_AGAINST" | "MOVED" | "QUIET" | "UNKNOWN";
+  market: string | null;
+  /** article: the publisher's page · feed: the feed's own text · headline: nothing more */
+  read_from: "article" | "feed" | "headline";
+}
+
+/** The news agent's synthesis of a name's week. */
+export interface TrackNewsWeek {
+  day: string;
+  net: "POSITIVE" | "NEGATIVE" | "MIXED" | "NEUTRAL";
+  headline: string;
+  text: string;
+  thesis: string;
+  watch: string[];
+  items: number;
 }
 
 export interface TrackRow {
   news: TrackNews[];
+  news_week: TrackNewsWeek | null;
   news_summary: Partial<
     Record<
       "items" | "about" | "positive" | "negative" | "mixed" | "high" | "against_thesis" | "for_thesis",
