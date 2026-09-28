@@ -336,11 +336,23 @@ def sec_text(url: str) -> str:
 
 
 def sec_bytes(url: str) -> bytes | None:
+    """The file, or None when it does not exist (404: a holiday has no index).
+
+    A 403 is *not* absence: the SEC answers 403 as well as 429 when it is
+    refusing a client, and a refused day read as empty would be marked done
+    and never asked for again.
+    """
     r = _sec_get(url)
-    if r.status_code in (403, 404):
+    if r.status_code == 404:
         return None
     r.raise_for_status()
     return r.content
+
+
+def refused(exc: Exception) -> bool:
+    """True when the SEC is refusing us (429, 403), as opposed to a one-off failure."""
+    response = getattr(exc, "response", None)
+    return getattr(response, "status_code", None) in (403, 429)
 
 
 def _insert(store: BreadthStore, txns: list[Txn]) -> int:
@@ -396,10 +408,15 @@ def sync_insiders(
             continue
         try:
             blob = get_bytes(links[key])
-            txns = parse_dataset(blob) if blob else []
+            if blob is None:
+                raise FileNotFoundError("linked from the index page but not found")
+            txns = parse_dataset(blob)
         except Exception as exc:  # noqa: BLE001
             report["errors"].append(f"{key}: {exc}")
-            continue
+            if refused(exc):
+                report["refused"] = True
+                return report
+            continue  # not marked done: retried next run
         with store.conn:
             n = _insert(store, txns)
             store.conn.execute(
@@ -431,6 +448,11 @@ def sync_insiders(
                 txns += parse_form4(get_text(FILING_URL.format(path=path)), accession, day)
         except Exception as exc:  # noqa: BLE001
             report["errors"].append(f"{key}: {exc}")
+            if refused(exc):
+                # Asking again tomorrow's worth of days would only extend the
+                # block. Stop; everything from this day on is read next run.
+                report["refused"] = True
+                break
             day += timedelta(days=1)
             continue  # not marked done: retried next run
         with store.conn:

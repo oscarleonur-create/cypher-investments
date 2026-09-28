@@ -79,14 +79,26 @@ WATCHED_FORMS: tuple[str, ...] = (
 INSIDER_FORMS: tuple[str, ...] = ("4",)
 
 
+_LIMITER = None
+
+
 def _client_ready() -> None:
-    """Set the SEC identity and take a rate-limit slot, reusing research's."""
+    """Set the SEC identity and take a rate-limit slot, reusing research's.
+
+    One limiter per process. It used to be built afresh on every call, with no
+    memory of the last one, so it never waited: calls were limited only by
+    their own latency. A loop of fast Form 4 reads (breadth, 2026-09-28) drew
+    429 Too Many Requests from the SEC.
+    """
+    global _LIMITER
     from advisor.research.config import get_settings
     from advisor.research.edgar import RateLimiter, _ensure_identity
 
     settings = get_settings()
     _ensure_identity(settings.edgar_user_agent)
-    RateLimiter(settings.edgar_rate_limit_per_sec).acquire()
+    if _LIMITER is None:
+        _LIMITER = RateLimiter(settings.edgar_rate_limit_per_sec)
+    _LIMITER.acquire()
 
 
 def company_for(symbol: str) -> Any | None:

@@ -228,6 +228,57 @@ def test_sync_loads_data_sets_then_days_and_is_idempotent(tmp_path):
         assert not any("2026q2" in u for u in sec2.urls)
 
 
+class Refusal(Exception):
+    def __init__(self, status):
+        super().__init__(f"HTTP {status}")
+        self.response = type("R", (), {"status_code": status})()
+
+
+@pytest.mark.parametrize("status", [429, 403])
+def test_a_refusal_stops_the_days_and_leaves_them_for_next_run(tmp_path, status):
+    calls = []
+
+    def get_bytes(url):
+        calls.append(url)
+        if "master.20260706" in url:
+            raise Refusal(status)
+        return None  # no Form 4 index content needed
+
+    with BreadthStore(tmp_path / "b.db") as store:
+        r = I.sync_insiders(store, NOW, {100}, get_text=lambda u: "", get_bytes=get_bytes)
+        # No data set: days start 90 back (Jun 30); Jun 30 – Jul 3 read, stopped on the 6th.
+        assert r["refused"] and r["days"] == 4
+        assert not any("master.20260707" in u for u in calls)  # no hammering
+        done = {k for (k,) in store.conn.execute("SELECT key FROM breadth_insider_state")}
+        assert "2026-07-06" not in done
+
+
+def test_a_linked_data_set_that_is_missing_is_retried(tmp_path):
+    with BreadthStore(tmp_path / "b.db") as store:
+        r = I.sync_insiders(
+            store,
+            NOW,
+            {100},
+            get_text=lambda u: '<a href="/f/2026q2_form345.zip">',
+            get_bytes=lambda u: None,
+        )
+        assert r["datasets"] == 0 and "2026q2" in r["errors"][0]
+
+
+def test_the_sec_limiter_is_shared_and_waits(monkeypatch):
+    import time
+
+    from advisor.news import edgar
+
+    monkeypatch.setattr(edgar, "_LIMITER", None)
+    monkeypatch.setattr("advisor.research.edgar._ensure_identity", lambda ua: None)
+    start = time.monotonic()
+    for _ in range(5):
+        edgar._client_ready()
+    # Five calls at the default 8/s take at least four intervals.
+    assert time.monotonic() - start >= 4 / 8 - 0.01
+
+
 def test_sync_survives_an_unreachable_index_page(tmp_path):
     def down(url):
         raise TimeoutError("sec.gov")
