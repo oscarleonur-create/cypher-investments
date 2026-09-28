@@ -214,7 +214,17 @@ this symbol*.
   assumption that moves the answer most: COHR's lone 3.3% valued it at $0.00
   in all three cases, INTC's lone 5.0% at $5–$7 against $123. What the
   price *requires* stays the headline: it is arithmetic and falsifiable; the
-  range is an opinion.
+  range is an opinion. The cases differ by how long today's growth lasts
+  (held 0 / 3 / 5 years, then faded; inverted for a shrinking business) —
+  not by multiplying it. The bull never assumes a margin the company has not
+  filed: a price that needs one (AMZN 16.3% vs a best of 9.5%, 2026-09-28) is
+  shown as the **market** case — what the price assumes — never used as a
+  scenario, which would value the business at its price by construction.
+- **One pricing view in the frontend (user decision, 2026-09-28).** The
+  fair-price blend, DCF chart, Bayesian what-if, peer multiples, valuation-
+  risk chart and upside columns were removed; the ticker page shows one
+  `PriceRangeCard` (bear / base / bull / market + a deterministic rationale,
+  `valuation/rationale.py`, `GET /api/daemon/symbol/{sym}/price-range`).
 - **XBRL is read undimensioned.** The same concept is tagged once per segment,
   instrument and class — SPCX's quarterly revenue appears sixteen times — so
   every extraction filters on the undimensioned fact. The one deliberate

@@ -6,14 +6,13 @@ import { api } from "@/lib/api";
 import type { Holding, HoldingsResponse } from "@/lib/types";
 import type { QuotesState } from "@/lib/useQuotes";
 import { useJob } from "@/lib/useJob";
-import { cn, fmtMoney, fmtNum, fmtPct, fmtUpside, fmtUsd, pnlColor } from "@/lib/utils";
+import { cn, fmtMoney, fmtNum, fmtPct, fmtUsd, pnlColor } from "@/lib/utils";
 import { AttentionDot, Stat, Th, ThesisBadge } from "@/components/common";
 import {
   ConcentrationPanel,
   MarketPanel,
   PerformancePanel,
   SectorRotationPanel,
-  ValuationRiskPanel,
 } from "@/components/portfolioAnalytics";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -159,7 +158,6 @@ export default function Portfolio({ quotes }: { quotes: QuotesState }) {
                   <Th className="text-right">Mkt value</Th>
                   <Th className="text-right">Open P&L</Th>
                   <Th>Thesis</Th>
-                  <Th className="text-right">Base ▲</Th>
                   <Th></Th>
                 </tr>
               </thead>
@@ -178,7 +176,6 @@ export default function Portfolio({ quotes }: { quotes: QuotesState }) {
         <>
           <PerformancePanel />
           <ConcentrationPanel rows={rows} />
-          <ValuationRiskPanel rows={rows} />
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
             <SectorRotationPanel />
             <MarketPanel />
@@ -215,9 +212,6 @@ function HoldingRow({ r }: { r: Row }) {
       </td>
       <td className="px-2 py-2">
         <ThesisBadge status={r.research?.thesis_status} />
-      </td>
-      <td className={cn("px-2 py-2 text-right tnum", pnlColor(r.research?.base_upside))}>
-        {fmtUpside(r.research?.base_upside)}
       </td>
       <td className="px-2 py-2 text-right">
         <Link to={`/ticker/${r.symbol}`} className="text-muted hover:text-text">

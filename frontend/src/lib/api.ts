@@ -14,8 +14,6 @@ import type {
   WatchAngle,
   AngleStatus,
   ThesisCoverage,
-  BayesianOverrides,
-  BayesianPriceResult,
   ChatEvent,
   Conversation,
   ConversationSummary,
@@ -33,6 +31,7 @@ import type {
   SystemStatus,
   TrackRow,
   WatchlistResponse,
+  PriceRange,
 } from "./types";
 
 async function get<T>(url: string): Promise<T> {
@@ -148,6 +147,8 @@ export const api = {
     }),
   daemonReading: (symbol: string, refresh = false) =>
     get<TickerReading>(`/api/daemon/symbol/${symbol}/reading?refresh=${refresh}`),
+  priceRange: (symbol: string, refresh = false) =>
+    get<PriceRange>(`/api/daemon/symbol/${symbol}/price-range?refresh=${refresh}`),
   daemonReconcile: () => post<ReconcileReport>("/api/daemon/reconcile"),
   daemonRun: (job: string) => post<JobRunResult>(`/api/daemon/run/${job}`),
   daemonCoverage: () =>
@@ -177,10 +178,6 @@ export const api = {
   recommend: (symbol: string) =>
     post<ActionRecommendation>(`/api/research/${symbol}/recommend`),
   job: (id: string) => get<Job>(`/api/jobs/${id}`),
-  bayesian: (symbol: string) =>
-    get<{ result: BayesianPriceResult; fetched_at: string }>(`/api/portfolio/bayesian/${symbol}`),
-  recomputeBayesian: (symbol: string, overrides: BayesianOverrides) =>
-    post<{ result: BayesianPriceResult }>(`/api/portfolio/bayesian/${symbol}`, overrides),
   conversations: (symbol: string) =>
     get<{ conversations: ConversationSummary[] }>(`/api/research/${symbol}/conversations`),
   conversation: (id: string) => get<Conversation>(`/api/agent/conversations/${id}`),
