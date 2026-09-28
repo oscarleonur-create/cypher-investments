@@ -150,6 +150,10 @@ class FEvent:
     revenue: float
     growth: float
     growth_before: float
+    # The quarter's own end: ``quarter`` is the calendar quarter, which for a
+    # fiscal year ending in June (MSFT) or January (MRVL) is not the label the
+    # company uses.
+    end: date | None = None
 
 
 def _minus(key: tuple[int, int], n: int) -> tuple[int, int]:
@@ -203,6 +207,7 @@ def fundamental_events(
                     revenue=now.value,
                     growth=growth,
                     growth_before=growth_before,
+                    end=now.end,
                 )
             )
     return out

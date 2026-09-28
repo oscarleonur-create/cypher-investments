@@ -211,6 +211,46 @@ def report(
     _print_study(summary)
 
 
+@app.command("picks")
+def picks(
+    build: Annotated[
+        bool, typer.Option("--build", help="Rebuild for the last closed session first")
+    ] = False,
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Names where two or more families agree, ordered by evidence, each with its reasons."""
+    from advisor.breadth.bars import last_closed_session
+    from advisor.breadth.picks import build_picks, latest_picks
+    from advisor.breadth.store import BreadthStore, breadth_path
+    from advisor.daemon.market_calendar import now_et
+
+    with BreadthStore(breadth_path(_db_path())) as store:
+        if build:
+            now = now_et()
+            built = build_picks(store, last_closed_session(now), now, _db_path())
+            if not built.get("ok"):
+                output_error(built.get("error", "could not build picks"))
+                return
+        data = latest_picks(store)
+    if output == "json":
+        output_json(data)
+        return
+    if not data["picks"]:
+        console.print("No picks on file: run `advisor breadth picks --build`.")
+        return
+    console.print(f"Picks for {data['day']} (rules {data['rules']}), ordered by evidence:")
+    for p in data["picks"]:
+        flag = " [held]" if p.get("held") else ""
+        console.print(
+            f"\n[bold]{p['rank']}. {p['symbol']}[/bold]{flag} — {p.get('name') or ''} "
+            f"({p.get('sector') or 'sector n/a'}) · families {'+'.join(p['families'])}"
+        )
+        for r in p["reasons"]:
+            console.print(f"   · {r['text']} [dim]({r['source']})[/dim]")
+        if p.get("invalidates"):
+            console.print(f"   [dim]would undo it: {'; '.join(p['invalidates'])}[/dim]")
+
+
 @app.command("universe")
 def universe(
     symbol: Annotated[Optional[str], typer.Argument(help="Show one name's standing")] = None,

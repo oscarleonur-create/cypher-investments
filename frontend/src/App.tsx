@@ -1,5 +1,6 @@
 import { Link, NavLink, Route, Routes } from "react-router-dom";
 import { LineChart } from "lucide-react";
+import Picks from "./pages/Picks";
 import Portfolio from "./pages/Portfolio";
 import Signals from "./pages/Signals";
 import Ticker from "./pages/Ticker";
@@ -40,6 +41,9 @@ export default function App() {
             <NavLink to="/watchlist" className={tabClass}>
               Watchlist
             </NavLink>
+            <NavLink to="/picks" className={tabClass}>
+              Picks
+            </NavLink>
             <NavLink to="/tracking" className={tabClass}>
               Tracking
             </NavLink>
@@ -65,6 +69,7 @@ export default function App() {
           <Route path="/" element={<Portfolio quotes={quotes} />} />
           <Route path="/signals" element={<Signals />} />
           <Route path="/watchlist" element={<Watchlist quotes={quotes} />} />
+          <Route path="/picks" element={<Picks />} />
           <Route path="/tracking" element={<Tracking quotes={quotes} />} />
           <Route path="/theses" element={<Theses />} />
           <Route path="/theses/new" element={<ThesisEditor />} />

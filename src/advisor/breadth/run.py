@@ -82,7 +82,12 @@ def _signals(db_path, store, rows, day, now, fetch_company, insider_fetch=None) 
         insiders = sync_insiders(store, now, set(eligible), **(insider_fetch or {}))
         _register(db_path, signal_rules())
         live = record_live(store, day, now)
-        return {"companies": companies, "insiders": insiders, "live": live}
+        from advisor.breadth.picks import build_picks
+
+        built = build_picks(store, day, now, db_path)
+        picks = {k: built.get(k) for k in ("ok", "day", "candidates", "error")}
+        picks["symbols"] = [p["symbol"] for p in built.get("picks", [])]
+        return {"companies": companies, "insiders": insiders, "live": live, "picks": picks}
     except Exception as exc:  # noqa: BLE001
         logger.exception("breadth signals failed")
         return {"error": str(exc)}
