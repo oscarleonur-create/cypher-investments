@@ -190,6 +190,8 @@ def fundamental_events(
             growth_before = before.value / year_ago_before.value - 1
             if growth < t.growth_min or growth - growth_before < t.accel_min:
                 continue
+            if now.known < sessions[0].date():
+                continue  # known before the panel: it cannot be placed on a session
             row = int(sessions.searchsorted(pd.Timestamp(now.known), side="left"))
             if row >= len(sessions):
                 continue  # known after the last session on file
@@ -272,6 +274,8 @@ def insider_events(
             value = sum(p.value for p in inside)
             if len(buyers) < t.insider_min_buyers or value < t.insider_min_value:
                 continue
+            if filed < sessions[0].date():
+                continue  # before the panel: its "next session" is not on file
             row = int(sessions.searchsorted(pd.Timestamp(filed), side="right"))
             if row >= len(sessions):
                 continue

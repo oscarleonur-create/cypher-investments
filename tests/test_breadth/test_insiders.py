@@ -346,10 +346,14 @@ def test_value_floor_is_inclusive():
     assert events(at) and not events(under)
 
 
-def test_an_issuer_without_a_listed_symbol_or_a_filing_after_the_panel():
+def test_an_issuer_without_a_listed_symbol_or_a_filing_outside_the_panel():
     assert S.insider_events([txn(), txn(owner=2)], {}, SESSIONS) == []
     late = [txn(owner=1, day="2026-12-31"), txn(owner=2, day="2026-12-31")]
     assert events(late) == []
+    # Before the panel: not piled onto its first session (found live: GBDC had
+    # 101 "events" on 2023-01-02 from 2020-22 filings).
+    early = [txn(owner=1, day="2025-06-02"), txn(owner=2, day="2025-06-03")]
+    assert events(early) == []
 
 
 # ── the I and 2+ groups ───────────────────────────────────────────────────
