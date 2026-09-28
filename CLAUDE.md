@@ -212,8 +212,9 @@ this symbol*.
   positive margins, or no year-over-year comparison, the range is refused
   with the reason — never built on a default. One reading cannot bracket the
   assumption that moves the answer most: COHR's lone 3.3% valued it at $0.00
-  in all three cases, INTC's lone 5.0% at $5–$7 against $123. What the price *requires* stays the
-  headline: it is arithmetic and falsifiable; the range is an opinion.
+  in all three cases, INTC's lone 5.0% at $5–$7 against $123. What the
+  price *requires* stays the headline: it is arithmetic and falsifiable; the
+  range is an opinion.
 - **XBRL is read undimensioned.** The same concept is tagged once per segment,
   instrument and class — SPCX's quarterly revenue appears sixteen times — so
   every extraction filters on the undimensioned fact. The one deliberate
