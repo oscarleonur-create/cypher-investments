@@ -110,6 +110,8 @@ def build_dcf(
                 terminal_growth_rate=s.path.terminal_growth,
                 terminal_exit_multiple=None,
                 wacc=s.path.discount_rate,
+                revenue_growth_path=list(s.path.growth),
+                growth_held_years=s.held_years,
             )
             setattr(
                 result,
@@ -126,11 +128,12 @@ def build_dcf(
 
     ev = figures.enterprise_value
     if ev is not None and ev > 0 and figures.revenue_base and figures.revenue_growth is not None:
-        early, late = engine.faded_growth(
-            engine.clamp(figures.revenue_growth, engine.GROWTH_BOUNDS)
-        )
         result.implied_margin = engine.implied_margin(
-            ev, figures.revenue_base, figures.start_margin, early, late, discount_rate=rate
+            ev,
+            figures.revenue_base,
+            figures.start_margin,
+            figures.revenue_growth,
+            discount_rate=rate,
         ).value
     return result
 
@@ -217,6 +220,7 @@ def compute_dcf_scenario(
         target_margin=assump.target_fcf_margin,
         discount_rate=assump.wacc,
         terminal_growth=assump.terminal_growth_rate,
+        growth=_path_if_unmoved(assump),
     )
     projection = engine.project(base_revenue, start_margin, path)
     if projection is None:
@@ -241,3 +245,22 @@ def compute_dcf_scenario(
         implied_price=implied_price,
         upside_pct=upside,
     )
+
+
+def _path_if_unmoved(assump: DcfAssumptions) -> tuple[float, ...]:
+    """The stored yearly path, while its averages are still the two steps.
+
+    The path is what the engine built; the steps are what a slider moves. Once
+    a step no longer matches the path's average, the user has moved it, and
+    the steps are the assumption.
+    """
+    path = tuple(assump.revenue_growth_path or ())
+    if len(path) != engine.YEARS:
+        return ()
+    early, late = engine.step_averages(path)
+    if (
+        abs(early - assump.revenue_growth_yr1_3) > 1e-9
+        or abs(late - assump.revenue_growth_yr4_10) > 1e-9
+    ):
+        return ()
+    return path

@@ -8,19 +8,22 @@ import pytest
 from advisor.valuation.dcf import (
     DISCOUNT_RATE,
     GROWTH_BOUNDS,
+    HELD_YEARS,
     START_MARGIN_BOUNDS,
     TERMINAL_GROWTH,
     Margin,
     Path,
-    faded_growth,
     gordon_multiple,
+    growth_path,
+    held_years,
     implied_growth,
     implied_margin,
     market_ev,
+    path_for,
     per_share,
     project,
-    scenario_growth,
     steady_state_margins,
+    step_averages,
     value_range,
 )
 
@@ -100,18 +103,59 @@ class TestTheBridge:
         assert market_ev(50.0, 100.0, 300.0) == pytest.approx(4700.0)
 
 
-class TestFade:
-    def test_the_step_averages_track_a_straight_line_fade(self):
-        early, late = faded_growth(0.60, 0.03)
-        assert early == pytest.approx(0.60 - 0.57 / 9)
-        assert late == pytest.approx(0.60 - 0.57 * 2 / 3)
+class TestTheGrowthPath:
+    def test_held_then_a_straight_line_to_terminal_in_year_ten(self):
+        rates = growth_path(0.20, 5, 0.03)
+        assert rates[:5] == (0.20,) * 5
+        assert rates[5:] == pytest.approx((0.166, 0.132, 0.098, 0.064, 0.03))
+
+    def test_held_zero_fades_from_year_one(self):
+        rates = growth_path(0.30, 0, 0.03)
+        assert rates[0] == 0.30 and rates[-1] == pytest.approx(0.03)
+        assert all(a > b for a, b in zip(rates, rates[1:]))
+
+    def test_holding_longer_than_the_horizon_still_ends_at_terminal(self):
+        assert growth_path(0.20, 12, 0.03)[-1] == pytest.approx(0.03)
 
     def test_growth_already_at_terminal_stays_there(self):
-        assert faded_growth(TERMINAL_GROWTH) == pytest.approx((TERMINAL_GROWTH, TERMINAL_GROWTH))
+        assert growth_path(TERMINAL_GROWTH, 3) == pytest.approx((TERMINAL_GROWTH,) * 10)
 
     def test_a_shrinking_business_fades_up_toward_terminal(self):
-        early, late = faded_growth(-0.12)
-        assert -0.12 < early < late < TERMINAL_GROWTH
+        rates = growth_path(-0.12, 3)
+        assert rates[0] == -0.12 and rates[-1] == pytest.approx(TERMINAL_GROWTH)
+
+    def test_the_steps_are_the_paths_averages(self):
+        rates = growth_path(0.20, 5)
+        early, late = step_averages(rates)
+        assert early == pytest.approx(0.20)
+        assert late == pytest.approx(sum(rates[3:]) / 7)
+
+    def test_the_path_is_projected_year_by_year_not_by_its_averages(self):
+        path = path_for(0.40, 5, 0.2)
+        revenue = project(100.0, 0.2, path).revenue[-1]
+        exact = 100.0
+        for g in path.growth:
+            exact *= 1 + g
+        stepped = project(100.0, 0.2, Path(path.growth_early, path.growth_late, 0.2)).revenue[-1]
+        assert revenue == pytest.approx(exact, rel=1e-12)
+        assert abs(stepped / revenue - 1) > 0.01  # the averages are only an approximation
+
+    def test_a_path_of_the_wrong_length_is_refused(self):
+        assert project(100.0, 0.1, Path(0.1, 0.1, 0.2, growth=(0.1,) * 9)) is None
+
+    def test_a_path_with_a_total_loss_year_is_refused(self):
+        assert project(100.0, 0.1, Path(0.1, 0.1, 0.2, growth=(0.1,) * 9 + (-1.0,))) is None
+
+
+class TestHeldYears:
+    def test_a_grower_holds_longest_in_the_bull(self):
+        assert held_years(0.20) == HELD_YEARS == {"bear": 0, "base": 3, "bull": 5}
+
+    def test_a_shrinking_business_holds_its_decline_longest_in_the_bear(self):
+        assert held_years(-0.12) == {"bear": 5, "base": 3, "bull": 0}
+
+    def test_exactly_at_terminal_is_a_grower(self):
+        assert held_years(TERMINAL_GROWTH) == HELD_YEARS
 
 
 class TestBackward:
@@ -135,16 +179,21 @@ class TestBackward:
         assert implied_growth(1e4, 1000.0, 0.1, 0.0).value is None
 
     def test_implied_margin_reproduces_the_ev(self):
-        ev = project(1000.0, 0.05, Path(0.1, 0.05, 0.22)).enterprise_value
-        solved = implied_margin(ev, 1000.0, 0.05, 0.1, 0.05)
+        ev = project(1000.0, 0.05, path_for(0.1, 3, 0.22)).enterprise_value
+        solved = implied_margin(ev, 1000.0, 0.05, 0.1)
         assert solved.value == pytest.approx(0.22, abs=1e-6)
 
     def test_implied_margin_without_a_start_applies_from_year_one(self):
-        ev = project(1000.0, 0.22, Path(0.1, 0.05, 0.22)).enterprise_value
-        assert implied_margin(ev, 1000.0, None, 0.1, 0.05).value == pytest.approx(0.22, abs=1e-6)
+        ev = project(1000.0, 0.22, path_for(0.1, 3, 0.22)).enterprise_value
+        assert implied_margin(ev, 1000.0, None, 0.1).value == pytest.approx(0.22, abs=1e-6)
+
+    def test_implied_margin_bounds_the_growth_as_the_range_does(self):
+        """CRDO's +165% unbounded needed almost no margin at all."""
+        ev = project(1000.0, 0.1, path_for(GROWTH_BOUNDS[1], 3, 0.2)).enterprise_value
+        assert implied_margin(ev, 1000.0, 0.1, 1.65).value == pytest.approx(0.2, abs=1e-6)
 
     def test_a_price_no_margin_can_justify(self):
-        assert implied_margin(1e15, 1000.0, 0.1, 0.05, 0.03).beyond == "above"
+        assert implied_margin(1e15, 1000.0, 0.1, 0.05).beyond == "above"
 
 
 class TestMargins:
@@ -170,22 +219,6 @@ class TestMargins:
         assert steady_state_margins([]) is None
 
 
-class TestScenarioGrowth:
-    def test_a_quarter_either_side(self):
-        g = scenario_growth(0.20)
-        assert g == pytest.approx({"bear": 0.15, "base": 0.20, "bull": 0.25})
-
-    def test_never_less_than_three_points(self):
-        g = scenario_growth(0.04)
-        assert g["bear"] == pytest.approx(0.01) and g["bull"] == pytest.approx(0.07)
-
-    def test_bounded_both_ways(self):
-        hot = scenario_growth(1.65)
-        assert hot["base"] == hot["bull"] == GROWTH_BOUNDS[1]
-        cold = scenario_growth(-0.60)
-        assert cold["bear"] == cold["base"] == GROWTH_BOUNDS[0]
-
-
 def _range(**overrides):
     kwargs = dict(
         price=50.0,
@@ -206,6 +239,17 @@ class TestValueRange:
         bear, base, bull = (vr.get(n) for n in ("bear", "base", "bull"))
         assert bear.value_per_share < base.value_per_share < bull.value_per_share
         assert {s.path.discount_rate for s in vr.scenarios} == {DISCOUNT_RATE}
+
+    def test_the_cases_differ_by_how_long_growth_lasts(self):
+        vr = _range()
+        assert [s.held_years for s in vr.scenarios] == [0, 3, 5]
+        assert {s.current_growth for s in vr.scenarios} == {0.10}
+
+    def test_a_shrinking_business_bull_fades_its_decline_first(self):
+        vr = _range(current_growth=-0.12)
+        assert [s.held_years for s in vr.scenarios] == [5, 3, 0]
+        bear, base, bull = vr.scenarios
+        assert bear.value_per_share < base.value_per_share < bull.value_per_share
 
     def test_upside_is_value_over_price(self):
         base = _range().get("base")

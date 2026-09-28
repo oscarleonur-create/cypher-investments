@@ -656,7 +656,7 @@ def valuation_cmd(
     if snapshot.value:
         vt = Table(title="Value range — an opinion from the company's own margins")
         vt.add_column("case")
-        vt.add_column("growth yr 1 → 10", justify="right")
+        vt.add_column("growth held → year 10", justify="right")
         vt.add_column("steady-state margin")
         vt.add_column("value / share", justify="right")
         vt.add_column("vs price", justify="right")
@@ -664,7 +664,7 @@ def valuation_cmd(
             colour = "green" if v.upside > 0.10 else "red" if v.upside < -0.10 else "yellow"
             vt.add_row(
                 v.name,
-                f"{v.growth_start:+.1%} → {v.terminal_growth:.0%}",
+                f"{v.growth_start:+.1%} × {v.held_years}y → {v.terminal_growth:.0%}",
                 f"{v.target_margin:.1%} ({v.margin_label})",
                 f"${v.value_per_share:,.2f}",
                 f"[{colour}]{v.upside:+.0%}[/{colour}]",

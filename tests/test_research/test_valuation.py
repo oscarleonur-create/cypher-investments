@@ -276,3 +276,21 @@ def test_peer_snapshot_fills_from_yfinance():
     assert snap.pe_trailing == pytest.approx(33.0)
     assert snap.gross_margin == pytest.approx(0.46)
     assert snap.ev_to_sales == pytest.approx(3.1e12 / 400e9)
+
+
+def test_moving_a_growth_step_drops_the_stored_path():
+    """The engine's yearly path stands until a slider moves a step."""
+    from advisor.research.valuation.dcf import build_dcf, compute_dcf_scenario
+
+    from tests.test_research.dcf_figures import figures
+
+    dcf = build_dcf("TEST", figures=figures())
+    a = dcf.base.assumptions
+    assert a.revenue_growth_path and a.growth_held_years == 3
+    args = (dcf.base_revenue, dcf.seed_fcf, dcf.net_debt, dcf.shares_outstanding, 50.0)
+    same = compute_dcf_scenario(a, *args)
+    moved = compute_dcf_scenario(
+        a.model_copy(update={"revenue_growth_yr1_3": a.revenue_growth_yr1_3 + 0.05}), *args
+    )
+    assert same.implied_price == pytest.approx(dcf.base.implied_price, rel=1e-12)
+    assert moved.implied_price > same.implied_price

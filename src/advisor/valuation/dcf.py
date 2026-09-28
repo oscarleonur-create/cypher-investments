@@ -17,10 +17,13 @@ on 2026-09-27:
 - Its reverse DCF rebuilt base revenue as year-one FCF over the *target*
   margin, which is neither the base year nor the margin that FCF was made at.
 
-The model is deliberately plain. Revenue grows at one rate for years 1–3 and
-another for 4–10; the free-cash-flow margin moves in a straight line from
-today's to a steady state reached in year ten; cash flows are discounted at a
-stated rate; the tail is a Gordon perpetuity. Every input is visible on every
+The model is deliberately plain. Revenue grows at today's rate for a number
+of years and then fades in a straight line to terminal growth by year ten;
+the free-cash-flow margin moves in a straight line from today's to a steady
+state reached in year ten; cash flows are discounted at a stated rate; the
+tail is a Gordon perpetuity. The workstation's sliders move a two-step shape
+(years 1–3, years 4–10), which is the same engine with a flat path in each
+step. Every input is visible on every
 answer, because a valuation whose assumptions are hidden cannot be argued with.
 
 Forward, it turns stated assumptions into a value per share. Backward, it
@@ -56,10 +59,14 @@ TERMINAL_GROWTH = 0.03
 # 2026-09-27, INTC's lone 5.0% at $5–$7 against $123.
 MIN_MARGIN_READINGS = 2
 
-# How far the bear and bull cases move year-one growth from today's: a quarter
-# of the rate, and never less than three points.
-GROWTH_SPREAD = 0.25
-GROWTH_SPREAD_FLOOR = 0.03
+# How many years each case holds today's growth before it fades to terminal.
+# The scenarios differ in how long the business keeps growing as it is, not
+# by multiplying today's rate. A first version faded every case from year one
+# and moved growth ±25%; the bull then sat below the price for MSFT, AMZN,
+# AMD and PENG (2026-09-28), because it assumed 18% growth was already down
+# to 14% by year three. Holding growth for a stated period and then fading it
+# is the standard two-stage shape.
+HELD_YEARS = {"bear": 0, "base": 3, "bull": 5}
 
 # Today's margin is where the fade starts. Cash-burning names report margins of
 # -400%; faded over ten years that sinks every projected year, so the start is
@@ -91,6 +98,16 @@ class Path:
     target_margin: float  # steady-state FCF margin, reached in year ten
     discount_rate: float = DISCOUNT_RATE
     terminal_growth: float = TERMINAL_GROWTH
+    # Year-by-year growth. When given it is the path, and the two steps above
+    # are only its averages, for display and for the sliders' starting point.
+    growth: tuple[float, ...] = ()
+
+    def rates(self, years: int = YEARS) -> tuple[float, ...]:
+        if self.growth:
+            return tuple(self.growth)
+        return tuple(
+            self.growth_early if y <= EARLY_YEARS else self.growth_late for y in range(1, years + 1)
+        )
 
 
 @dataclass(frozen=True)
@@ -135,20 +152,21 @@ def project(
     value — a business that burns cash forever is not worth an infinite amount
     of anything.
     """
-    if not _finite(base_revenue, start_margin, path.growth_early, path.growth_late):
+    rates = path.rates(years)
+    if len(rates) != years or not _finite(base_revenue, start_margin, *rates):
         return None
     if not _finite(path.target_margin, path.discount_rate, path.terminal_growth):
         return None
     if base_revenue <= 0 or years <= 0 or path.discount_rate <= path.terminal_growth:
         return None
-    if path.growth_early <= -1 or path.growth_late <= -1:
+    if any(g <= -1 for g in rates):
         return None
 
     start = clamp(start_margin, START_MARGIN_BOUNDS)
     r = path.discount_rate
     revenue, revenues, fcfs, pv = base_revenue, [], [], 0.0
-    for year in range(1, years + 1):
-        revenue *= 1 + (path.growth_early if year <= EARLY_YEARS else path.growth_late)
+    for year, growth in enumerate(rates, 1):
+        revenue *= 1 + growth
         margin = start + (path.target_margin - start) * year / years
         fcf = revenue * margin
         revenues.append(revenue)
@@ -179,22 +197,41 @@ def market_ev(price: float, shares: float, net_cash: float) -> float | None:
     return price * shares - net_cash
 
 
-def faded_growth(current: float, terminal: float = TERMINAL_GROWTH, *, years: int = YEARS):
-    """(years 1–3, years 4–10) averages of a straight-line fade to ``terminal``.
+def growth_path(
+    current: float, held: int, terminal: float = TERMINAL_GROWTH, *, years: int = YEARS
+) -> tuple[float, ...]:
+    """Today's growth for ``held`` years, then a straight line to ``terminal``
+    in the final year. ``held=0`` fades from year one."""
+    held = max(0, min(held, years - 1))
+    if held == 0:
+        return tuple(
+            current + (terminal - current) * (y - 1) / (years - 1) for y in range(1, years + 1)
+        )
+    return tuple(
+        current if y <= held else current + (terminal - current) * (y - held) / (years - held)
+        for y in range(1, years + 1)
+    )
 
-    Growth fades from today's rate in year one to the terminal rate in year
-    ten. Held flat for three years instead, 60% growth compounds to 28x revenue
-    in a decade against the fade's 14x. Averaging the fade into the two-step
-    shape keeps the scenario editable by the workstation's sliders, which move
-    the two steps.
-    """
 
-    def rate(year: int) -> float:
-        return current + (terminal - current) * (year - 1) / (years - 1)
-
-    early = [rate(y) for y in range(1, EARLY_YEARS + 1)]
-    late = [rate(y) for y in range(EARLY_YEARS + 1, years + 1)]
+def step_averages(rates: tuple[float, ...]) -> tuple[float, float]:
+    """(years 1–3, years 4–10) averages of a yearly path: the two-step shape
+    the workstation's sliders move."""
+    early, late = rates[:EARLY_YEARS], rates[EARLY_YEARS:]
     return sum(early) / len(early), sum(late) / len(late)
+
+
+def path_for(
+    current: float,
+    held: int,
+    target_margin: float,
+    *,
+    discount_rate: float = DISCOUNT_RATE,
+    terminal_growth: float = TERMINAL_GROWTH,
+) -> Path:
+    """A full path: today's growth held, faded, and the steady-state margin."""
+    rates = growth_path(current, held, terminal_growth)
+    early, late = step_averages(rates)
+    return Path(early, late, target_margin, discount_rate, terminal_growth, growth=rates)
 
 
 # ── Backward: what a price requires ──────────────────────────────────────────
@@ -272,13 +309,14 @@ def implied_margin(
     enterprise_value: float,
     base_revenue: float,
     start_margin: float | None,
-    growth_early: float,
-    growth_late: float,
+    current_growth: float,
     *,
+    held: int = HELD_YEARS["base"],
     discount_rate: float = DISCOUNT_RATE,
     terminal_growth: float = TERMINAL_GROWTH,
 ) -> Solved:
-    """The steady-state FCF margin the price requires on a stated growth path.
+    """The steady-state FCF margin the price requires at today's growth, held
+    for the base case's years and then faded (bounded, as the value range).
 
     The other axis of the same question. AMZN's filed free-cash-flow margins
     run 1–8% through a capex cycle; asking what margin the price needs at the
@@ -288,11 +326,13 @@ def implied_margin(
     if not _finite(enterprise_value) or enterprise_value <= 0:
         return Solved(None)
 
+    growth = clamp(current_growth, GROWTH_BOUNDS)
+
     def value(m: float) -> float | None:
         p = project(
             base_revenue,
             m if start_margin is None else start_margin,
-            Path(growth_early, growth_late, m, discount_rate, terminal_growth),
+            path_for(growth, held, m, discount_rate=discount_rate, terminal_growth=terminal_growth),
         )
         return p.enterprise_value if p else None
 
@@ -340,7 +380,8 @@ class Margin:
 class Scenario:
     name: str  # "bear" | "base" | "bull"
     path: Path
-    current_growth: float  # the year-one rate the fade starts from
+    current_growth: float  # today's rate, held and then faded
+    held_years: int  # years today's rate is held before the fade
     margin_label: str
     projection: Projection
     value_per_share: float
@@ -382,21 +423,13 @@ def steady_state_margins(margins: list[Margin]) -> tuple[Margin, Margin, Margin]
     return positive[0], base, positive[-1]
 
 
-def scenario_growth(current: float) -> dict[str, float]:
-    """Year-one growth per scenario, bounded: today's rate, and a quarter of it
-    (at least three points) either side.
-
-    Symmetric on purpose. A first version halved growth for the bear and also
-    raised its discount rate, and stacking every assumption the same way put
-    MSFT's range at $175–$705 around a $516 price — wide enough to say
-    nothing.
-    """
-    step = max(GROWTH_SPREAD * abs(current), GROWTH_SPREAD_FLOOR)
-    return {
-        "bear": clamp(current - step, GROWTH_BOUNDS),
-        "base": clamp(current, GROWTH_BOUNDS),
-        "bull": clamp(current + step, GROWTH_BOUNDS),
-    }
+def held_years(current: float, terminal: float = TERMINAL_GROWTH) -> dict[str, int]:
+    """Years each case holds today's growth. Holding a rate longer is the bull
+    case only when that rate is above terminal: for a shrinking business the
+    bear holds the decline longest and the bull fades it from year one."""
+    if current >= terminal:
+        return dict(HELD_YEARS)
+    return {"bear": HELD_YEARS["bull"], "base": HELD_YEARS["base"], "bull": HELD_YEARS["bear"]}
 
 
 def value_range(
@@ -450,15 +483,21 @@ def value_range(
             f"current growth {current_growth:+.0%} bounded to "
             f"{clamp(current_growth, GROWTH_BOUNDS):+.0%} for year one"
         )
-    growth = scenario_growth(current_growth)
+    growth = clamp(current_growth, GROWTH_BOUNDS)
+    held = held_years(growth, terminal_growth)
     start = start_margin if start_margin is not None and _finite(start_margin) else None
     # Without a trailing FCF margin every scenario starts from the base case's
     # steady state, so the range differs only by what the scenarios assume.
     origin = start if start is not None else anchors[1].value
     scenarios = []
     for name, margin in zip(("bear", "base", "bull"), anchors):
-        early, late = faded_growth(growth[name], terminal_growth)
-        path = Path(early, late, margin.value, discount_rate, terminal_growth)
+        path = path_for(
+            growth,
+            held[name],
+            margin.value,
+            discount_rate=discount_rate,
+            terminal_growth=terminal_growth,
+        )
         projection = project(base_revenue, origin, path)
         if projection is None:
             return ValueRange(refused=f"the {name} projection is undefined")
@@ -469,7 +508,8 @@ def value_range(
             Scenario(
                 name=name,
                 path=path,
-                current_growth=growth[name],
+                current_growth=growth,
+                held_years=held[name],
                 margin_label=margin.label,
                 projection=projection,
                 value_per_share=value,

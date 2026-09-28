@@ -170,7 +170,8 @@ class ScenarioValue(BaseModel):
     name: str  # bear | base | bull
     value_per_share: float
     upside: float  # value / price − 1
-    growth_start: float  # year-one growth the fade starts from
+    growth_start: float  # today's growth, held and then faded
+    held_years: int = 0  # years today's growth is held before fading
     growth_early: float  # average growth, years 1–3
     growth_late: float  # average growth, years 4–10
     target_margin: float

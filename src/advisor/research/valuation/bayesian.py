@@ -53,8 +53,9 @@ _DRIVER_BOUNDS: dict[str, tuple[float, float, str, str]] = {
     # key: (min, max, unit, label)
     "revenue_growth_yr1_3": (-0.30, 0.60, "pct", "Revenue growth (yr 1-3)"),
     # A shrinking business fades toward terminal growth from below, so the
-    # later years can be negative too (WOLF, -12% TTM, fades through -2%).
-    "revenue_growth_yr4_10": (-0.30, 0.30, "pct", "Revenue growth (yr 4-10)"),
+    # later years can be negative too (WOLF, -12% TTM, fades through -2%);
+    # a grower held five years at the 60% bound averages ~34% over 4–10.
+    "revenue_growth_yr4_10": (-0.30, 0.60, "pct", "Revenue growth (yr 4-10)"),
     # MSFT's operating margin after tax is 37%; a 45% ceiling clipped priors
     # the filings themselves support.
     "target_fcf_margin": (0.0, 0.60, "pct", "Terminal FCF margin"),

@@ -137,7 +137,8 @@ def _expectations(store: DaemonStore, symbol: str, consensus_loader) -> list[Row
                         f"base {_pct(mid.upside, sign=True)} vs ${valuation.price:,.2f}; "
                         f"margins {bear.target_margin:.1%} / {mid.target_margin:.1%} / "
                         f"{bull.target_margin:.1%} ({bear.margin_label} / {mid.margin_label} / "
-                        f"{bull.margin_label}); growth from {_pct(mid.growth_start, sign=True)} "
+                        f"{bull.margin_label}); growth {_pct(mid.growth_start, sign=True)} held "
+                        f"{bear.held_years} / {mid.held_years} / {bull.held_years} years, then "
                         f"fading to {mid.terminal_growth:.0%}; discounted at "
                         f"{mid.discount_rate:.0%}"
                     ),

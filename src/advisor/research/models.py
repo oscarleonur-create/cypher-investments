@@ -255,6 +255,11 @@ class DcfAssumptions(BaseModel):
     terminal_growth_rate: float = 0.025
     terminal_exit_multiple: float | None = None  # EV/EBITDA; None → Gordon only
     wacc: float = 0.09
+    # Year-by-year growth when the scenario has one (built by the engine):
+    # today's rate held ``growth_held_years``, then faded. The two steps above
+    # are then its averages. A slider that moves a step drops the path.
+    revenue_growth_path: list[float] | None = None
+    growth_held_years: int | None = None
 
 
 class DcfScenario(BaseModel):

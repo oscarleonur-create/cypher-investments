@@ -29,10 +29,10 @@ from datetime import date
 from advisor.valuation.dcf import (
     DISCOUNT_RATE,
     GROWTH_BOUNDS,
+    HELD_YEARS,
     TERMINAL_GROWTH,
     YEARS,
     clamp,
-    faded_growth,
     gordon_multiple,
     implied_margin,
     required_path,
@@ -200,23 +200,24 @@ def build_snapshot(
 
     needed_margin, needed_label = None, ""
     if figures.revenue_growth is not None:
-        # The same bounded year-one growth the value range starts from: CRDO's
-        # +165% faded from there needs almost no margin at all, which says
-        # more about the fade than the business.
+        # The same bounded growth, held the same years, as the value range's
+        # base case: CRDO's +165% unbounded needs almost no margin at all,
+        # which says more about the arithmetic than the business.
         growth = clamp(figures.revenue_growth, GROWTH_BOUNDS)
-        early, late = faded_growth(growth, terminal_growth)
+        held = HELD_YEARS["base"]
         solved = implied_margin(
             ev,
             base,
             start,
-            early,
-            late,
+            growth,
+            held=held,
             discount_rate=discount_rate,
             terminal_growth=terminal_growth,
         )
         needed_margin = solved.value
         needed_label = (
-            f"with growth fading from {growth:+.1%} to " f"{terminal_growth:.0%} over {YEARS} years"
+            f"with growth of {growth:+.1%} held {held} years, then fading to "
+            f"{terminal_growth:.0%} by year {YEARS}"
             if solved.value is not None
             else f"no margin up to 100% justifies the price at that growth ({solved.beyond})"
         )
@@ -257,6 +258,7 @@ def build_snapshot(
                 value_per_share=s.value_per_share,
                 upside=s.upside,
                 growth_start=s.current_growth,
+                held_years=s.held_years,
                 growth_early=s.path.growth_early,
                 growth_late=s.path.growth_late,
                 target_margin=s.path.target_margin,
