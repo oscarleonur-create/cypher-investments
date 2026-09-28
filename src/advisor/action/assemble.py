@@ -196,11 +196,32 @@ def _triggers(store: DaemonStore, symbol: str, today: date) -> list[Event]:
     ]
 
 
+def _history(store: DaemonStore, symbol: str) -> list[Event]:
+    """Events far enough back to still stand: the proposal sheet's lookback."""
+    from advisor.entry.sheet import THESIS_LOOKBACK_DAYS
+
+    since = now_et() - timedelta(days=THESIS_LOOKBACK_DAYS)
+    return store.recent_events(symbol=symbol, since=since, limit=5000)
+
+
 def _claims(
-    store: DaemonStore, symbol: str, events: list[Event], book: BookSnapshot
+    store: DaemonStore,
+    symbol: str,
+    events: list[Event],
+    book: BookSnapshot,
+    history: list[Event] | None = None,
 ) -> list[ClaimVerdict]:
     """Where each written rule stands — against what happened, and against
-    what is true now."""
+    what is true now.
+
+    ``history``: the lookback a broken rule stays broken over until the user
+    answers it. An event is news for a week, but what it broke stays broken:
+    AAOI's 6.7% at-the-market raise on 2026-09-06 broke the user's 5% rule,
+    and from 09-13 this card said "your rules are intact" while the reading
+    and the entry proposal both showed it broken. A rule tripped in the
+    lookback is STANDING — REVIEW, never an urgent deadline — until a decision
+    on it is recorded (``_partition``).
+    """
     from advisor.thesis.match import evaluate_claim
     from advisor.thesis.repo import ThesisReadError, load_thesis
     from advisor.thesis.state import evaluate_against_state
@@ -269,6 +290,21 @@ def _claims(
                     observed=standing.observed,
                 )
             )
+        elif (earlier := _tripped_before(claim, history or [], events)) is not None:
+            event, result = earlier
+            verdicts.append(
+                ClaimVerdict(
+                    text=claim.text,
+                    kind=claim.kind.value,
+                    status="STANDING",
+                    note=(
+                        f"broken on {event.ts.date().isoformat()} ({result.note}) "
+                        "and not answered since"
+                    ),
+                    claim_id=claim.id,
+                    observed=result.observed,
+                )
+            )
         elif results or standing is not None:
             verdicts.append(
                 ClaimVerdict(
@@ -291,6 +327,20 @@ def _claims(
                 )
             )
     return verdicts
+
+
+def _tripped_before(claim, history: list[Event], recent: list[Event]):
+    """The newest event before this week that tripped ``claim``, with its result, or None."""
+    from advisor.thesis.match import evaluate_claim
+
+    seen = {e.id for e in recent}
+    for e in sorted(history, key=lambda e: e.ts, reverse=True):
+        if e.id in seen:
+            continue
+        r = evaluate_claim(claim, e)
+        if r is not None and r.tripped:
+            return e, r
+    return None
 
 
 def _covered_kinds(store: DaemonStore, symbol: str) -> set[str]:
@@ -419,7 +469,7 @@ def build_card(store: DaemonStore, symbol: str, book: BookSnapshot, *, today: da
         )
         for e in events
     ]
-    card.claims = _claims(store, symbol, events, book)
+    card.claims = _claims(store, symbol, events, book, _history(store, symbol))
 
     # Everything the user has already answered stops driving the verdict, and
     # stays on the card as a record. Without this the same broken rule is the
