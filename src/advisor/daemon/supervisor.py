@@ -180,6 +180,16 @@ def build_registry() -> JobRegistry:
     )
     reg.register(
         Job(
+            name="picks_intraday",
+            # Today's picks while the session runs, on live prices for the few
+            # names that can qualify; the nightly breadth_sync makes them final.
+            trigger=WindowEvery(start=time(10, 0), end=time(16, 0), minutes=30),
+            handler=handlers.run_picks_intraday,
+            description="provisional picks for today on live prices",
+        )
+    )
+    reg.register(
+        Job(
             name="breadth_sync",
             # Jobs run one at a time, and this one takes minutes (the first
             # backfill, about twenty). So it waits for the halts poll to end

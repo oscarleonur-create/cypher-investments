@@ -23,13 +23,15 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 import numpy as np
+import pandas as pd
 
 from advisor.breadth import signals as S
-from advisor.breadth.panel import load_panel
+from advisor.breadth.panel import Panel, load_panel
 from advisor.breadth.store import BreadthStore
 
 logger = logging.getLogger(__name__)
@@ -160,10 +162,20 @@ def rationale(p: dict, eligible_count: int) -> dict:
             }
         )
     if pp.get("high_on"):
+        off = pp.get("from_52w_high")
+        # P counts if a state was on at any session of the window, so the
+        # price may have left the high since: say which (FEIM, 2026-09-28:
+        # "within 2% ... (now -8.1%)" read as a contradiction).
+        still = off is not None and off >= -0.02
         reasons.append(
             {
                 "family": "P",
-                "text": f"Within 2% of its 52-week high (now {_pct(pp.get('from_52w_high'))}).",
+                "text": (
+                    f"Within 2% of its 52-week high (now {_pct(off)})."
+                    if still
+                    else f"Came within 2% of its 52-week high in the last month; now "
+                    f"{_pct(off)} below it."
+                ),
                 "source": "daily highs and closes (Yahoo)",
             }
         )
@@ -253,16 +265,80 @@ def _held(db_path) -> set[str]:
         return set()
 
 
-def build_picks(store: BreadthStore, day: date, now: datetime, db_path=None, n: int = TOP_N):
-    """Rank the names where families agree on ``day``; store and return the top ``n``."""
+LiveFetch = Callable[[list[str], date], dict]  # symbols, day -> {symbol: Bar of that day}
+
+
+def yahoo_today(symbols: list[str], day: date) -> dict:
+    """``day``'s bar so far for each symbol (the session in progress). Missing names left out."""
+    from advisor.breadth.bars import clean, yahoo_fetch
+
+    out = {}
+    for s, bars in yahoo_fetch(symbols, day).items():
+        good, _ = clean([b for b in bars if b.day == day])
+        if good:
+            out[s] = good[-1]
+    return out
+
+
+def with_live_row(panel: Panel, day: date, bars: dict) -> Panel:
+    """``panel`` with one more session, ``day``, holding the live bars. Pure.
+
+    Names without a live bar are NaN on it, never yesterday's price: a pick
+    must rest on today's price or not be made.
+    """
+    ts = pd.Timestamp(day)
+    if ts in panel.close.index:
+        return panel
+    idx = panel.close.index.append(pd.DatetimeIndex([ts]))
+    close, high, volume = (f.reindex(idx) for f in (panel.close, panel.high, panel.volume))
+    for s, b in bars.items():
+        if s in close.columns:
+            close.loc[ts, s] = b.close
+            high.loc[ts, s] = b.high if b.high is not None else b.close
+            volume.loc[ts, s] = b.volume if b.volume is not None else np.nan
+    return Panel(close, high, volume)
+
+
+def build_picks(
+    store: BreadthStore,
+    day: date,
+    now: datetime,
+    db_path=None,
+    n: int = TOP_N,
+    *,
+    live: LiveFetch | None = None,
+):
+    """Rank the names where families agree on ``day``; store and return the top ``n``.
+
+    With ``live``, ``day`` is a session still in progress (or closed but not yet
+    synced): the panel is the stored history plus one row of live bars, fetched
+    only for names that *can* qualify — two families need F or I, so a name
+    with neither active is never asked for. The result is marked provisional;
+    F and I rest on filings through last night (EDGAR's indexes publish at the
+    end of the day) and a breakout's volume is the session's so far.
+    """
     from advisor.breadth.measure import CAVEATS, _inputs
     from advisor.breadth.ruleset import signal_rules
 
     store.conn.executescript(_SCHEMA)
-    panel = load_panel(store, start=day - timedelta(days=HISTORY_DAYS), end=day)
-    row = panel.row_of(day)
-    if row is None or panel.sessions[row].date() != day:
-        return {"ok": False, "error": f"no bars on file for {day}"}
+    start = day - timedelta(days=HISTORY_DAYS)
+    if live is None:
+        panel = load_panel(store, start=start, end=day)
+        row = panel.row_of(day)
+        if row is None or panel.sessions[row].date() != day:
+            return {"ok": False, "error": f"no bars on file for {day}"}
+    else:
+        base = load_panel(store, start=start, end=day - timedelta(days=1))
+        if base.close.empty:
+            return {"ok": False, "error": "no stored history"}
+        _, _, ev0, iev0 = _inputs(store, base)
+        reach = len(base.sessions) - S.CONVERGE_SESSIONS
+        wanted = sorted({e.symbol for e in [*ev0, *iev0] if e.row >= reach})
+        bars = live(wanted, day) if wanted else {}
+        if not bars:
+            return {"ok": False, "error": f"no live prices for {day}"}
+        panel = with_live_row(base, day, bars)
+        row = len(panel.sessions) - 1
     cik_of, eligible_df, events, ievents = _inputs(store, panel)
     states = S.price_states(panel, eligible_df)
     p_on = states["momentum"] | states["high"] | states["breakout"]
@@ -292,6 +368,8 @@ def build_picks(store: BreadthStore, day: date, now: datetime, db_path=None, n: 
 
     picks = []
     for symbol, j in cols.items():
+        if not np.isfinite(close[row, j]):
+            continue  # no price on the session itself (a live bar that did not come back)
         a = active_at(symbol, row, j, f_by, i_by, p_recent, eligible)
         if a is None:
             continue
@@ -351,9 +429,11 @@ def build_picks(store: BreadthStore, day: date, now: datetime, db_path=None, n: 
     n_eligible = int(eligible[row].sum())
     for p in top:
         p.update(rationale(p, n_eligible))
+        p["provisional"] = live is not None
+        p["asof"] = now.isoformat()
     rules = signal_rules().version
     track = _replay_record(store)
-    live = {
+    live_records = {
         g: c
         for g, c in store.conn.execute(
             "SELECT grp, COUNT(*) FROM breadth_records WHERE origin = 'live' GROUP BY grp"
@@ -373,41 +453,92 @@ def build_picks(store: BreadthStore, day: date, now: datetime, db_path=None, n: 
         "ok": True,
         "day": day.isoformat(),
         "built_at": now.isoformat(),
+        "provisional": live is not None,
         "rules": rules,
         "candidates": len(picks),
         "picks": top,
         "track_record": track,
-        "live_records": live,
+        "live_records": live_records,
         "caveats": list(CAVEATS),
     }
 
 
-def latest_picks(store: BreadthStore) -> dict:
-    """The newest stored picks, with the track record read fresh. Empty when none."""
+def refresh_picks(
+    store: BreadthStore, now: datetime, db_path=None, *, live: LiveFetch = yahoo_today
+):
+    """Build the picks for the most recent session there is, final when its bars are stored.
+
+    - Session in progress: provisional, on live prices.
+    - Closed today but not yet synced (16:00 to the nightly sync): provisional too,
+      on the day's final prices; the nightly build replaces it.
+    - Otherwise (evening after the sync, weekend, before the open): final, from the store.
+    """
+    from advisor.breadth.bars import last_closed_session
+    from advisor.daemon import market_calendar as mc
+
+    et = mc.to_et(now)
+    today = et.date()
+    if mc.is_trading_day(today) and et.time() >= mc.REGULAR_OPEN:
+        built = build_picks(store, today, now, db_path)  # stored bars: final
+        if built.get("ok"):
+            return built
+        return build_picks(store, today, now, db_path, live=live)
+    return build_picks(store, last_closed_session(now), now, db_path)
+
+
+def _since_pick(store: BreadthStore, day: str, picks: list[dict]) -> None:
+    """Each pick's move from its day's price to the latest stored close. In place."""
+    for p in picks:
+        r = store.conn.execute(
+            "SELECT day, close FROM breadth_bars WHERE symbol = ? AND day > ? "
+            "ORDER BY day DESC LIMIT 1",
+            (p["symbol"], day),
+        ).fetchone()
+        if r and p.get("price"):
+            p["since_pick"] = {"day": r[0], "close": r[1], "move": r[1] / p["price"] - 1}
+
+
+def latest_picks(store: BreadthStore, day: str | None = None, history: int = 30) -> dict:
+    """The picks of ``day`` (default: the newest), the days on file, and the record.
+
+    A past day's picks carry how far each has moved since (``since_pick``):
+    the history is how the list is checked, not a second list to act on.
+    """
     from advisor.breadth.measure import CAVEATS
 
     store.conn.executescript(_SCHEMA)
-    row = store.conn.execute("SELECT MAX(day) FROM breadth_picks").fetchone()
-    day = row[0] if row else None
-    if not day:
-        return {"day": None, "picks": [], "track_record": _replay_record(store),
-                "caveats": list(CAVEATS)}  # fmt: skip
-    rows = store.conn.execute(
-        "SELECT rank, payload_json, rules, built_at FROM breadth_picks WHERE day = ? ORDER BY rank",
-        (day,),
-    ).fetchall()
+    days = [
+        {"day": d, "count": c, "provisional": bool(json.loads(p).get("provisional"))}
+        for d, c, p in store.conn.execute(
+            "SELECT day, COUNT(*), (SELECT payload_json FROM breadth_picks b2 "
+            "WHERE b2.day = b.day ORDER BY rank LIMIT 1) FROM breadth_picks b "
+            "GROUP BY day ORDER BY day DESC LIMIT ?",
+            (history,),
+        )
+    ]
+    if day is None:
+        day = days[0]["day"] if days else None
     live = {
         g: c
         for g, c in store.conn.execute(
             "SELECT grp, COUNT(*) FROM breadth_records WHERE origin = 'live' GROUP BY grp"
         )
     }
+    base = {"days": days, "track_record": _replay_record(store), "live_records": live,
+            "caveats": list(CAVEATS)}  # fmt: skip
+    if not day:
+        return {"day": None, "picks": [], **base}
+    rows = store.conn.execute(
+        "SELECT rank, payload_json, rules, built_at FROM breadth_picks WHERE day = ? ORDER BY rank",
+        (day,),
+    ).fetchall()
+    picks = [{"rank": r[0], **json.loads(r[1])} for r in rows]
+    _since_pick(store, day, picks)
     return {
         "day": day,
         "built_at": rows[0][3] if rows else None,
         "rules": rows[0][2] if rows else None,
-        "picks": [{"rank": r[0], **json.loads(r[1])} for r in rows],
-        "track_record": _replay_record(store),
-        "live_records": live,
-        "caveats": list(CAVEATS),
+        "provisional": bool(picks and picks[0].get("provisional")),
+        "picks": picks,
+        **base,
     }

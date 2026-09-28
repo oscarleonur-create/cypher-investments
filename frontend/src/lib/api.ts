@@ -33,6 +33,7 @@ import type {
   WatchlistResponse,
   PriceRange,
   PicksResponse,
+  EntryProposal,
 } from "./types";
 
 async function get<T>(url: string): Promise<T> {
@@ -163,7 +164,15 @@ export const api = {
 
   trackingBoard: () => get<{ asof: string; rows: TrackRow[] }>("/api/tracking/board"),
   trackingStatus: () => get<SystemStatus>("/api/tracking/status"),
-  breadthPicks: () => get<PicksResponse>("/api/breadth/picks"),
+  breadthPicks: (day?: string) =>
+    get<PicksResponse>(`/api/breadth/picks${day ? `?day=${encodeURIComponent(day)}` : ""}`),
+  refreshPicks: () => post<{ job_id: string }>("/api/breadth/picks/refresh"),
+  evaluatePosition: (symbol: string) =>
+    post<{ job_id: string }>(`/api/breadth/evaluate/${encodeURIComponent(symbol)}`),
+  positionEvaluation: (symbol: string) =>
+    get<{ proposal: EntryProposal | null }>(
+      `/api/breadth/evaluation/${encodeURIComponent(symbol)}`
+    ),
 
   review: () =>
     get<{ review: PortfolioReview | null; fetched_at: string | null }>("/api/portfolio/review"),

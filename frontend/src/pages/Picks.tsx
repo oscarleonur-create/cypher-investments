@@ -1,13 +1,16 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { AlertTriangle, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Pick, PickCell, PicksResponse, ReplayWindow } from "@/lib/types";
+import { useJob } from "@/lib/useJob";
 import { cn, fmtEt, fmtPct, fmtUsd, pnlColor } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Section, Th } from "@/components/common";
+import { PositionCheck } from "@/components/PositionCheck";
 
 /** What each family is, in the words the page uses. */
 const FAMILY: Record<string, { label: string; hint: string; variant: "pos" | "accent" | "warn" }> = {
@@ -107,6 +110,16 @@ function PickCard({ p }: { p: Pick }) {
                 {fmtPct(p.return_20d, { sign: true })}
               </div>
             </div>
+            {p.since_pick && (
+              <div>
+                <div className="text-xs uppercase tracking-wide text-muted">
+                  Since pick → {p.since_pick.day}
+                </div>
+                <div className={cn("font-semibold tnum", pnlColor(p.since_pick.move))}>
+                  {fmtPct(p.since_pick.move, { sign: true })}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -126,6 +139,10 @@ function PickCard({ p }: { p: Pick }) {
             <span className="font-medium text-text">Would undo it:</span> {p.invalidates.join("; ")}.
           </div>
         )}
+
+        <div className="border-t border-border/60 pt-3">
+          <PositionCheck symbol={p.symbol} />
+        </div>
       </CardContent>
     </Card>
   );
@@ -212,22 +229,101 @@ function TrackRecord({ data }: { data: PicksResponse }) {
   );
 }
 
+/** Today first; earlier days are the history, each pick with how it has moved since. */
+function DayPicker({
+  data,
+  selected,
+  onPick,
+}: {
+  data: PicksResponse;
+  selected: string | null;
+  onPick: (day: string | null) => void;
+}) {
+  if (data.days.length < 2) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1 text-xs">
+      <span className="mr-1 text-muted">History:</span>
+      {data.days.map((d, i) => {
+        const active = (selected ?? data.days[0].day) === d.day;
+        return (
+          <button
+            key={d.day}
+            onClick={() => onPick(i === 0 ? null : d.day)}
+            className={cn(
+              "rounded-md px-2 py-1",
+              active ? "bg-panel-2 text-text" : "text-muted hover:text-text"
+            )}
+          >
+            {i === 0 ? "Latest" : d.day}
+            {i === 0 && <span className="ml-1 text-muted">({d.day})</span>}
+            {d.provisional && <span className="ml-1 text-warn">·prov</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function Picks() {
-  const q = useQuery({ queryKey: ["breadth", "picks"], queryFn: api.breadthPicks, refetchInterval: 300_000 });
+  const qc = useQueryClient();
+  const [day, setDay] = useState<string | null>(null);
+  const q = useQuery({
+    queryKey: ["breadth", "picks", day],
+    queryFn: () => api.breadthPicks(day ?? undefined),
+    refetchInterval: 300_000,
+  });
   const data = q.data;
+  const job = useJob(() => {
+    setDay(null);
+    qc.invalidateQueries({ queryKey: ["breadth", "picks"] });
+  });
+  const refresh = async () => {
+    const { job_id } = await api.refreshPicks();
+    job.start(job_id);
+  };
+  const latest = data?.days[0]?.day;
+  const isLatest = !!data?.day && data.day === latest;
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h1 className="text-lg font-semibold">Picks</h1>
-        {data?.day && (
-          <span className="text-xs text-muted">
-            close of {data.day}
-            {data.built_at && <> · built {fmtEt(data.built_at, { withYear: true })}</>}
-            {data.rules && <> · rules {data.rules}</>}
-          </span>
-        )}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-baseline gap-3">
+          <h1 className="text-lg font-semibold">Picks</h1>
+          {data?.day && (
+            <span className="text-xs text-muted">
+              {isLatest ? "latest" : "history"} · {data.day}
+              {data.provisional ? (
+                <span className="text-warn"> · provisional, live prices</span>
+              ) : (
+                <> · close</>
+              )}
+              {data.built_at && <> · built {fmtEt(data.built_at, { withYear: true })}</>}
+              {data.rules && <> · rules {data.rules}</>}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {job.job && (
+            <span className={cn("text-xs", job.job.status === "error" ? "text-neg" : "text-muted")}>
+              {job.job.status === "error" ? job.job.error || job.job.message : job.job.message}
+            </span>
+          )}
+          <Button variant="outline" onClick={refresh} disabled={job.running}>
+            <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", job.running && "animate-spin")} />
+            {job.running ? "Building…" : "Refresh now"}
+          </Button>
+        </div>
       </div>
+
+      {data && <DayPicker data={data} selected={day} onPick={setDay} />}
+
+      {data?.provisional && isLatest && (
+        <div className="text-xs text-muted">
+          Provisional: built on today's prices so far. F and I rest on filings through last
+          night (EDGAR publishes its indexes at the end of the day), and a breakout counts the
+          session's volume so far. The 20:30 ET run makes today's list final.
+        </div>
+      )}
 
       {q.isLoading && <div className="text-sm text-muted">Loading…</div>}
       {q.error && <div className="text-sm text-neg">{String((q.error as Error).message)}</div>}

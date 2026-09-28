@@ -1025,6 +1025,40 @@ export interface Pick {
   return_20d: number | null;
   reasons: PickReason[];
   invalidates: string[];
+  provisional?: boolean;
+  asof?: string;
+  /** For a past day's pick: its move from that day's price to the latest close. */
+  since_pick?: { day: string; close: number; move: number } | null;
+}
+
+export interface EntryLeg {
+  horizon: "trade" | "position" | string;
+  entry: number;
+  stop: number;
+  stop_basis: string;
+  risk_pct: number;
+  shares: number;
+  notional: number;
+  exit_rules: string[];
+  notes: string[];
+  target?: number | null;
+}
+
+/** The entry engine's proposal for one name (``entry.proposal.Proposal``). */
+export interface EntryProposal {
+  symbol: string;
+  session: string;
+  built_at: string;
+  action: string;
+  price: number | null;
+  triggers: string[];
+  reasons: { text: string; source: string }[];
+  blockers: string[];
+  legs: EntryLeg[];
+  stance: string | null;
+  reading: string[];
+  gaps: string[];
+  net_liq: number | null;
 }
 
 export interface PickCell {
@@ -1052,6 +1086,8 @@ export interface ReplayWindow {
 
 export interface PicksResponse {
   day: string | null;
+  days: { day: string; count: number; provisional: boolean }[];
+  provisional?: boolean;
   built_at?: string | null;
   rules?: string | null;
   picks: Pick[];
