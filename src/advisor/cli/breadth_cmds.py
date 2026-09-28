@@ -127,13 +127,14 @@ def _print_study(s: dict) -> None:
     )
     table = Table(title="Return beyond matched controls (same day, same industry and size)")
     for col in ("group", "horizon", "n", "windows", "mean", "controls", "excess", "95% CI",
-                "beat", "tail", "verdict"):  # fmt: skip
+                "vs same trend", "trend CI", "beat", "tail", "verdict"):  # fmt: skip
         table.add_column(col, justify="left" if col in ("group", "horizon", "verdict") else "right")
     for c in s["cells"]:
         if not c["n"]:
-            table.add_row(c["group"], c["horizon"], "0", "", "", "", "", "", "", "", c["verdict"])
+            table.add_row(c["group"], c["horizon"], "0", *[""] * 9, c["verdict"])
             continue
         ci = c["ci"]
+        tci = c.get("ci_trend")
         table.add_row(
             c["group"],
             c["horizon"],
@@ -143,6 +144,8 @@ def _print_study(s: dict) -> None:
             _pct(c["control"]),
             _pct(c["excess"]),
             f"{_pct(ci[0])} … {_pct(ci[1])}" if ci else "—",
+            _pct(c.get("excess_trend")),
+            f"{_pct(tci[0])} … {_pct(tci[1])}" if tci else "—",
             f"{c['beat'] * 100:.0f}%",
             _pct(c["tail"]),
             c["verdict"],

@@ -89,6 +89,25 @@ class TestOutcomes:
         _, level = M.Outcomes(p, elig(p), cik_of, sic_of).controls("S00", 100)
         assert level == "industry+size"
 
+    def test_the_trend_comparison_uses_peers_that_moved_alike(self):
+        p = panel_of(n_symbols=60)
+        # The first 30 names fell 20% over the 60 sessions to row 150; the rest did not.
+        for s in p.close.columns[:30]:
+            p.close.loc[p.close.index[90:151], s] = np.linspace(100, 80, 61)
+            p.close.loc[p.close.index[151:], s] = 80.0
+        o = M.Outcomes(p, elig(p), {}, {})
+        controls, level = o.controls("S00", 150, trend=True)
+        assert level == "trend"
+        assert all(i < 30 for i in controls)  # only fallers
+        steady, _ = o.controls("S45", 150, trend=True)
+        assert all(i >= 30 for i in steady)  # a name that did not fall: peers that did not
+        assert o.of("S00", 150)["d20"]["excess_trend"] is not None
+
+    def test_no_trend_comparison_without_the_history(self):
+        p = panel_of()
+        out = M.Outcomes(p, elig(p), {}, {}).of("S00", M.TREND_SESSIONS - 1)
+        assert out["match_trend"] == "none" and out["d20"]["excess_trend"] is None
+
     def test_no_eligible_peers(self):
         p = panel_of(n_symbols=3)
         e = elig(p)

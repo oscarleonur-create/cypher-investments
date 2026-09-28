@@ -100,6 +100,7 @@ SIGNAL_DECLARED: dict[str, dict[str, Kind]] = {
         "CONTROLS": Kind.MODEL,
         "MIN_POOL": Kind.MODEL,
         "SIZE_BUCKETS": Kind.MODEL,
+        "TREND_SESSIONS": Kind.MODEL,
         "FILL_LIMIT": Kind.MODEL,
     },
     "companies": {"_DIVISIONS": Kind.MODEL},
