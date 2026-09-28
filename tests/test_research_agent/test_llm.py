@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from pydantic import BaseModel
 from research_agent.config import ResearchConfig
 from research_agent.llm import OpenRouterLLM
@@ -95,6 +96,13 @@ class TestOpenRouterLLM:
 
 class TestReasoningEffort:
     """GLM-5.3 at its default effort spent 82 s on one reading; "medium" took 4.7 s."""
+
+    @pytest.fixture(autouse=True)
+    def _no_effort_from_the_environment(self, monkeypatch):
+        # _env_file=None keeps .env out of the config, but anything that ran
+        # load_dotenv has already copied it into os.environ; a user's real
+        # RESEARCH_AGENT_LLM_REASONING_EFFORT=medium then failed the "unset" tests.
+        monkeypatch.delenv("RESEARCH_AGENT_LLM_REASONING_EFFORT", raising=False)
 
     def test_unset_sends_nothing_extra(self):
         assert _make_config().reasoning_body() == {}

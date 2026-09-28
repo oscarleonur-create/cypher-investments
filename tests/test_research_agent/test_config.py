@@ -5,8 +5,14 @@ from __future__ import annotations
 from research_agent.config import ResearchConfig
 
 
-def test_defaults():
+def test_defaults(monkeypatch):
     """Config loads sensible defaults without env vars."""
+    import os
+
+    # _env_file=None keeps .env out, but a load_dotenv elsewhere in the run may
+    # already have copied it into os.environ (the user's model is glm-5.3).
+    for key in [k for k in os.environ if k.startswith("RESEARCH_AGENT_")]:
+        monkeypatch.delenv(key)
     config = ResearchConfig(
         _env_file=None,
         tavily_api_key="test",
