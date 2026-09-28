@@ -1002,3 +1002,61 @@ export interface PriceRange {
   assumptions: string;
   notes: string[];
 }
+
+// ── Breadth picks ─────────────────────────────────────────────────────────
+
+export interface PickReason {
+  family: "F" | "P" | "I" | "";
+  text: string;
+  source: string;
+}
+
+export interface Pick {
+  rank: number;
+  symbol: string;
+  name: string | null;
+  sector: string | null;
+  held: boolean;
+  families: ("F" | "I" | "P")[];
+  since: string;
+  sessions_since: number;
+  price: number;
+  move_since: number | null;
+  return_20d: number | null;
+  reasons: PickReason[];
+  invalidates: string[];
+}
+
+export interface PickCell {
+  group: string;
+  horizon: string;
+  n: number;
+  windows?: number;
+  excess?: number;
+  ci?: [number, number] | null;
+  excess_trend?: number | null;
+  ci_trend?: [number, number] | null;
+  beat?: number;
+  tail?: number | null;
+  verdict: string;
+}
+
+export interface ReplayWindow {
+  years: number;
+  run_id: string;
+  from: string;
+  to: string;
+  cells: PickCell[];
+  cells_tested: number;
+}
+
+export interface PicksResponse {
+  day: string | null;
+  built_at?: string | null;
+  rules?: string | null;
+  picks: Pick[];
+  /** The latest replay of each window, longest first. */
+  track_record: ReplayWindow[];
+  live_records?: Record<string, number>;
+  caveats: string[];
+}

@@ -1,0 +1,267 @@
+import { useState } from "react";
+import { Link } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { AlertTriangle } from "lucide-react";
+import { api } from "@/lib/api";
+import type { Pick, PickCell, PicksResponse, ReplayWindow } from "@/lib/types";
+import { cn, fmtEt, fmtPct, fmtUsd, pnlColor } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent } from "@/components/ui/card";
+import { Section, Th } from "@/components/common";
+
+/** What each family is, in the words the page uses. */
+const FAMILY: Record<string, { label: string; hint: string; variant: "pos" | "accent" | "warn" }> = {
+  F: { label: "F · revenue accelerating", hint: "fundamentals, from the 10-Q", variant: "pos" },
+  P: { label: "P · price strength", hint: "momentum, 52-week high, breakout", variant: "accent" },
+  I: { label: "I · insiders buying", hint: "open-market Form 4 purchases", variant: "warn" },
+};
+
+const HORIZON: Record<string, string> = { d20: "20 sessions", d60: "60 sessions", d120: "120 sessions" };
+
+/** A percentage for an interval end: a rounding "-0.0%" reads as a sign, so it is 0.0%. */
+function end(x: number): string {
+  return Math.abs(x) < 0.0005 ? "0.0%" : fmtPct(x, { sign: true });
+}
+
+function ci(c: [number, number] | null | undefined): string {
+  return c ? `${end(c[0])} … ${end(c[1])}` : "—";
+}
+
+function cell(w: ReplayWindow, group: string, horizon: string): PickCell | undefined {
+  return w.cells.find((c) => c.group === group && c.horizon === horizon);
+}
+
+/** The honest headline: what the list rests on, before any name. Every window, not the best. */
+function Evidence({ data }: { data: PicksResponse }) {
+  const live = Object.values(data.live_records ?? {}).reduce((a, b) => a + b, 0);
+  const lines = data.track_record
+    .map((w) => ({ w, c: cell(w, "2+", "d20") }))
+    .filter((x): x is { w: ReplayWindow; c: PickCell } => !!x.c && x.c.n > 0);
+  return (
+    <div className="flex gap-3 rounded-md border border-warn/30 bg-warn/10 px-4 py-3 text-sm">
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warn" />
+      <div className="space-y-1">
+        <div className="font-medium text-text">Not proven. Ordered by evidence, not by expected return.</div>
+        <div className="text-muted">
+          Each name has two or more measured families agreeing on the last close. Over the next 20
+          sessions, past names in this group beat same-day peers of their industry and size by:
+        </div>
+        {lines.length > 0 ? (
+          <ul className="space-y-0.5 text-muted">
+            {lines.map(({ w, c }) => (
+              <li key={w.run_id}>
+                {w.years}-year replay ({w.from} → {w.to}):{" "}
+                <span className={pnlColor(c.excess)}>{fmtPct(c.excess, { sign: true })}</span>, 95%
+                interval {ci(c.ci)} — <span className="text-text">{c.verdict}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div className="text-muted">No replay on file yet.</div>
+        )}
+        <div className="text-muted">
+          Names that failed since are missing from the history, which flatters these. Live record:{" "}
+          {live} records so far — too few for any verdict.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PickCard({ p }: { p: Pick }) {
+  return (
+    <Card>
+      <CardContent className="space-y-3 pt-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm text-muted tnum">#{p.rank}</span>
+              <Link to={`/ticker/${p.symbol}`} className="text-lg font-semibold hover:text-accent">
+                {p.symbol}
+              </Link>
+              {p.held && <Badge variant="muted">held</Badge>}
+              {p.families.map((f) => (
+                <Badge key={f} variant={FAMILY[f].variant} title={FAMILY[f].hint}>
+                  {FAMILY[f].label}
+                </Badge>
+              ))}
+            </div>
+            <div className="truncate text-xs text-muted">
+              {p.name ?? "—"} · {p.sector ?? "sector n/a"}
+            </div>
+          </div>
+          <div className="flex gap-5 text-right">
+            <div>
+              <div className="text-xs uppercase tracking-wide text-muted">Close</div>
+              <div className="font-semibold tnum">{fmtUsd(p.price)}</div>
+            </div>
+            <div>
+              <div className="text-xs uppercase tracking-wide text-muted">Since {p.since}</div>
+              <div className={cn("font-semibold tnum", pnlColor(p.move_since))}>
+                {fmtPct(p.move_since, { sign: true })}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs uppercase tracking-wide text-muted">20 sessions</div>
+              <div className={cn("font-semibold tnum", pnlColor(p.return_20d))}>
+                {fmtPct(p.return_20d, { sign: true })}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <ul className="space-y-1.5">
+          {p.reasons.map((r, i) => (
+            <li key={i} className="flex gap-2 text-sm">
+              <span className="w-4 shrink-0 font-mono text-xs text-muted">{r.family}</span>
+              <span>
+                {r.text} <span className="text-xs text-muted">— {r.source}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+
+        {p.invalidates.length > 0 && (
+          <div className="text-xs text-muted">
+            <span className="font-medium text-text">Would undo it:</span> {p.invalidates.join("; ")}.
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function TrackRecord({ data }: { data: PicksResponse }) {
+  const [pick, setPick] = useState(0);
+  const w = data.track_record[Math.min(pick, data.track_record.length - 1)];
+  const groups = ["2+", "F+P", "F", "I"];
+  const rows = w
+    ? groups.flatMap((g) =>
+        ["d20", "d60", "d120"].map((h) => cell(w, g, h)).filter((c): c is PickCell => !!c && c.n > 0)
+      )
+    : [];
+  const windows = (
+    <div className="flex gap-1">
+      {data.track_record.map((r, i) => (
+        <button
+          key={r.run_id}
+          onClick={() => setPick(i)}
+          className={cn(
+            "rounded-md px-2 py-1 text-xs",
+            r === w ? "bg-panel-2 text-text" : "text-muted hover:text-text"
+          )}
+        >
+          {r.years}-year window
+        </button>
+      ))}
+    </div>
+  );
+  return (
+    <Section
+      title="Track record — what each group did next, in the replay"
+      empty={!rows.length}
+      right={data.track_record.length > 1 ? windows : undefined}
+    >
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border">
+              <Th>Group</Th>
+              <Th>Horizon</Th>
+              <Th className="text-right">Records</Th>
+              <Th className="text-right">vs peers</Th>
+              <Th className="text-right">95% interval</Th>
+              <Th className="text-right">vs peers with the same trend</Th>
+              <Th className="text-right">Typical worst drop</Th>
+              <Th>Verdict</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((c) => (
+              <tr key={`${c.group}-${c.horizon}`} className="border-b border-border/50 last:border-0">
+                <td className="px-2 py-1.5 font-medium">{c.group}</td>
+                <td className="px-2 py-1.5 text-muted">{HORIZON[c.horizon] ?? c.horizon}</td>
+                <td className="px-2 py-1.5 text-right tnum">{c.n.toLocaleString()}</td>
+                <td className={cn("px-2 py-1.5 text-right tnum", pnlColor(c.excess))}>
+                  {fmtPct(c.excess, { sign: true })}
+                </td>
+                <td className="px-2 py-1.5 text-right tnum text-muted">{ci(c.ci)}</td>
+                <td className={cn("px-2 py-1.5 text-right tnum", pnlColor(c.excess_trend))}>
+                  {fmtPct(c.excess_trend, { sign: true })}
+                </td>
+                <td className="px-2 py-1.5 text-right tnum text-neg">{fmtPct(c.tail, { sign: true })}</td>
+                <td className="px-2 py-1.5">
+                  <Badge variant={c.verdict === "EDGE" ? "pos" : c.verdict === "NEGATIVE" ? "neg" : "muted"}>
+                    {c.verdict}
+                  </Badge>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {w && (
+        <p className="mt-3 text-xs text-muted">
+          {w.from} → {w.to}. {w.cells_tested} cells were tested in that replay: at 95%, about{" "}
+          {(w.cells_tested * 0.025).toFixed(1)} would clear zero by chance alone.
+          Peers are ten names drawn the same day from the same industry and size; "same trend" peers
+          also moved alike over the prior 60 sessions.
+        </p>
+      )}
+    </Section>
+  );
+}
+
+export default function Picks() {
+  const q = useQuery({ queryKey: ["breadth", "picks"], queryFn: api.breadthPicks, refetchInterval: 300_000 });
+  const data = q.data;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h1 className="text-lg font-semibold">Picks</h1>
+        {data?.day && (
+          <span className="text-xs text-muted">
+            close of {data.day}
+            {data.built_at && <> · built {fmtEt(data.built_at, { withYear: true })}</>}
+            {data.rules && <> · rules {data.rules}</>}
+          </span>
+        )}
+      </div>
+
+      {q.isLoading && <div className="text-sm text-muted">Loading…</div>}
+      {q.error && <div className="text-sm text-neg">{String((q.error as Error).message)}</div>}
+
+      {data && (
+        <>
+          <Evidence data={data} />
+          {data.picks.length === 0 ? (
+            <Card>
+              <CardContent className="pt-4 text-sm text-muted">
+                No name has two families agreeing on the last close, or the picks have not been
+                built yet (they are built nightly at 20:30 ET, or with{" "}
+                <code>advisor breadth picks --build</code>).
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="space-y-3">
+              {data.picks.map((p) => (
+                <PickCard key={p.symbol} p={p} />
+              ))}
+            </div>
+          )}
+          <TrackRecord data={data} />
+          {data.caveats.length > 0 && (
+            <Section title="What the measurement cannot see">
+              <ul className="list-disc space-y-1 pl-5 text-sm text-muted">
+                {data.caveats.map((c) => (
+                  <li key={c}>{c}</li>
+                ))}
+              </ul>
+            </Section>
+          )}
+        </>
+      )}
+    </div>
+  );
+}

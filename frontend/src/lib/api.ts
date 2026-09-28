@@ -32,6 +32,7 @@ import type {
   TrackRow,
   WatchlistResponse,
   PriceRange,
+  PicksResponse,
 } from "./types";
 
 async function get<T>(url: string): Promise<T> {
@@ -162,6 +163,7 @@ export const api = {
 
   trackingBoard: () => get<{ asof: string; rows: TrackRow[] }>("/api/tracking/board"),
   trackingStatus: () => get<SystemStatus>("/api/tracking/status"),
+  breadthPicks: () => get<PicksResponse>("/api/breadth/picks"),
 
   review: () =>
     get<{ review: PortfolioReview | null; fetched_at: string | null }>("/api/portfolio/review"),

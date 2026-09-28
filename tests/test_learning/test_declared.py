@@ -20,6 +20,7 @@ from advisor.breadth import filings as breadth_filings
 from advisor.breadth import insiders as breadth_insiders
 from advisor.breadth import listings as breadth_listings
 from advisor.breadth import measure as breadth_measure
+from advisor.breadth import picks as breadth_picks
 from advisor.breadth import ruleset as breadth_ruleset
 from advisor.breadth import signals as breadth_signals
 from advisor.breadth import universe as breadth_universe
@@ -202,6 +203,7 @@ SIGNAL_MODULES = {
     "companies": breadth_companies,
     "filings": breadth_filings,
     "insiders": breadth_insiders,
+    "picks": breadth_picks,
 }
 
 
