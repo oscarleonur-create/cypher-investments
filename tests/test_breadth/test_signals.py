@@ -193,6 +193,8 @@ def test_f_lands_on_the_first_session_at_or_after_it_became_known():
     assert SESSIONS[ev.row].date() == date(2026, 8, 10)
     qs = quarters(130e6, 100e6, 100e6, 100e6, known="2027-02-01")  # after the panel
     assert S.fundamental_events({"A": qs}, SESSIONS) == []
+    qs = quarters(130e6, 100e6, 100e6, 100e6, known="2025-12-15")  # before the panel
+    assert S.fundamental_events({"A": qs}, SESSIONS) == []
 
 
 # ── F+P ───────────────────────────────────────────────────────────────────

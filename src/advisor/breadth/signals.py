@@ -22,7 +22,13 @@ least ``accel_min`` above the previous quarter's (revenue acceleration).
 The "known" lag is conservative — most filers file sooner — so F arrives
 late, never early.
 
-**Records**, three groups, measured apart:
+**I — informed buyers** (B2). Officers or directors buying on the open
+market, at least ``insider_min_buyers`` distinct ones within
+``INSIDER_WINDOW_DAYS`` for at least ``insider_min_value`` between them;
+10b5-1 plan trades, owners who are only 10% holders, and routine buyers are
+left out (``opportunistic``). Placed on the session after the filing.
+
+**Records**, measured apart:
 
 - ``P``: P turns on (off the session before), at most once per
   ``COOLDOWN_SESSIONS`` per name;
@@ -31,7 +37,10 @@ late, never early.
   at which P was on at some point in the ``CONVERGE_SESSIONS`` before it —
   two independent families agreeing. This is the candidate the plan is about;
   P and F alone are recorded so it can be told whether agreement adds
-  anything over either family.
+  anything over either family;
+- ``I``: each insider cluster, at most once per ``COOLDOWN_SESSIONS``;
+- ``2+``: the first session at which at least two of F, I and P are active
+  together — the candidate once there are three families.
 
 A name must be eligible (E0) on the record's session. Share classes of one
 company (GOOG, GOOGL) are one company: only the class that trades the most
@@ -41,6 +50,7 @@ dollars is read, so one piece of news is not two records.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -58,6 +68,8 @@ class Thresholds:
     growth_min: float = 0.10  # F: the quarter grew at least 10% year on year...
     accel_min: float = 0.05  # F: ...and 5 points faster than the quarter before
     min_quarter_revenue: float = 10e6  # F: below this a growth rate is a small-base artefact
+    insider_min_buyers: int = 2  # I: distinct officers or directors buying...
+    insider_min_value: float = 100_000.0  # I: ...at least this much between them
 
 
 DEFAULT = Thresholds()
@@ -71,8 +83,10 @@ VOLUME_WINDOW = 50
 BASE_WINDOW = 50
 CONVERGE_SESSIONS = 21  # about a month
 COOLDOWN_SESSIONS = 60  # a name is recorded again in a group only after this many sessions
+INSIDER_WINDOW_DAYS = 30  # purchases this close together are one cluster
+ROUTINE_YEARS = 3  # a buyer who bought in the same month each of these years is routine
 
-GROUPS = ("P", "F", "F+P")
+GROUPS = ("P", "F", "F+P", "I", "2+")
 
 
 def dedupe_share_classes(eligible: pd.DataFrame, panel: Panel, cik_of: dict[str, int]):
@@ -176,6 +190,8 @@ def fundamental_events(
             growth_before = before.value / year_ago_before.value - 1
             if growth < t.growth_min or growth - growth_before < t.accel_min:
                 continue
+            if now.known < sessions[0].date():
+                continue  # known before the panel: it cannot be placed on a session
             row = int(sessions.searchsorted(pd.Timestamp(now.known), side="left"))
             if row >= len(sessions):
                 continue  # known after the last session on file
@@ -189,6 +205,82 @@ def fundamental_events(
                     growth_before=growth_before,
                 )
             )
+    return out
+
+
+@dataclass(frozen=True)
+class IEvent:
+    symbol: str
+    row: int  # the session after the filing that completed the cluster
+    buyers: int
+    value: float
+    filed: date
+
+
+def opportunistic(purchases: list) -> list:
+    """Open-market purchases that express a view. Pure.
+
+    Kept: code P, shares acquired, a positive price, by an officer or a
+    director (an owner who is only a 10% holder is usually a fund), not under
+    a 10b5-1 plan. Dropped as *routine*: a buyer who bought the same issuer in
+    the same calendar month in each of the ``ROUTINE_YEARS`` years before
+    (Cohen–Malloy–Pomorski) — a habit, not information.
+    """
+    bought = {(t.owner_cik, t.issuer_cik, t.trans_date.year, t.trans_date.month)
+              for t in purchases if t.code == "P"}  # fmt: skip
+    out = []
+    for t in purchases:
+        if t.code != "P" or (t.acq_disp not in (None, "A")) or t.plan is True:
+            continue
+        if not (t.price and t.price > 0 and t.shares and t.shares > 0):
+            continue
+        if not (t.officer or t.director):
+            continue
+        y, m = t.trans_date.year, t.trans_date.month
+        years = range(1, ROUTINE_YEARS + 1)
+        if all((t.owner_cik, t.issuer_cik, y - k, m) in bought for k in years):
+            continue
+        out.append(t)
+    return out
+
+
+def insider_events(
+    purchases: list,
+    symbols_of: dict[int, list[str]],
+    sessions: pd.DatetimeIndex,
+    t: Thresholds = DEFAULT,
+) -> list[IEvent]:
+    """A cluster on each filing date that completes one, placed on the next session. Pure.
+
+    The window is the ``INSIDER_WINDOW_DAYS`` of filings ending on that date.
+    Known on the session *after* filing: the bulk data carries the filing date
+    but not its time, and many Form 4s are filed after the close.
+    """
+    out: list[IEvent] = []
+    if len(sessions) == 0:
+        return out
+    by_issuer: dict[int, list] = {}
+    for p in opportunistic(purchases):
+        by_issuer.setdefault(p.issuer_cik, []).append(p)
+    window = timedelta(days=INSIDER_WINDOW_DAYS)
+    for issuer, buys in by_issuer.items():
+        symbols = symbols_of.get(issuer)
+        if not symbols:
+            continue
+        buys.sort(key=lambda p: p.filed)
+        for filed in sorted({p.filed for p in buys}):
+            inside = [p for p in buys if filed - window < p.filed <= filed]
+            buyers = {p.owner_cik for p in inside}
+            value = sum(p.value for p in inside)
+            if len(buyers) < t.insider_min_buyers or value < t.insider_min_value:
+                continue
+            if filed < sessions[0].date():
+                continue  # before the panel: its "next session" is not on file
+            row = int(sessions.searchsorted(pd.Timestamp(filed), side="right"))
+            if row >= len(sessions):
+                continue
+            for s in symbols:
+                out.append(IEvent(symbol=s, row=row, buyers=len(buyers), value=value, filed=filed))
     return out
 
 
@@ -207,6 +299,7 @@ def records(
     first_row: int,
     last_row: int,
     t: Thresholds = DEFAULT,
+    ievents: list[IEvent] = (),
 ) -> list[dict]:
     """Records of each group on sessions ``first_row..last_row``. Pure.
 
@@ -273,4 +366,34 @@ def records(
             if row in kept:
                 kept.discard(row)
                 emit("F+P", symbol, row, {**detail, **p_window(symbol, row)})
+
+    # I: each cluster on a session the name is eligible, cooled like the rest.
+    n = len(sessions)
+    i_hits: dict[str, dict[int, IEvent]] = {}
+    for e in ievents:
+        j = cols.get(e.symbol)
+        if j is not None and elig[e.row, j]:
+            i_hits.setdefault(e.symbol, {}).setdefault(e.row, e)
+    for symbol, by_row in i_hits.items():
+        for row in _cooled(list(by_row)):
+            e = by_row[row]
+            emit("I", symbol, row, {"buyers": e.buyers, "value": round(e.value, 2),
+                                    "filed": e.filed.isoformat()})  # fmt: skip
+
+    # 2+: at least two of F, I (each active for CONVERGE_SESSIONS after its
+    # event) and P (on at some session of the last CONVERGE_SESSIONS) at once.
+    active = {"F": np.zeros_like(elig), "I": np.zeros_like(elig)}
+    for name, evs in (("F", events), ("I", ievents)):
+        for e in evs:
+            j = cols.get(e.symbol)
+            if j is not None:
+                active[name][e.row : min(e.row + CONVERGE_SESSIONS, n - 1) + 1, j] = True
+    active["P"] = recent
+    count = sum(a.astype(int) for a in active.values())
+    multi = (count >= 2) & elig
+    starts = multi & ~np.vstack([np.zeros((1, multi.shape[1]), bool), multi[:-1]])
+    for symbol, j in cols.items():
+        for row in _cooled(np.flatnonzero(starts[:, j]).tolist()):
+            fams = sorted(k for k, a in active.items() if a[row, j])
+            emit("2+", symbol, row, {"families": fams, **p_window(symbol, row)})
     return out

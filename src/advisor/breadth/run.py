@@ -47,28 +47,42 @@ def _register(db_path, stamp) -> None:
         conn.close()
 
 
+# Reasons a common stock is not eligible *today* that say nothing about its past.
+_MARKET = {"no bars", "stale bars", "price below floor", "dollar volume below floor",
+           "short history"}  # fmt: skip
+
+
 def _sec_index():
     from advisor.breadth.filings import sec_index
 
     return sec_index
 
 
-def _signals(db_path, store, rows, day, now, fetch_company) -> dict:
+def _signals(db_path, store, rows, day, now, fetch_company, insider_fetch=None) -> dict:
     """Industries for the eligible, then the day's records and every live outcome due.
 
     Measurement only (B1): nothing here is shown to the user or reaches the
     digest. A failure is reported in the summary and never fails the sync.
     """
     from advisor.breadth.companies import sec_submission, sync_companies
+    from advisor.breadth.insiders import sync_insiders
     from advisor.breadth.measure import record_live
     from advisor.breadth.ruleset import signal_rules
 
     try:
         eligible = sorted({r["cik"] for r in rows if r["eligible"] and r["cik"]})
-        companies = sync_companies(store, eligible, now, fetch=fetch_company or sec_submission)
+        # Industries for every common stock, not only today's eligible: a
+        # replay's records fall on names eligible on *their* day, and a record
+        # with no industry is matched on size alone (55 of 551 insider records
+        # were, in the first run).
+        common = sorted(
+            {r["cik"] for r in rows if r["cik"] and (r["eligible"] or r["reason"] in _MARKET)}
+        )
+        companies = sync_companies(store, common, now, fetch=fetch_company or sec_submission)
+        insiders = sync_insiders(store, now, set(eligible), **(insider_fetch or {}))
         _register(db_path, signal_rules())
         live = record_live(store, day, now)
-        return {"companies": companies, "live": live}
+        return {"companies": companies, "insiders": insiders, "live": live}
     except Exception as exc:  # noqa: BLE001
         logger.exception("breadth signals failed")
         return {"error": str(exc)}
@@ -88,6 +102,7 @@ def run_sync(
     fetch_concept: facts_mod.FetchConcept = facts_mod.sec_concept,
     fetch_company=None,
     fetch_index=None,
+    insider_fetch: dict | None = None,  # {"get_text": ..., "get_bytes": ...} for tests
     sleep: Callable[[float], None] = _time.sleep,
 ) -> dict:
     """Sync everything and return a summary. Never raises for a source failure."""
@@ -135,7 +150,9 @@ def run_sync(
                 logger.info("breadth facts: %s; %s", fr.summary(), gaps.summary())
 
             if signals:
-                summary["signals"] = _signals(db_path, store, rows, day, now, fetch_company)
+                summary["signals"] = _signals(
+                    db_path, store, rows, day, now, fetch_company, insider_fetch
+                )
 
             summary["ok"] = not rate_limited
             return summary

@@ -38,6 +38,7 @@ import pandas as pd
 from advisor.breadth import signals as S
 from advisor.breadth.companies import division, major_group, sic_map
 from advisor.breadth.filings import FilingDates
+from advisor.breadth.insiders import load_purchases
 from advisor.breadth.panel import Panel, load_panel
 from advisor.breadth.store import BreadthStore
 from advisor.breadth.universe import eligibility_panel
@@ -57,6 +58,11 @@ TAILS: dict[str, int] = {"mae20": 20, "mae60": 60}
 CONTROLS = 10
 MIN_POOL = 10
 SIZE_BUCKETS = 5
+# The second comparison matches the past this many sessions: insiders buy
+# after falls (median -12.5% over the 60 sessions before a cluster, measured
+# 2026-09-28), and "did it beat peers" then mostly asks whether falls
+# continued. "Did it beat peers that fell as much" asks what the signal adds.
+TREND_SESSIONS = 60
 # A future close may be missing (a halt); the last close within this many
 # sessions stands in. Beyond it the outcome is left empty, never zero.
 FILL_LIMIT = 5
@@ -175,40 +181,64 @@ class Outcomes:
         sic = [sic_of.get(cik_of.get(s)) if cik_of.get(s) else None for s in self.symbols]
         self.group = np.array([major_group(x) or -1 for x in sic])
         self.division = np.array([division(x) or "" for x in sic])
-        self._size_cache: dict[int, np.ndarray] = {}
+        # The past TREND_SESSIONS' return, for the second comparison.
+        self.trend = (close / close.shift(TREND_SESSIONS) - 1).to_numpy()
+        self._cache: dict[tuple[str, int], np.ndarray] = {}
 
-    def _sizes(self, row: int) -> np.ndarray:
-        if row not in self._size_cache:
-            dv = self.dv[row]
-            ok = self.eligible[row] & np.isfinite(dv)
-            bucket = np.full(len(dv), -1)
+    def _buckets(self, kind: str, row: int) -> np.ndarray:
+        """Quintile of ``kind`` ('size' or 'trend') among the session's eligible; -1 unranked."""
+        if (kind, row) not in self._cache:
+            v = (self.dv if kind == "size" else self.trend)[row]
+            ok = self.eligible[row] & np.isfinite(v)
+            bucket = np.full(len(v), -1)
             if ok.sum() >= SIZE_BUCKETS:
-                ranks = pd.Series(dv[ok]).rank(pct=True).to_numpy()
+                ranks = pd.Series(v[ok]).rank(pct=True).to_numpy()
                 bucket[ok] = np.minimum((ranks * SIZE_BUCKETS).astype(int), SIZE_BUCKETS - 1)
-            self._size_cache[row] = bucket
-        return self._size_cache[row]
+            self._cache[(kind, row)] = bucket
+        return self._cache[(kind, row)]
 
-    def controls(self, symbol: str, row: int) -> tuple[list[int], str]:
+    def controls(self, symbol: str, row: int, *, trend: bool = False) -> tuple[list[int], str]:
+        """Up to ``CONTROLS`` like names that session, and how like them they are.
+
+        ``trend=True`` is the second comparison: peers whose last
+        ``TREND_SESSIONS`` went like this name's (same quintile), so a record
+        on a name that fell 12% is judged against others that fell too.
+        """
         j = self.col[symbol]
         pool = self.eligible[row].copy()
         pool[j] = False
-        size = self._sizes(row)
+        size = self._buckets("size", row)
         same_group = (self.group == self.group[j]) & (self.group[j] != -1)
         same_div = (self.division == self.division[j]) & (self.division[j] != "")
         same_size = (size == size[j]) & (size[j] != -1)
-        for level, mask in (
-            ("industry+size", same_group & same_size),
-            ("industry", same_group),
-            ("division+size", same_div & same_size),
-            ("size", same_size),
-            ("all", np.ones_like(pool)),
-        ):
+        everyone = np.ones_like(pool)
+        if trend:
+            tr = self._buckets("trend", row)
+            if tr[j] == -1:
+                return [], "none"
+            same_trend = tr == tr[j]
+            levels = (
+                ("industry+trend", same_group & same_trend),
+                ("division+trend", same_div & same_trend),
+                ("trend", same_trend),
+            )
+        else:
+            levels = (
+                ("industry+size", same_group & same_size),
+                ("industry", same_group),
+                ("division+size", same_div & same_size),
+                ("size", same_size),
+                ("all", everyone),
+            )
+        idx = np.array([], dtype=int)
+        for level, mask in levels:
             idx = np.flatnonzero(pool & mask)
             if len(idx) >= MIN_POOL:
                 break
         if len(idx) == 0:
             return [], "none"
-        seed = zlib.crc32(f"{symbol}:{self.panel.sessions[row].date()}".encode())
+        salt = ":trend" if trend else ""
+        seed = zlib.crc32(f"{symbol}:{self.panel.sessions[row].date()}{salt}".encode())
         rng = np.random.default_rng(seed)
         pick = rng.choice(idx, size=min(CONTROLS, len(idx)), replace=False)
         return sorted(int(i) for i in pick), level
@@ -217,7 +247,12 @@ class Outcomes:
         """Outcomes of a record made at ``row``'s close. Horizons not yet reached are None."""
         j = self.col[symbol]
         picks, level = self.controls(symbol, row)
-        out: dict = {"match": level, "controls": [self.symbols[i] for i in picks]}
+        tpicks, tlevel = self.controls(symbol, row, trend=True)
+        out: dict = {
+            "match": level,
+            "controls": [self.symbols[i] for i in picks],
+            "match_trend": tlevel,
+        }
         for h in HORIZONS:
             ret = self.fwd[h][row, j]
             ctrl = self.fwd[h][row, picks] if picks else np.array([])
@@ -225,11 +260,14 @@ class Outcomes:
             if not np.isfinite(ret) or len(ctrl) == 0:
                 out[h] = None
                 continue
+            tctrl = self.fwd[h][row, tpicks] if tpicks else np.array([])
+            tctrl = tctrl[np.isfinite(tctrl)]
             out[h] = {
                 "ret": float(ret),
                 "control": float(ctrl.mean()),
                 "excess": float(ret - ctrl.mean()),
                 "n_controls": int(len(ctrl)),
+                "excess_trend": float(ret - tctrl.mean()) if len(tctrl) else None,
             }
         for h in TAILS:
             v = self.mae[h][row, j]
@@ -262,6 +300,15 @@ def evaluate(recs: list[dict]) -> list[dict]:
             levels: dict[str, int] = {}
             for r in have:
                 levels[r["outcomes"]["match"]] = levels.get(r["outcomes"]["match"], 0) + 1
+            # The second comparison: against peers whose past trend was alike.
+            # Shown with its own interval; the verdict stays on the first.
+            tvals = [
+                (r["day"], r["outcomes"][h]["excess_trend"])
+                for r in have
+                if r["outcomes"][h].get("excess_trend") is not None
+            ]
+            twin = len(blocks_of(tvals, k)) if tvals else 0
+            tci = cluster_ci(tvals, block=k) if twin >= MIN_SESSIONS else None
             cells.append(
                 {
                     "group": grp,
@@ -277,6 +324,9 @@ def evaluate(recs: list[dict]) -> list[dict]:
                     "tail": statistics.fmean(tails) if tails else None,
                     "tail_horizon": tail_key,
                     "match": levels,
+                    "n_trend": len(tvals),
+                    "excess_trend": statistics.fmean(x for _, x in tvals) if tvals else None,
+                    "ci_trend": list(tci) if tci else None,
                     "verdict": v.value,
                     "reason": why,
                 }
@@ -287,14 +337,18 @@ def evaluate(recs: list[dict]) -> list[dict]:
 # ── runs ──────────────────────────────────────────────────────────────────
 
 
-def _inputs(store: BreadthStore, panel: Panel, tally: dict | None = None):
+def _inputs(store: BreadthStore, panel: Panel, tally: dict | None = None, t=S.DEFAULT):
     cik_of = cik_map(store)
     eligible = eligibility_panel(panel.close, panel.volume)
     eligible = S.dedupe_share_classes(eligible, panel, cik_of)
     dates = FilingDates(store)
     quarters = revenue_quarters(store, cik_of, dates or None, tally)
-    events = S.fundamental_events(quarters, panel.sessions)
-    return cik_of, eligible, events
+    events = S.fundamental_events(quarters, panel.sessions, t)
+    symbols_of: dict[int, list[str]] = {}
+    for s, c in cik_of.items():
+        symbols_of.setdefault(c, []).append(s)
+    ievents = S.insider_events(load_purchases(store), symbols_of, panel.sessions, t)
+    return cik_of, eligible, events, ievents
 
 
 def _write(store, recs, origin: str, run_id: str, rules: str, cik_of, now: datetime) -> None:
@@ -338,12 +392,12 @@ def replay(
     if panel.close.empty:
         return {"ok": False, "error": "no bars on file: run `advisor breadth sync` first"}
     dating: dict[str, int] = {}
-    cik_of, eligible, events = _inputs(store, panel, dating)
+    cik_of, eligible, events, ievents = _inputs(store, panel, dating, t)
     last_row = len(panel.sessions) - 1
     first_row = panel.row_of(panel.sessions[-1].date() - timedelta(days=365 * years))
     if first_row is None or first_row < S.MOMENTUM_LOOKBACK:
         first_row = min(S.MOMENTUM_LOOKBACK, last_row)
-    recs = S.records(panel, eligible, events, first_row, last_row, t)
+    recs = S.records(panel, eligible, events, first_row, last_row, t, ievents)
     out = Outcomes(panel, eligible, cik_of, sic_map(store))
     for r in recs:
         r["outcomes"] = out.of(r["symbol"], r["row"])
@@ -413,8 +467,8 @@ def record_live(store: BreadthStore, day: date, now: datetime, t: S.Thresholds =
     row = panel.row_of(day)
     if row is None or panel.sessions[row].date() != day:
         return {"ok": False, "error": f"no bars on file for {day}"}
-    cik_of, eligible, events = _inputs(store, panel)
-    recs = S.records(panel, eligible, events, row, row, t)
+    cik_of, eligible, events, ievents = _inputs(store, panel, t=t)
+    recs = S.records(panel, eligible, events, row, row, t, ievents)
     out = Outcomes(panel, eligible, cik_of, sic_map(store))
     for r in recs:
         r["outcomes"] = out.of(r["symbol"], r["row"])

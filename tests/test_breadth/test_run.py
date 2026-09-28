@@ -51,6 +51,7 @@ def run(tmp_path, **kw):
     kw.setdefault("fetch_concept", lambda cik, c: [])
     kw.setdefault("fetch_company", lambda cik: {"sic": 3674, "sic_desc": "Semis", "name": "x"})
     kw.setdefault("fetch_index", lambda year, q: "")
+    kw.setdefault("insider_fetch", {"get_text": lambda url: "", "get_bytes": lambda url: None})
     return db, run_sync(db, NOW, sleep=lambda s: None, **kw)
 
 
@@ -68,7 +69,9 @@ def test_full_run(tmp_path):
     assert ruleset == {"breadth.universe", "breadth.signals"}
     # Measurement ran and recorded the day; it reached nothing the user reads.
     assert s["signals"]["live"]["ok"], s["signals"]
-    assert s["signals"]["companies"]["read"] == 1  # only the eligible name's industry
+    # Both common stocks' industries, the thin one too: it may have been
+    # eligible on a replayed day. The ETF's is not read.
+    assert s["signals"]["companies"]["read"] == 2
     conn.close()
     with BreadthStore(breadth_path(db)) as store:
         assert store.last_run()["ok"] == 1

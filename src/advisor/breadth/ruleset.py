@@ -67,6 +67,13 @@ NOT_RULES: dict[str, str] = {
     "filings.FIRST_YEAR": "how much history is stored",
     "filings.PERIODIC_FORMS": "which forms are stored: the union of the two declared sets",
     "filings._SCHEMA": "table definitions",
+    "insiders.DATASETS_PAGE": "a source address",
+    "insiders.DAILY_INDEX_URL": "a source address",
+    "insiders.DAILY_DIR_URL": "a source address",
+    "insiders.FILING_URL": "a source address",
+    "insiders.FIRST_YEAR": "how much history is stored",
+    "insiders.KEPT_CODES": "which codes are stored; which count is decided in signals",
+    "insiders._SCHEMA": "table definitions",
 }
 
 SIGNALS = "breadth.signals"
@@ -83,6 +90,9 @@ SIGNAL_DECLARED: dict[str, dict[str, Kind]] = {
         # How close in time two families must be to count as agreeing.
         "CONVERGE_SESSIONS": Kind.THRESHOLD,
         "COOLDOWN_SESSIONS": Kind.MODEL,
+        "INSIDER_WINDOW_DAYS": Kind.MODEL,
+        # Who counts as a routine buyer decides which purchases are information.
+        "ROUTINE_YEARS": Kind.MODEL,
     },
     "measure": {
         "HORIZONS": Kind.MODEL,
@@ -90,6 +100,7 @@ SIGNAL_DECLARED: dict[str, dict[str, Kind]] = {
         "CONTROLS": Kind.MODEL,
         "MIN_POOL": Kind.MODEL,
         "SIZE_BUCKETS": Kind.MODEL,
+        "TREND_SESSIONS": Kind.MODEL,
         "FILL_LIMIT": Kind.MODEL,
     },
     "companies": {"_DIVISIONS": Kind.MODEL},

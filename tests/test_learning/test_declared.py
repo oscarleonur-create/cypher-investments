@@ -17,6 +17,7 @@ from advisor.breadth import bars as breadth_bars
 from advisor.breadth import companies as breadth_companies
 from advisor.breadth import facts as breadth_facts
 from advisor.breadth import filings as breadth_filings
+from advisor.breadth import insiders as breadth_insiders
 from advisor.breadth import listings as breadth_listings
 from advisor.breadth import measure as breadth_measure
 from advisor.breadth import ruleset as breadth_ruleset
@@ -200,6 +201,7 @@ SIGNAL_MODULES = {
     "measure": breadth_measure,
     "companies": breadth_companies,
     "filings": breadth_filings,
+    "insiders": breadth_insiders,
 }
 
 
