@@ -11,6 +11,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Section, Th } from "@/components/common";
 import { PositionCheck } from "@/components/PositionCheck";
+import { DepthActions, DepthBulk, useDepthStatus } from "@/components/DepthActions";
+import type { DepthStatus } from "@/lib/types";
 
 /** What each family is, in the words the page uses. */
 const FAMILY: Record<string, { label: string; hint: string; variant: "pos" | "accent" | "warn" }> = {
@@ -71,7 +73,7 @@ function Evidence({ data }: { data: PicksResponse }) {
   );
 }
 
-function PickCard({ p }: { p: Pick }) {
+function PickCard({ p, depth }: { p: Pick; depth?: DepthStatus }) {
   return (
     <Card>
       <CardContent className="space-y-3 pt-4">
@@ -140,7 +142,8 @@ function PickCard({ p }: { p: Pick }) {
           </div>
         )}
 
-        <div className="border-t border-border/60 pt-3">
+        <div className="space-y-3 border-t border-border/60 pt-3">
+          <DepthActions symbol={p.symbol} status={depth} />
           <PositionCheck symbol={p.symbol} />
         </div>
       </CardContent>
@@ -283,6 +286,8 @@ export default function Picks() {
   };
   const latest = data?.days[0]?.day;
   const isLatest = !!data?.day && data.day === latest;
+  const symbols = (data?.picks ?? []).map((p) => p.symbol);
+  const depth = useDepthStatus(symbols);
 
   return (
     <div className="space-y-4">
@@ -316,6 +321,7 @@ export default function Picks() {
       </div>
 
       {data && <DayPicker data={data} selected={day} onPick={setDay} />}
+      {data && <DepthBulk symbols={symbols} what="picks" />}
 
       {data?.provisional && isLatest && (
         <div className="text-xs text-muted">
@@ -342,7 +348,7 @@ export default function Picks() {
           ) : (
             <div className="space-y-3">
               {data.picks.map((p) => (
-                <PickCard key={p.symbol} p={p} />
+                <PickCard key={p.symbol} p={p} depth={depth.data?.status[p.symbol]} />
               ))}
             </div>
           )}
