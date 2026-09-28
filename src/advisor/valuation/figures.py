@@ -501,23 +501,54 @@ def load_flows(symbol: str) -> Flows | None:
         return None
 
 
-def _broker_close(symbol: str) -> tuple[float, str] | None:
-    """The broker's official close, from its market-data endpoint."""
+def broker_closes(symbols: list[str]) -> dict[str, tuple[float, str]]:
+    """The broker's official close per symbol, from its market-data endpoint,
+    in one request. Symbols it does not know, or with no positive close, are
+    absent. Raises on a network or auth failure; callers fall back."""
     import asyncio
 
     from tastytrade.market_data import get_market_data_by_type
 
     from advisor.market.tastytrade_client import get_session
 
-    async def fetch():
-        return await get_market_data_by_type(await get_session(), equities=[symbol])
+    wanted = sorted({s.upper() for s in symbols if s})
+    if not wanted:
+        return {}
 
-    rows = asyncio.run(fetch())
-    data = next((m for m in rows if str(m.symbol).upper() == symbol), None)
-    if data is None or data.close is None or float(data.close) <= 0:
-        return None
-    kind = getattr(data.close_price_type, "value", data.close_price_type) or "close"
-    return float(data.close), f"TastyTrade {str(kind).lower()} close {data.summary_date}"
+    async def fetch():
+        return await get_market_data_by_type(await get_session(), equities=wanted)
+
+    out: dict[str, tuple[float, str]] = {}
+    for data in asyncio.run(fetch()) or []:
+        sym = str(data.symbol).upper()
+        if sym in wanted and (close := _latest_close(data)) is not None:
+            out[sym] = close
+    return out
+
+
+def _latest_close(data) -> tuple[float, str] | None:
+    """Today's close once there is one, else the previous session's, dated.
+
+    A new session clears ``close``: at 05:56 on Monday 2026-09-28 every symbol
+    had ``close=None`` and Friday's final close sat in ``prev_close``. Reading
+    only ``close`` priced nothing from the broker until the bell.
+    """
+    for price, kind, day in (
+        (data.close, data.close_price_type, data.summary_date),
+        (
+            getattr(data, "prev_close", None),
+            getattr(data, "prev_close_price_type", None),
+            getattr(data, "prev_close_date", None),
+        ),
+    ):
+        if price is not None and float(price) > 0:
+            label = str(getattr(kind, "value", kind) or "").lower()
+            return float(price), f"TastyTrade {label + ' ' if label else ''}close {day}"
+    return None
+
+
+def _broker_close(symbol: str) -> tuple[float, str] | None:
+    return broker_closes([symbol]).get(symbol.upper())
 
 
 def last_price(symbol: str) -> tuple[float, str] | None:

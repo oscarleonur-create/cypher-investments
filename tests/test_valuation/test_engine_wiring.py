@@ -211,7 +211,13 @@ class TestThePrice:
 
         for close in (None, 0, -1):
             row = SimpleNamespace(
-                symbol="SPCX", close=close, close_price_type="FINAL", summary_date="2026-09-25"
+                symbol="SPCX",
+                close=close,
+                close_price_type="FINAL",
+                summary_date="2026-09-25",
+                prev_close=None,
+                prev_close_price_type=None,
+                prev_close_date=None,
             )
 
             async def market(_s, equities, row=row):
@@ -237,3 +243,105 @@ class TestThePrice:
             patch("tastytrade.market_data.get_market_data_by_type", market),
         ):
             assert _broker_close("ZZZZ") is None
+
+
+class TestTheJobsPrices:
+    """Names not in the book are priced at the broker's close, Yahoo after."""
+
+    def test_the_broker_answers_first_and_yahoo_fills_the_rest(self):
+        import pandas as pd
+        from advisor.daemon.handlers import _last_closes
+
+        frame = pd.DataFrame({"PENG": [55.0, 56.22]})
+        with (
+            patch(
+                "advisor.valuation.figures.broker_closes",
+                return_value={"MSFT": (516.17, "TastyTrade final close 2026-09-25")},
+            ),
+            patch("advisor.macro.factors.fetch_prices", return_value=frame) as yahoo,
+        ):
+            assert _last_closes(["MSFT", "PENG"]) == {"MSFT": 516.17, "PENG": 56.22}
+        assert yahoo.call_args.args[0] == ["PENG"]
+
+    def test_everything_from_the_broker_never_asks_yahoo(self):
+        from advisor.daemon.handlers import _last_closes
+
+        with (
+            patch(
+                "advisor.valuation.figures.broker_closes",
+                return_value={"MSFT": (516.17, "x")},
+            ),
+            patch("advisor.macro.factors.fetch_prices") as yahoo,
+        ):
+            assert _last_closes(["MSFT"]) == {"MSFT": 516.17}
+        yahoo.assert_not_called()
+
+    def test_a_broker_outage_falls_back_to_yahoo_for_all(self):
+        import pandas as pd
+        from advisor.daemon.handlers import _last_closes
+
+        frame = pd.DataFrame({"MSFT": [516.17]})
+        with (
+            patch("advisor.valuation.figures.broker_closes", side_effect=KeyError("SECRET")),
+            patch("advisor.macro.factors.fetch_prices", return_value=frame),
+        ):
+            assert _last_closes(["MSFT"]) == {"MSFT": 516.17}
+
+    def test_both_down_is_no_price_and_the_job_skips_the_name(self):
+        import pandas as pd
+        from advisor.daemon.handlers import _last_closes
+
+        with (
+            patch("advisor.valuation.figures.broker_closes", side_effect=TimeoutError()),
+            patch("advisor.macro.factors.fetch_prices", return_value=pd.DataFrame()),
+        ):
+            assert _last_closes(["MSFT"]) == {}
+
+
+class TestTheCloseAcrossASessionBoundary:
+    """What the market-data endpoint returns depends on the hour."""
+
+    def row(self, **fields):
+        from types import SimpleNamespace
+
+        base = dict(
+            symbol="MSFT",
+            close=None,
+            close_price_type="REGULAR",
+            summary_date="2026-09-28",
+            prev_close=516.17,
+            prev_close_price_type="FINAL",
+            prev_close_date="2026-09-25",
+        )
+        base.update(fields)
+        return SimpleNamespace(**base)
+
+    def test_before_the_bell_the_previous_final_close_is_used_and_dated(self):
+        """Monday 05:56: close cleared, Friday's final close in prev_close."""
+        from advisor.valuation.figures import _latest_close
+
+        assert _latest_close(self.row()) == (516.17, "TastyTrade final close 2026-09-25")
+
+    def test_after_the_close_todays_close_wins(self):
+        from advisor.valuation.figures import _latest_close
+
+        row = self.row(close=513.9, close_price_type="FINAL", summary_date="2026-09-28")
+        assert _latest_close(row) == (513.9, "TastyTrade final close 2026-09-28")
+
+    def test_nothing_on_either_side_is_nothing(self):
+        from advisor.valuation.figures import _latest_close
+
+        assert _latest_close(self.row(prev_close=None)) is None
+        assert _latest_close(self.row(prev_close=0)) is None
+
+    def test_an_enum_close_type_is_read_by_value(self):
+        from enum import Enum
+
+        from advisor.valuation.figures import _latest_close
+
+        class Kind(Enum):
+            FINAL = "Final"
+
+        assert _latest_close(self.row(prev_close_price_type=Kind.FINAL))[1].startswith(
+            "TastyTrade final close"
+        )

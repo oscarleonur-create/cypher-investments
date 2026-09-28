@@ -166,3 +166,25 @@ def test_overrides_change_posterior():
         report, BayesianOverrides(driver_mean={"revenue_growth_yr1_3": 0.30})
     )
     assert bumped.median_price > base.median_price
+
+
+def test_a_low_margin_business_keeps_its_own_terminal_margin():
+    """JBL converts 3–4% of revenue to cash and always has. A generic 15%
+    re-anchor put its posterior median at $1,010 against a $273 base."""
+    from advisor.research.valuation.bayesian import build_bayesian_pricing, build_priors
+    from advisor.research.valuation.dcf import build_dcf
+    from advisor.valuation.models import OwnMargin
+
+    low = figures(
+        start_margin=0.039,
+        margins=[
+            OwnMargin(kind="fcf", value=0.039, label="FCF"),
+            OwnMargin(kind="median", value=0.032, label="median"),
+            OwnMargin(kind="nopat", value=0.034, label="nopat"),
+        ],
+    )
+    report = ResearchReport(symbol="TEST", as_of=date.today(), dcf=build_dcf("TEST", figures=low))
+    prior = {d.key: d for d in build_priors(report)}["target_fcf_margin"]
+    assert prior.mean == pytest.approx(0.034)
+    res = build_bayesian_pricing(report)
+    assert res.median_price < 2 * report.dcf.bull.implied_price

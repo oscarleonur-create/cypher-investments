@@ -237,12 +237,27 @@ async def run_valuation(ctx: JobContext) -> JobResult:
 
 
 def _last_closes(symbols: list[str]) -> dict[str, float]:
-    """Latest close per symbol for names not in the book. {} on failure."""
+    """Latest close per symbol for names not in the book. {} on failure.
+
+    The broker's official close first, in one request; Yahoo only for what it
+    does not answer. On 2026-09-27 Yahoo rate-limited every request, and a
+    watchlist name with no price is a name not valued that week.
+    """
+    from advisor.valuation.figures import broker_closes
+
+    out: dict[str, float] = {}
+    try:
+        out = {s: price for s, (price, _) in broker_closes(symbols).items()}
+    except Exception as exc:  # noqa: BLE001 — Yahoo is the fallback
+        logger.warning("valuation: broker closes unavailable: %s", exc)
+    rest = [s for s in symbols if s not in out]
+    if not rest:
+        return out
+
     from advisor.macro.factors import fetch_prices
 
-    frame = fetch_prices(symbols, period="1mo")
-    out: dict[str, float] = {}
-    for symbol in symbols:
+    frame = fetch_prices(rest, period="1mo")
+    for symbol in rest:
         if symbol in frame:
             series = frame[symbol].dropna()
             if len(series):

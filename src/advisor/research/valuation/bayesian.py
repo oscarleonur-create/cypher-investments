@@ -63,15 +63,13 @@ _DRIVER_BOUNDS: dict[str, tuple[float, float, str, str]] = {
     "terminal_exit_multiple": (2.0, 40.0, "x", "Exit multiple (EV/EBITDA)"),
 }
 
-# A currently unprofitable company whose `target_fcf_margin` was seeded from its
-# (floored) trailing margin gets valued as if it never turns a profit — the DCF
-# then collapses to ~zero and the margin/growth sliders do nothing. For names
-# with revenue but a sub-threshold margin we instead anchor the *terminal* FCF
-# margin prior on a normalized at-scale margin (wide uncertainty), so the
-# posterior reflects "if they reach profitability" and the sliders come alive.
-_UNPROFITABLE_MARGIN = 0.05
-_NORMALIZED_TERMINAL_MARGIN = 0.15
-_NORMALIZED_TERMINAL_STD = 0.08
+# The terminal-margin prior is the base scenario's: the median of the
+# company's own filed margins. It used to be re-anchored to a generic 15%
+# whenever today's FCF margin was under 5%, which made sense when the old DCF
+# seeded the target from a floored trailing margin. On the engine it replaced
+# filed figures with a guess: JBL, profitable at 3–4% for years, got a
+# posterior median of $1,010 against a $273 base (2026-09-28). A company with
+# no positive margins gets no base DCF, and so no posterior, instead.
 
 # Solver bounds for the reverse-DCF / implied-growth bisection. A result pinned
 # to a bound means the DCF can't bracket the target at any sane growth, so the
@@ -109,12 +107,6 @@ def build_priors(report: ResearchReport) -> list[PriorDriver]:
     bull = dcf.bull.assumptions if dcf.bull else None
     bear = dcf.bear.assumptions if dcf.bear else None
 
-    # Trailing FCF margin (un-floored) tells us whether the company is currently
-    # profitable; if not, we re-anchor the terminal-margin prior (see below).
-    base_rev = float(dcf.base_revenue or 0.0)
-    seed_margin = (float(dcf.seed_fcf or 0.0) / base_rev) if base_rev > 0 else None
-    unprofitable = seed_margin is not None and seed_margin < _UNPROFITABLE_MARGIN
-
     drivers: list[PriorDriver] = []
     for key, (lo, hi, unit, label) in _DRIVER_BOUNDS.items():
         mean = getattr(base, key, None)
@@ -130,14 +122,6 @@ def build_priors(report: ResearchReport) -> list[PriorDriver]:
             if bv is not None and rv is not None:
                 spread = abs(float(bv) - float(rv)) / 4.0
         std = max(spread, _STD_REL_FLOOR * abs(mean), _STD_ABS_FLOOR.get(key, 0.01))
-
-        # Re-anchor the terminal FCF-margin prior for currently-unprofitable but
-        # revenue-generating names onto a normalized at-scale margin, with wide
-        # uncertainty — otherwise the DCF assumes perpetual break-even and the
-        # valuation collapses to zero regardless of the sliders.
-        if key == "target_fcf_margin" and unprofitable:
-            mean = _NORMALIZED_TERMINAL_MARGIN
-            std = max(std, _NORMALIZED_TERMINAL_STD)
 
         drivers.append(
             PriorDriver(
