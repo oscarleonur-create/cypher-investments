@@ -91,6 +91,23 @@ def test_refused_bars_still_snapshot_and_read_facts(tmp_path):
     assert "facts" in s
 
 
+def test_the_nightly_job_never_overlaps_the_halts_poll():
+    # Jobs run one at a time; a sync of minutes inside 04:00-20:05 would delay
+    # the halts poll, whose findings can be EXITs.
+    from advisor.daemon.supervisor import build_registry
+
+    job = next(j for j in build_registry() if j.name == "breadth_sync")
+    t = job.trigger
+    assert not t.is_due(datetime(2026, 9, 25, 20, 4, tzinfo=MARKET_TZ), None)
+    assert t.is_due(datetime(2026, 9, 25, 20, 31, tzinfo=MARKET_TZ), None)
+    assert t.is_due(datetime(2026, 9, 25, 23, 59, tzinfo=MARKET_TZ), None)  # laptop woke late
+    # After midnight yesterday's slot is gone and today's not yet: nothing
+    # can run into the 04:00 halts poll or the session.
+    for hh in (0, 4, 9, 12, 20):
+        assert not t.is_due(datetime(2026, 9, 28, hh, 1, tzinfo=MARKET_TZ), None)
+    assert t.is_due(datetime(2026, 9, 26, 21, 0, tzinfo=MARKET_TZ), None)  # Saturday too
+
+
 def test_limit_samples_common_stock_but_keeps_exclusions(tmp_path):
     _, s = run(tmp_path, limit=1)
     assert s["directory"]["common"] == 1

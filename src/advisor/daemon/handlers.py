@@ -616,7 +616,7 @@ def _with_scanner_store(db_path, fn, now):
 
 
 async def run_breadth_sync(ctx: JobContext) -> JobResult:
-    """Evenings: bring the market-wide stores up to the day's close and cut E0.
+    """Nights: bring the market-wide stores up to the day's close and cut E0.
 
     The first run backfills four years for ~5,000 names and takes minutes;
     later runs read two weeks per name. A pull the bar source refuses is

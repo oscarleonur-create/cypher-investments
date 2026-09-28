@@ -181,9 +181,15 @@ def build_registry() -> JobRegistry:
     reg.register(
         Job(
             name="breadth_sync",
-            # Every day, not only trading days: a laptop asleep on Friday
-            # evening catches up on Saturday; a run with nothing new is cheap.
-            trigger=DailyAt(time(18, 30), trading_days_only=False, grace_hours=14.0),
+            # Jobs run one at a time, and this one takes minutes (the first
+            # backfill, about twenty). So it waits for the halts poll to end
+            # at 20:05 — a halt on a held name is an EXIT. DailyAt catches up
+            # only today's slot, so the window closes at midnight, hours
+            # before that poll restarts at 04:00. Every day, not only trading
+            # days: a Friday missed is caught up on Saturday, and a run with
+            # nothing new is cheap. A night missed is recovered by the next
+            # run's overlap.
+            trigger=DailyAt(time(20, 30), trading_days_only=False, grace_hours=3.5),
             handler=handlers.run_breadth_sync,
             description="market-wide daily bars, E0 universe snapshot, SEC revenue frames",
         )
