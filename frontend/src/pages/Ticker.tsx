@@ -5,7 +5,7 @@ import { api } from "@/lib/api";
 import type { ResearchReport } from "@/lib/types";
 import type { QuotesState } from "@/lib/useQuotes";
 import { useJob } from "@/lib/useJob";
-import { cn, fmtNum, fmtPct, fmtUsd } from "@/lib/utils";
+import { cn, fmtNum, fmtPct, fmtShares } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Stat } from "@/components/common";
@@ -91,8 +91,10 @@ export default function Ticker({ quotes }: { quotes: QuotesState }) {
       {md && (
         <Card className="p-4">
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-            <Stat label="Float" value={fmtUsd(md.float_shares)} />
-            <Stat label="Short %" value={fmtPct(md.short_interest_pct)} />
+            {/* A share count, not dollars. */}
+            <Stat label="Float" value={fmtShares(md.float_shares)} />
+            {/* Stored as a percentage already (12.07), not a fraction. */}
+            <Stat label="Short %" value={fmtPct(md.short_interest_pct, { scale: false })} />
             <Stat label="Avg vol 10d" value={fmtNum(md.avg_volume_10d, 0)} />
             <Stat
               label="Days to cover"
