@@ -1,6 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
-import { ArrowRight, Scale } from "lucide-react";
+import { Scale } from "lucide-react";
 import { api } from "@/lib/api";
 import type { EntryProposal } from "@/lib/types";
 import { useJob } from "@/lib/useJob";
@@ -123,12 +122,6 @@ export function PositionCheck({ symbol }: { symbol: string }) {
           <Scale className="mr-1.5 h-3.5 w-3.5" />
           {job.running ? "Evaluating…" : p ? "Re-evaluate position" : "Evaluate position"}
         </Button>
-        <Link
-          to={`/ticker/${symbol}`}
-          className="inline-flex items-center text-sm text-muted hover:text-accent"
-        >
-          Full research <ArrowRight className="ml-1 h-3.5 w-3.5" />
-        </Link>
         {job.job && (
           <span
             className={cn(

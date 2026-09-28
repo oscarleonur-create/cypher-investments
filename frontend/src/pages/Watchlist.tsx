@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, Plus, Trash2 } from "lucide-react";
+import { ChevronRight, Layers, Plus, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { WatchlistItem, WatchlistResponse } from "@/lib/types";
+import type { DepthStatus, WatchlistItem, WatchlistResponse } from "@/lib/types";
+import { DepthActions, DepthBulk, useDepthStatus } from "@/components/DepthActions";
 import type { QuotesState } from "@/lib/useQuotes";
 import { useJob } from "@/lib/useJob";
 import { fmtNum } from "@/lib/utils";
@@ -23,6 +24,7 @@ export default function Watchlist({ quotes }: { quotes: QuotesState }) {
   const buildJob = useJob(() => refetch());
 
   const items = data?.watchlist || [];
+  const depth = useDepthStatus(items.map((it) => it.symbol));
 
   const add = async () => {
     const sym = input.trim().toUpperCase();
@@ -75,6 +77,9 @@ export default function Watchlist({ quotes }: { quotes: QuotesState }) {
             </Button>
           </form>
         </div>
+        <div className="mt-3">
+          <DepthBulk symbols={items.map((it) => it.symbol)} what="watchlist names" />
+        </div>
         {buildJob.job && buildJob.job.status !== "done" && (
           <div className="mt-2 text-xs text-muted">
             {buildJob.job.status === "error"
@@ -106,7 +111,13 @@ export default function Watchlist({ quotes }: { quotes: QuotesState }) {
               </thead>
               <tbody>
                 {items.map((it) => (
-                  <WatchRow key={it.symbol} it={it} quotes={quotes} onRemove={remove} />
+                  <WatchRow
+                    key={it.symbol}
+                    it={it}
+                    quotes={quotes}
+                    onRemove={remove}
+                    depth={depth.data?.status[it.symbol]}
+                  />
                 ))}
               </tbody>
             </table>
@@ -121,17 +132,21 @@ function WatchRow({
   it,
   quotes,
   onRemove,
+  depth,
 }: {
   it: WatchlistItem;
   quotes: QuotesState;
   onRemove: (sym: string) => void;
+  depth?: DepthStatus;
 }) {
   const r = it.research;
   const live = quotes.quotes[it.symbol]?.mid || 0;
   const price = live > 0 ? live : r?.current_price || 0;
   const pending = !r?.has_report;
+  const [open, setOpen] = useState(false);
 
   return (
+    <>
     <tr className="border-b border-border/40 hover:bg-panel-2/40">
       <td className="px-2 py-2">
         <Link to={`/ticker/${it.symbol}`} className="flex items-center gap-2">
@@ -151,6 +166,13 @@ function WatchRow({
       <td className="px-2 py-2 text-right">
         <div className="flex items-center justify-end gap-1">
           <button
+            onClick={() => setOpen((o) => !o)}
+            title="News agent and deep research"
+            className={open ? "text-accent" : "text-muted hover:text-text"}
+          >
+            <Layers className="h-4 w-4" />
+          </button>
+          <button
             onClick={() => onRemove(it.symbol)}
             title="Remove from watchlist"
             className="text-muted hover:text-neg"
@@ -163,5 +185,13 @@ function WatchRow({
         </div>
       </td>
     </tr>
+    {open && (
+      <tr className="border-b border-border/40">
+        <td colSpan={4} className="px-3 py-3">
+          <DepthActions symbol={it.symbol} status={depth} />
+        </td>
+      </tr>
+    )}
+    </>
   );
 }

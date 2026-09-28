@@ -1044,6 +1044,51 @@ export interface EntryLeg {
   target?: number | null;
 }
 
+/** What depth a name already has (``/api/depth/status``). */
+export interface DepthStatus {
+  news_judged: number;
+  news_material: number;
+  news_last: string | null;
+  report_at: string | null;
+  deep_research: boolean;
+}
+
+/** One news item as the news agent judged it (``news.judge.Judgment``). */
+export interface NewsJudgment {
+  key: string;
+  symbol: string;
+  published_at: string;
+  title: string;
+  provider: string;
+  tier: string;
+  url: string | null;
+  about_company: boolean;
+  event_type: string;
+  direction: "POSITIVE" | "NEGATIVE" | "MIXED" | "NEUTRAL";
+  materiality: "HIGH" | "MEDIUM" | "LOW";
+  novelty: string;
+  quote: string;
+  why: string;
+  what: string;
+  magnitude: string;
+  watch: string;
+  market_read: string;
+  read_from: string;
+  problems: string[];
+}
+
+export interface NewsSummary {
+  symbol: string;
+  day: string;
+  net: string;
+  headline: string;
+  text: string;
+  thesis: string;
+  watch: string[];
+  items: number;
+  generated_at: string;
+}
+
 /** The entry engine's proposal for one name (``entry.proposal.Proposal``). */
 export interface EntryProposal {
   symbol: string;

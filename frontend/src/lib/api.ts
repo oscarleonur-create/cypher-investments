@@ -34,6 +34,9 @@ import type {
   PriceRange,
   PicksResponse,
   EntryProposal,
+  DepthStatus,
+  NewsJudgment,
+  NewsSummary,
 } from "./types";
 
 async function get<T>(url: string): Promise<T> {
@@ -169,6 +172,18 @@ export const api = {
   refreshPicks: () => post<{ job_id: string }>("/api/breadth/picks/refresh"),
   evaluatePosition: (symbol: string) =>
     post<{ job_id: string }>(`/api/breadth/evaluate/${encodeURIComponent(symbol)}`),
+  depthStatus: (symbols: string[]) =>
+    get<{ status: Record<string, DepthStatus> }>(
+      `/api/depth/status?symbols=${encodeURIComponent(symbols.join(","))}`
+    ),
+  runNewsAgent: (symbols: string[]) =>
+    post<{ job_id: string; names: number }>("/api/depth/news", { symbols }),
+  runDeepResearch: (symbols: string[]) =>
+    post<{ job_id: string; names: number }>("/api/depth/research", { symbols }),
+  newsJudgments: (symbol: string) =>
+    get<{ symbol: string; judgments: NewsJudgment[]; summary: NewsSummary | null }>(
+      `/api/depth/news/${encodeURIComponent(symbol)}`
+    ),
   positionEvaluation: (symbol: string) =>
     get<{ proposal: EntryProposal | null }>(
       `/api/breadth/evaluation/${encodeURIComponent(symbol)}`

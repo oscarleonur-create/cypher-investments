@@ -18,6 +18,7 @@ def create_app() -> FastAPI:
         agent,
         breadth,
         daemon,
+        depth,
         portfolio,
         research,
         theses,
@@ -48,6 +49,7 @@ def create_app() -> FastAPI:
     app.include_router(theses.router)
     app.include_router(tracking.router)
     app.include_router(breadth.router)
+    app.include_router(depth.router)
     app.include_router(ws_router)
 
     _mount_spa(app)
