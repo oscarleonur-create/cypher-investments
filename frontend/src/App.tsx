@@ -12,7 +12,7 @@ import { cn } from "./lib/utils";
 
 const tabClass = ({ isActive }: { isActive: boolean }) =>
   cn(
-    "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+    "shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
     isActive ? "bg-panel-2 text-text" : "text-muted hover:text-text"
   );
 
@@ -23,31 +23,31 @@ export default function App() {
   return (
     <div className="min-h-full">
       <header className="sticky top-0 z-20 border-b border-border bg-bg/90 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-4">
-            <Link to="/" className="flex items-center gap-2 font-semibold">
-              <LineChart className="h-5 w-5 text-accent" />
-              <span>Advisor</span>
-            </Link>
-            <nav className="flex items-center gap-1">
-              <NavLink to="/" end className={tabClass}>
-                Portfolio
-              </NavLink>
-              <NavLink to="/signals" className={tabClass}>
-                Signals
-              </NavLink>
-              <NavLink to="/watchlist" className={tabClass}>
-                Watchlist
-              </NavLink>
-              <NavLink to="/tracking" className={tabClass}>
-                Tracking
-              </NavLink>
-              <NavLink to="/theses" className={tabClass}>
-                Theses
-              </NavLink>
-            </nav>
-          </div>
-          <div className="flex items-center gap-2 text-xs">
+        {/* Phone: logo + status on one row, tabs below at full width and
+            scrollable. From sm up, one row as before. */}
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3">
+          <Link to="/" className="order-1 flex items-center gap-2 font-semibold">
+            <LineChart className="h-5 w-5 text-accent" />
+            <span>Advisor</span>
+          </Link>
+          <nav className="order-3 -mx-1 flex w-full items-center gap-1 overflow-x-auto px-1 sm:order-2 sm:mx-0 sm:w-auto sm:flex-1 sm:px-0">
+            <NavLink to="/" end className={tabClass}>
+              Portfolio
+            </NavLink>
+            <NavLink to="/signals" className={tabClass}>
+              Signals
+            </NavLink>
+            <NavLink to="/watchlist" className={tabClass}>
+              Watchlist
+            </NavLink>
+            <NavLink to="/tracking" className={tabClass}>
+              Tracking
+            </NavLink>
+            <NavLink to="/theses" className={tabClass}>
+              Theses
+            </NavLink>
+          </nav>
+          <div className="order-2 flex items-center gap-2 text-xs sm:order-3">
             <span
               className={`h-2 w-2 rounded-full ${
                 quotes.connected ? "bg-pos" : "bg-neg"

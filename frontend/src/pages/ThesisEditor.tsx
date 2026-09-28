@@ -177,7 +177,7 @@ export default function ThesisEditor() {
         </div>
       </Card>
 
-      <div className="grid gap-5 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         <Card className="flex flex-col p-0">
           <div className="border-b border-border px-3 py-2 text-xs uppercase tracking-wide text-muted">
             Markdown

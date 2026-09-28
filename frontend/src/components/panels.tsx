@@ -499,7 +499,7 @@ export function EcosystemPanel({ r }: { r: ResearchReport }) {
   const insiders = e?.insiders;
   return (
     <Section title="Ecosystem" empty={!e}>
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <div>
           <div className="text-xs uppercase text-muted mb-1">Ownership</div>
           <KV k="Institutional" v={fmtPct(holders?.pct_institutional)} />
@@ -529,7 +529,7 @@ export function EcosystemPanel({ r }: { r: ResearchReport }) {
       <InsiderTransactions txns={insiders?.transactions} />
 
       {(e?.top_customers?.length || e?.top_suppliers?.length) > 0 && (
-        <div className="grid gap-4 md:grid-cols-2 mt-3">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 mt-3">
           {e?.top_customers?.length > 0 && (
             <div>
               <div className="text-xs uppercase text-muted mb-1">Key customers</div>
@@ -1751,7 +1751,7 @@ export function PriceChartPanel({ symbol, quotes }: { symbol: string; quotes: Qu
     <Section
       title="Price & fundamentals"
       right={
-        <div className="flex items-center gap-3 text-xs">
+        <div className="flex flex-wrap items-center gap-3 text-xs">
           <label className="flex items-center gap-1.5 text-muted">
             P/E <Toggle checked={showPe} onChange={setShowPe} />
           </label>
