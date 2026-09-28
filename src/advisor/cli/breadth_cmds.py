@@ -86,6 +86,127 @@ def _print_funnel(u: dict) -> None:
     console.print(table)
 
 
+@app.command("replay")
+def replay(
+    years: Annotated[int, typer.Option("--years", help="Sessions judged: the last N years")] = 2,
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Run families P and F over history and judge them against matched controls (B1)."""
+    from advisor.breadth.measure import replay as run_replay
+    from advisor.breadth.ruleset import signal_rules
+    from advisor.breadth.run import _register
+    from advisor.breadth.store import BreadthStore, breadth_path
+    from advisor.daemon.market_calendar import now_et
+
+    _register(_db_path(), signal_rules())
+    with BreadthStore(breadth_path(_db_path())) as store:
+        summary = run_replay(store, now_et(), years=years)
+    if output == "json":
+        output_json(summary)
+        return
+    if not summary.get("ok"):
+        output_error(summary.get("error", "replay failed"))
+        return
+    _print_study(summary)
+
+
+def _pct(x) -> str:
+    return "—" if x is None else f"{x * 100:+.2f}%"
+
+
+def _print_study(s: dict) -> None:
+    e = s["eligible_per_session"]
+    console.print(
+        f"Replay {s['run_id']} (rules {s['rules']}, code {s['code']}): {s['from']} → {s['to']}, "
+        f"{s['sessions']} sessions, {e['median']} eligible names per session "
+        f"({e['min']}–{e['max']})"
+    )
+    console.print(
+        "Records: "
+        + ", ".join(f"{g} {n} ({s['per_session'][g]}/session)" for g, n in s["records"].items())
+    )
+    table = Table(title="Return beyond matched controls (same day, same industry and size)")
+    for col in ("group", "horizon", "n", "windows", "mean", "controls", "excess", "95% CI",
+                "beat", "tail", "verdict"):  # fmt: skip
+        table.add_column(col, justify="left" if col in ("group", "horizon", "verdict") else "right")
+    for c in s["cells"]:
+        if not c["n"]:
+            table.add_row(c["group"], c["horizon"], "0", "", "", "", "", "", "", "", c["verdict"])
+            continue
+        ci = c["ci"]
+        table.add_row(
+            c["group"],
+            c["horizon"],
+            str(c["n"]),
+            str(c["windows"]),
+            _pct(c["mean"]),
+            _pct(c["control"]),
+            _pct(c["excess"]),
+            f"{_pct(ci[0])} … {_pct(ci[1])}" if ci else "—",
+            f"{c['beat'] * 100:.0f}%",
+            _pct(c["tail"]),
+            c["verdict"],
+        )
+    console.print(table)
+    console.print(
+        f"[dim]{s['cells_tested']} cells tested: at 95% about "
+        f"{s['cells_tested'] * 0.025:.1f} would clear zero by chance alone.[/dim]"
+    )
+    for caveat in s["caveats"]:
+        console.print(f"[dim]· {caveat}[/dim]")
+
+
+@app.command("report")
+def report(
+    run_id: Annotated[
+        Optional[str], typer.Argument(help="A replay run id; the latest if omitted")
+    ] = None,
+    live: Annotated[bool, typer.Option("--live", help="Judge the live records instead")] = False,
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """A stored replay's verdicts, or the live records judged so far."""
+    import json
+
+    from advisor.breadth.measure import CAVEATS, evaluate, load_records
+    from advisor.breadth.store import BreadthStore, breadth_path
+
+    with BreadthStore(breadth_path(_db_path())) as store:
+        if live:
+            recs = load_records(store, "live")
+            cells = evaluate(recs)
+            summary = {
+                "run_id": "live",
+                "records": {g: sum(1 for r in recs if r["grp"] == g) for g in ("P", "F", "F+P")},
+                "cells": cells,
+                "cells_tested": len([c for c in cells if c["n"]]),
+                "caveats": list(CAVEATS[2:]),
+            }
+            if output == "json":
+                output_json(summary)
+                return
+            console.print(f"Live records: {summary['records']}")
+            for c in cells:
+                console.print(
+                    f"  {c['group']:4} {c['horizon']:5} n={c['n']:<4} {c['verdict']}"
+                    f" — {c.get('reason', '')}"
+                )
+            return
+        row = store.conn.execute(
+            "SELECT summary_json FROM breadth_replay_runs "
+            + ("WHERE id = ? " if run_id else "")
+            + "ORDER BY started_at DESC LIMIT 1",
+            (run_id,) if run_id else (),
+        ).fetchone()
+    if row is None:
+        output_error("No replay on file: run `advisor breadth replay`.")
+        return
+    summary = json.loads(row[0])
+    if output == "json":
+        output_json(summary)
+        return
+    _print_study(summary)
+
+
 @app.command("universe")
 def universe(
     symbol: Annotated[Optional[str], typer.Argument(help="Show one name's standing")] = None,

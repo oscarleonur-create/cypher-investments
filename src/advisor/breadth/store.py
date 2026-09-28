@@ -74,6 +74,36 @@ CREATE TABLE IF NOT EXISTS breadth_universe (
     rules         TEXT NOT NULL,     -- version of the E0 rules that decided it
     PRIMARY KEY (day, symbol)
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS breadth_companies (
+    cik        INTEGER NOT NULL PRIMARY KEY,
+    sic        INTEGER,                -- NULL when the SEC lists none
+    sic_desc   TEXT,
+    name       TEXT,
+    fetched_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS breadth_records (
+    id            TEXT NOT NULL PRIMARY KEY,  -- origin:run:grp:symbol:day
+    origin        TEXT NOT NULL,              -- 'live' or 'replay'
+    run_id        TEXT NOT NULL,              -- 'live', or the replay run's id
+    grp           TEXT NOT NULL,              -- 'P', 'F' or 'F+P'
+    symbol        TEXT NOT NULL,
+    cik           INTEGER,
+    day           TEXT NOT NULL,              -- the session whose close decided it
+    rules         TEXT NOT NULL,
+    detail_json   TEXT NOT NULL,              -- which signals, and their numbers
+    outcomes_json TEXT,                       -- forward returns vs matched controls
+    updated_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_breadth_records_run ON breadth_records(run_id, grp, day);
+CREATE TABLE IF NOT EXISTS breadth_replay_runs (
+    id           TEXT NOT NULL PRIMARY KEY,
+    started_at   TEXT NOT NULL,
+    finished_at  TEXT,
+    code         TEXT NOT NULL,
+    rules        TEXT NOT NULL,
+    params_json  TEXT NOT NULL,
+    summary_json TEXT
+);
 CREATE TABLE IF NOT EXISTS breadth_runs (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at   TEXT NOT NULL,

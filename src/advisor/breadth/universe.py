@@ -72,6 +72,48 @@ def eligibility(bars: list[tuple[date, float, float | None]], day: date) -> Elig
     return Eligibility(True, None, price, dollar_volume, sessions)
 
 
+def eligibility_panel(close, volume):
+    """``eligibility`` for every (session, symbol) of a panel at once: a bool DataFrame.
+
+    ``close`` and ``volume`` share an index of sessions and a column per
+    symbol; NaN where a name has no bar. Each name is measured on its own bars
+    — the dollar-volume window is its last ``ADV_WINDOW`` bars, as in
+    ``eligibility`` — and then carried to every session of the panel, so a
+    session a name did not trade is judged on its last bar and turns stale
+    after ``STALE_BAR_DAYS``. A test holds the two functions to the same answer.
+    """
+    import pandas as pd
+
+    out = {}
+    index = pd.DatetimeIndex(close.index)
+    for symbol in close.columns:
+        c = close[symbol].dropna()
+        if c.empty:
+            out[symbol] = pd.Series(False, index=index)
+            continue
+        v = volume[symbol].reindex(c.index).fillna(0.0).clip(lower=0.0)
+        own = pd.DataFrame(
+            {
+                "price": c,
+                "dv": (c * v).rolling(ADV_WINDOW, min_periods=1).median(),
+                "sessions": range(1, len(c) + 1),
+                "last": pd.DatetimeIndex(c.index),
+            },
+            index=c.index,
+        )
+        own = own.reindex(index, method="ffill")
+        fresh = (index - pd.DatetimeIndex(own["last"])) <= pd.Timedelta(days=STALE_BAR_DAYS)
+        ok = (
+            own["last"].notna()
+            & fresh
+            & (own["price"] >= MIN_PRICE)
+            & (own["dv"] >= MIN_DOLLAR_VOLUME)
+            & (own["sessions"] >= MIN_SESSIONS)
+        )
+        out[symbol] = ok.fillna(False).astype(bool)
+    return pd.DataFrame(out, index=close.index)
+
+
 def _bars(store: BreadthStore, symbol: str, day: date) -> list[tuple[date, float, float | None]]:
     # Only whether there are MIN_SESSIONS matters, so the count stored is capped there.
     return [
