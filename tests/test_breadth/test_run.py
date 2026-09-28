@@ -51,6 +51,7 @@ def run(tmp_path, **kw):
     kw.setdefault("fetch_concept", lambda cik, c: [])
     kw.setdefault("fetch_company", lambda cik: {"sic": 3674, "sic_desc": "Semis", "name": "x"})
     kw.setdefault("fetch_index", lambda year, q: "")
+    kw.setdefault("insider_fetch", {"get_text": lambda url: "", "get_bytes": lambda url: None})
     return db, run_sync(db, NOW, sleep=lambda s: None, **kw)
 
 

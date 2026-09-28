@@ -38,6 +38,7 @@ import pandas as pd
 from advisor.breadth import signals as S
 from advisor.breadth.companies import division, major_group, sic_map
 from advisor.breadth.filings import FilingDates
+from advisor.breadth.insiders import load_purchases
 from advisor.breadth.panel import Panel, load_panel
 from advisor.breadth.store import BreadthStore
 from advisor.breadth.universe import eligibility_panel
@@ -287,14 +288,18 @@ def evaluate(recs: list[dict]) -> list[dict]:
 # ── runs ──────────────────────────────────────────────────────────────────
 
 
-def _inputs(store: BreadthStore, panel: Panel, tally: dict | None = None):
+def _inputs(store: BreadthStore, panel: Panel, tally: dict | None = None, t=S.DEFAULT):
     cik_of = cik_map(store)
     eligible = eligibility_panel(panel.close, panel.volume)
     eligible = S.dedupe_share_classes(eligible, panel, cik_of)
     dates = FilingDates(store)
     quarters = revenue_quarters(store, cik_of, dates or None, tally)
-    events = S.fundamental_events(quarters, panel.sessions)
-    return cik_of, eligible, events
+    events = S.fundamental_events(quarters, panel.sessions, t)
+    symbols_of: dict[int, list[str]] = {}
+    for s, c in cik_of.items():
+        symbols_of.setdefault(c, []).append(s)
+    ievents = S.insider_events(load_purchases(store), symbols_of, panel.sessions, t)
+    return cik_of, eligible, events, ievents
 
 
 def _write(store, recs, origin: str, run_id: str, rules: str, cik_of, now: datetime) -> None:
@@ -338,12 +343,12 @@ def replay(
     if panel.close.empty:
         return {"ok": False, "error": "no bars on file: run `advisor breadth sync` first"}
     dating: dict[str, int] = {}
-    cik_of, eligible, events = _inputs(store, panel, dating)
+    cik_of, eligible, events, ievents = _inputs(store, panel, dating, t)
     last_row = len(panel.sessions) - 1
     first_row = panel.row_of(panel.sessions[-1].date() - timedelta(days=365 * years))
     if first_row is None or first_row < S.MOMENTUM_LOOKBACK:
         first_row = min(S.MOMENTUM_LOOKBACK, last_row)
-    recs = S.records(panel, eligible, events, first_row, last_row, t)
+    recs = S.records(panel, eligible, events, first_row, last_row, t, ievents)
     out = Outcomes(panel, eligible, cik_of, sic_map(store))
     for r in recs:
         r["outcomes"] = out.of(r["symbol"], r["row"])
@@ -413,8 +418,8 @@ def record_live(store: BreadthStore, day: date, now: datetime, t: S.Thresholds =
     row = panel.row_of(day)
     if row is None or panel.sessions[row].date() != day:
         return {"ok": False, "error": f"no bars on file for {day}"}
-    cik_of, eligible, events = _inputs(store, panel)
-    recs = S.records(panel, eligible, events, row, row, t)
+    cik_of, eligible, events, ievents = _inputs(store, panel, t=t)
+    recs = S.records(panel, eligible, events, row, row, t, ievents)
     out = Outcomes(panel, eligible, cik_of, sic_map(store))
     for r in recs:
         r["outcomes"] = out.of(r["symbol"], r["row"])

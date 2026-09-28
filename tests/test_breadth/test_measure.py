@@ -128,7 +128,10 @@ class TestEvaluate:
 
     def test_empty_groups_are_reported_not_skipped(self):
         cells = M.evaluate([])
-        assert len(cells) == 9 and all(c["verdict"] == "UNDETERMINED" for c in cells)
+        from advisor.breadth.signals import GROUPS
+
+        assert len(cells) == len(GROUPS) * len(M.HORIZONS)
+        assert all(c["verdict"] == "UNDETERMINED" for c in cells)
 
 
 class TestFilings:

@@ -168,6 +168,7 @@ def report(
     import json
 
     from advisor.breadth.measure import CAVEATS, evaluate, load_records
+    from advisor.breadth.signals import GROUPS
     from advisor.breadth.store import BreadthStore, breadth_path
 
     with BreadthStore(breadth_path(_db_path())) as store:
@@ -176,7 +177,7 @@ def report(
             cells = evaluate(recs)
             summary = {
                 "run_id": "live",
-                "records": {g: sum(1 for r in recs if r["grp"] == g) for g in ("P", "F", "F+P")},
+                "records": {g: sum(1 for r in recs if r["grp"] == g) for g in GROUPS},
                 "cells": cells,
                 "cells_tested": len([c for c in cells if c["n"]]),
                 "caveats": list(CAVEATS[2:]),
