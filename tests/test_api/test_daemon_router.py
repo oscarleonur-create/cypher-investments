@@ -32,6 +32,19 @@ def client(tmp_path: Path, monkeypatch):
 
     db_path = tmp_path / "research.db"
     monkeypatch.setattr(router, "_store", lambda: DaemonStore(db_path))
+    # The actions endpoints read the live book; a test gets one held name
+    # instead of the holder's real account.
+    from advisor.daemon.book import EQUITY, BookSnapshot, Position
+
+    held = Position(
+        account="A", symbol="CBRS", underlying="CBRS", instrument=EQUITY,
+        quantity=2, multiplier=1, avg_open_price=217.09, close_price=198.28,
+    )  # fmt: skip
+
+    async def fake_book(*_a, **_k):
+        return BookSnapshot(positions=[held], net_liq=7_733.15)
+
+    monkeypatch.setattr("advisor.daemon.book.fetch_book", fake_book)
     with TestClient(create_app()) as c:
         c.store = DaemonStore(db_path)  # type: ignore[attr-defined]
         yield c
@@ -440,6 +453,7 @@ class TestActionsEndpoint:
     def test_no_action_names_a_trade(self, client):
         """The constraint the whole module exists under, asserted at the edge."""
         cards = client.get("/api/daemon/actions").json()["cards"]
+        assert cards  # the held name produces one; an empty loop would prove nothing
         for card in cards:
             assert card["action"] in {"REVIEW_NOW", "REVIEW", "WRITE_THESIS", "HOLD", "CANNOT_SAY"}
 

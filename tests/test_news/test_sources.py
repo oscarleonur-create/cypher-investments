@@ -82,6 +82,8 @@ class TestTierAssignment:
                 }
 
         monkeypatch.setattr(mod.httpx, "post", lambda *a, **k: FakeResponse())
+        # Without a key the search returns before the fake is ever called.
+        monkeypatch.setenv("RESEARCH_AGENT_TAVILY_API_KEY", "test")
         items = mod.search_news("AAOI", "q", company_name="Applied Optoelectronics, Inc.")
         assert len(items) == 1
         assert items[0].tier is SourceTier.AGGREGATOR
