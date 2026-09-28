@@ -227,7 +227,7 @@ export function ValuationPanel({ r }: { r: ResearchReport }) {
             )}
           </div>
           {dcf.note && <div className="text-sm text-warn mb-2">{dcf.note}</div>}
-          {dcf.source && <div className="text-xs text-muted mb-2">{dcf.source}</div>}
+          {dcf.source && <div className="text-xs text-muted mb-2 break-words">{dcf.source}</div>}
           {data.length > 0 && dcfSane ? (
             <ResponsiveContainer width="100%" height={180}>
               <BarChart data={data} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
