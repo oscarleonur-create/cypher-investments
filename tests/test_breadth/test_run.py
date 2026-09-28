@@ -69,7 +69,9 @@ def test_full_run(tmp_path):
     assert ruleset == {"breadth.universe", "breadth.signals"}
     # Measurement ran and recorded the day; it reached nothing the user reads.
     assert s["signals"]["live"]["ok"], s["signals"]
-    assert s["signals"]["companies"]["read"] == 1  # only the eligible name's industry
+    # Both common stocks' industries, the thin one too: it may have been
+    # eligible on a replayed day. The ETF's is not read.
+    assert s["signals"]["companies"]["read"] == 2
     conn.close()
     with BreadthStore(breadth_path(db)) as store:
         assert store.last_run()["ok"] == 1

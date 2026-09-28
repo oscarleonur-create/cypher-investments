@@ -47,6 +47,11 @@ def _register(db_path, stamp) -> None:
         conn.close()
 
 
+# Reasons a common stock is not eligible *today* that say nothing about its past.
+_MARKET = {"no bars", "stale bars", "price below floor", "dollar volume below floor",
+           "short history"}  # fmt: skip
+
+
 def _sec_index():
     from advisor.breadth.filings import sec_index
 
@@ -66,7 +71,14 @@ def _signals(db_path, store, rows, day, now, fetch_company, insider_fetch=None) 
 
     try:
         eligible = sorted({r["cik"] for r in rows if r["eligible"] and r["cik"]})
-        companies = sync_companies(store, eligible, now, fetch=fetch_company or sec_submission)
+        # Industries for every common stock, not only today's eligible: a
+        # replay's records fall on names eligible on *their* day, and a record
+        # with no industry is matched on size alone (55 of 551 insider records
+        # were, in the first run).
+        common = sorted(
+            {r["cik"] for r in rows if r["cik"] and (r["eligible"] or r["reason"] in _MARKET)}
+        )
+        companies = sync_companies(store, common, now, fetch=fetch_company or sec_submission)
         insiders = sync_insiders(store, now, set(eligible), **(insider_fetch or {}))
         _register(db_path, signal_rules())
         live = record_live(store, day, now)
