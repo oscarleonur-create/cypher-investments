@@ -69,6 +69,7 @@ NOT_RULES: dict[str, str] = {
     "filings._SCHEMA": "table definitions",
     "insiders.DATASETS_PAGE": "a source address",
     "insiders.DAILY_INDEX_URL": "a source address",
+    "insiders.DAILY_DIR_URL": "a source address",
     "insiders.FILING_URL": "a source address",
     "insiders.FIRST_YEAR": "how much history is stored",
     "insiders.KEPT_CODES": "which codes are stored; which count is decided in signals",

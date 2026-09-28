@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 DATASETS_PAGE = "https://www.sec.gov/data-research/sec-markets-data/insider-transactions-data-sets"
 DAILY_INDEX_URL = "https://www.sec.gov/Archives/edgar/daily-index/{year}/QTR{q}/master.{ymd}.idx"
+DAILY_DIR_URL = "https://www.sec.gov/Archives/edgar/daily-index/{year}/QTR{q}/index.json"
 FILING_URL = "https://www.sec.gov/Archives/{path}"
 FIRST_YEAR = 2020  # three years before the replay window, for the routine-buyer test
 KEPT_CODES = frozenset({"P", "S"})
@@ -290,6 +291,30 @@ def parse_form4(text: str, accession: str, filed: date) -> list[Txn]:
     return out
 
 
+def daily_days(listing: str) -> set[date]:
+    """The days a quarter's daily-index directory (``index.json``) has an index for. Pure.
+
+    The SEC answers 403, not 404, for a daily index that does not exist (a
+    Saturday, a holiday), the same status it uses to refuse a client
+    (measured 2026-09-28). So which days exist is read from the listing, and
+    a 403 on a listed day means a refusal.
+    """
+    import json
+
+    try:
+        items = json.loads(listing)["directory"]["item"]
+    except (ValueError, KeyError, TypeError):
+        return set()
+    out = set()
+    for it in items:
+        m = re.fullmatch(r"master\.(\d{8})\.idx", str(it.get("name", "")))
+        if m:
+            d = _day(m.group(1))
+            if d:
+                out.add(d)
+    return out
+
+
 def form4_rows(index_text: str, issuers: set[int]) -> list[tuple[str, str]]:
     """``(accession, archive path)`` of each Form 4 filed on one of ``issuers``. Pure.
 
@@ -387,6 +412,7 @@ def sync_insiders(
     *,
     get_text: GetText = sec_text,
     get_bytes: GetBytes = sec_bytes,
+    backfill_days: int = 35,
 ) -> dict:
     """Data sets not yet loaded, then each day since the last one from the daily index.
 
@@ -433,7 +459,13 @@ def sync_insiders(
         day = _quarter_start(y, q)
     else:
         day = now.date() - timedelta(days=90)
+    # About 900 Form 4s a day land on E0 issuers (measured 2026-09-28): a
+    # whole quarter by day is ~54,000 reads, two hours at the SEC's pace, for
+    # rows its data set brings in one file weeks later. So the daily path
+    # reaches back only this far; older days of the quarter wait for the set.
+    day = max(day, now.date() - timedelta(days=backfill_days))
     last = now.date() - timedelta(days=1)
+    listed: dict[tuple[int, int], set[date]] = {}
     while day <= last:
         key = day.isoformat()
         if key in done or day.weekday() >= 5:
@@ -441,6 +473,21 @@ def sync_insiders(
             continue
         yy, qq = _quarter_of(day)
         try:
+            if (yy, qq) not in listed:
+                listed[(yy, qq)] = daily_days(get_text(DAILY_DIR_URL.format(year=yy, q=qq)))
+            available = listed[(yy, qq)]
+            if day not in available:
+                if available and day < max(available):
+                    # No index for a day EDGAR was closed (July 3). Asking for
+                    # it draws a 403 indistinguishable from a refusal.
+                    with store.conn:
+                        store.conn.execute(
+                            "INSERT OR REPLACE INTO breadth_insider_state VALUES (?, ?, ?)",
+                            (key, 0, now.isoformat()),
+                        )
+                    day += timedelta(days=1)
+                    continue
+                break  # not published yet: read next run
             index = get_bytes(DAILY_INDEX_URL.format(year=yy, q=qq, ymd=day.strftime("%Y%m%d")))
             rows = form4_rows(index.decode("latin-1"), issuers) if index else []
             txns: list[Txn] = []

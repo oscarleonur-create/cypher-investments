@@ -186,15 +186,34 @@ def test_form4_rows_keep_the_issuers_line_once():
 # ── syncing ───────────────────────────────────────────────────────────────
 
 
+HOLIDAYS = {date(2026, 7, 3), date(2026, 9, 7)}  # no EDGAR index on these
+
+
+def listing(start: date, end: date, skip=HOLIDAYS) -> str:
+    """A daily-index ``index.json`` with one master file per weekday."""
+    import json
+
+    items, d = [], start
+    while d <= end:
+        if d.weekday() < 5 and d not in skip:
+            items.append({"name": f"master.{d:%Y%m%d}.idx"})
+        d += timedelta(days=1)
+    items.append({"name": "form.20260701.idx"})  # other files in the directory
+    return json.dumps({"directory": {"item": items}})
+
+
 class Sec:
-    def __init__(self, fail_day=None):
+    def __init__(self, fail_day=None, published_until=date(2026, 9, 25)):
         self.fail_day = fail_day
+        self.published_until = published_until
         self.urls = []
 
     def text(self, url):
         self.urls.append(url)
         if url == I.DATASETS_PAGE:
             return '<a href="/files/x/2026q2_form345.zip">'
+        if url.endswith("index.json"):
+            return listing(date(2026, 7, 1), self.published_until)
         return FORM4
 
     def bytes(self, url):
@@ -203,8 +222,8 @@ class Sec:
             return _zip([["A1", "30-JUN-2026", "4", "100", "0"]],
                         [["A1", "9", "Officer", "CFO"]],
                         [["A1", "29-JUN-2026", "P", "1000", "20", "A", "D"]])  # fmt: skip
-        if "master.20260907" in url:
-            return None  # Labor Day: no index
+        if any(f"master.{h:%Y%m%d}" in url for h in HOLIDAYS):
+            raise Refusal(403)  # what the SEC really answers for a missing index
         if self.fail_day and self.fail_day in url:
             raise TimeoutError("sec.gov")
         return b"100|ACME|4|20260925|edgar/data/100/0000000042-26-000001.txt\n"
@@ -213,17 +232,25 @@ class Sec:
 def test_sync_loads_data_sets_then_days_and_is_idempotent(tmp_path):
     sec = Sec(fail_day="master.20260910")
     with BreadthStore(tmp_path / "b.db") as store:
-        r = I.sync_insiders(store, NOW, {100}, get_text=sec.text, get_bytes=sec.bytes)
+        r = I.sync_insiders(
+            store, NOW, {100}, get_text=sec.text, get_bytes=sec.bytes, backfill_days=120
+        )
         assert r["datasets"] == 1
-        # Weekdays from 2026-07-01 to yesterday, less the one that failed.
-        weekdays = sum(1 for k in range(89) if (date(2026, 7, 1) + timedelta(k)).weekday() < 5
-                       and date(2026, 7, 1) + timedelta(k) <= date(2026, 9, 27))  # fmt: skip
-        assert r["days"] == weekdays - 1 and r["errors"] == ["2026-09-10: sec.gov"]
+        # Weekdays 2026-07-01 .. 09-25 read, less two holidays and the one that failed.
+        weekdays = sum(1 for k in range(87) if (date(2026, 7, 1) + timedelta(k)).weekday() < 5)
+        assert r["days"] == weekdays - 2 - 1 and r["errors"] == ["2026-09-10: sec.gov"]
+        assert not r.get("refused")
+        # Holidays are never asked for: the SEC's 403 for them looks like a block.
+        assert not any("master.20260703" in u or "master.20260907" in u for u in sec.urls)
+        done = {k for (k,) in store.conn.execute("SELECT key FROM breadth_insider_state")}
+        assert {"2026-07-03", "2026-09-07"} <= done
         n = store.conn.execute("SELECT COUNT(*) FROM breadth_insider_txns").fetchone()[0]
         # The same Form 4 served every day is one transaction, not sixty.
         assert n == 2
         sec2 = Sec()
-        r2 = I.sync_insiders(store, NOW, {100}, get_text=sec2.text, get_bytes=sec2.bytes)
+        r2 = I.sync_insiders(
+            store, NOW, {100}, get_text=sec2.text, get_bytes=sec2.bytes, backfill_days=120
+        )
         assert r2["datasets"] == 0 and r2["days"] == 1  # only the day that failed
         assert not any("2026q2" in u for u in sec2.urls)
 
@@ -244,13 +271,42 @@ def test_a_refusal_stops_the_days_and_leaves_them_for_next_run(tmp_path, status)
             raise Refusal(status)
         return None  # no Form 4 index content needed
 
+    def get_text(url):
+        return listing(date(2026, 6, 1), date(2026, 9, 25)) if url.endswith("index.json") else ""
+
     with BreadthStore(tmp_path / "b.db") as store:
-        r = I.sync_insiders(store, NOW, {100}, get_text=lambda u: "", get_bytes=get_bytes)
-        # No data set: days start 90 back (Jun 30); Jun 30 – Jul 3 read, stopped on the 6th.
-        assert r["refused"] and r["days"] == 4
+        r = I.sync_insiders(
+            store, NOW, {100}, get_text=get_text, get_bytes=get_bytes, backfill_days=120
+        )
+        # No data set: days start 90 back (Jun 30); Jun 30, Jul 1, 2 read, Jul 3 a
+        # holiday, stopped on the 6th.
+        assert r["refused"] and r["days"] == 3
         assert not any("master.20260707" in u for u in calls)  # no hammering
         done = {k for (k,) in store.conn.execute("SELECT key FROM breadth_insider_state")}
         assert "2026-07-06" not in done
+
+
+def test_a_day_not_yet_published_stops_the_read_without_being_marked(tmp_path):
+    sec = Sec(published_until=date(2026, 9, 24))
+    with BreadthStore(tmp_path / "b.db") as store:
+        I.sync_insiders(store, NOW, {100}, get_text=sec.text, get_bytes=sec.bytes)
+        done = {k for (k,) in store.conn.execute("SELECT key FROM breadth_insider_state")}
+        assert "2026-09-24" in done and "2026-09-25" not in done
+        assert not any("master.20260925" in u for u in sec.urls)
+
+
+def test_the_daily_path_reaches_back_only_so_far(tmp_path):
+    sec = Sec()
+    with BreadthStore(tmp_path / "b.db") as store:
+        I.sync_insiders(store, NOW, {100}, get_text=sec.text, get_bytes=sec.bytes)
+        days = [u for u in sec.urls if "master." in u]
+        assert days and all(u.split("master.")[1][:8] >= "20260824" for u in days)
+
+
+def test_daily_days_reads_only_master_files():
+    days = I.daily_days(listing(date(2026, 7, 1), date(2026, 7, 7)))
+    assert days == {date(2026, 7, 1), date(2026, 7, 2), date(2026, 7, 6), date(2026, 7, 7)}
+    assert I.daily_days("not json") == set()
 
 
 def test_a_linked_data_set_that_is_missing_is_retried(tmp_path):
