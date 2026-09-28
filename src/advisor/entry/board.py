@@ -84,6 +84,12 @@ class NewsLine(BaseModel):
     basis: str
     why: str
     thesis: list[str] = Field(default_factory=list)  # "against (INVALIDATION)" ...
+    what: str = ""
+    magnitude: str = ""
+    watch: str = ""
+    market_read: str = "UNKNOWN"
+    market: str | None = None
+    read_from: str = "feed"  # article | feed | headline
 
 
 class Row(BaseModel):
@@ -105,6 +111,8 @@ class Row(BaseModel):
     losses: int = 0
     news: list[NewsLine] = Field(default_factory=list)
     news_summary: dict[str, int] = Field(default_factory=dict)
+    # The news agent's weekly synthesis for the name, when one was written.
+    news_week: dict | None = None
 
 
 def _latest(p: Proposal) -> Latest:
@@ -216,6 +224,12 @@ def _news_line(j) -> NewsLine:
         basis=j.basis.value,
         why=j.why,
         thesis=[f"{'against' if c.against_thesis else 'for'} ({c.kind})" for c in j.claims],
+        what=j.what,
+        magnitude=j.magnitude,
+        watch=j.watch,
+        market_read=j.market_read.value,
+        market=j.market,
+        read_from=j.read_from,
     )
 
 
@@ -224,6 +238,7 @@ def build_board(
     trades: list,
     book,
     news: list | None = None,
+    weeks: dict | None = None,
 ) -> list[Row]:
     """Every name held or proposed on, held names first, largest first.
 
@@ -292,6 +307,8 @@ def build_board(
         mine_news = sorted(news_by.get(sym, []), key=lambda j: j.published_at, reverse=True)
         row.news = [_news_line(j) for j in mine_news]
         row.news_summary = summary(mine_news) if mine_news else {}
+        week = (weeks or {}).get(sym)
+        row.news_week = week.model_dump(mode="json") if week is not None else None
         row.realized = sum(t.pnl or 0.0 for t in closed)
         row.wins = sum(1 for t in closed if (t.pnl or 0) > 0)
         row.losses = sum(1 for t in closed if (t.pnl or 0) < 0)
@@ -316,11 +333,15 @@ def load_board(db_path, now: datetime, *, sessions: int = TIMELINE_SESSIONS) -> 
         proposals = entries.list(since=since)
         book = daemon.load_latest_book()
         trades = TradeStore(conn).list()
-        news = NewsJudgmentStore(conn).list(
-            since=now - timedelta(days=NEWS_DAYS), version=prompt_version()
-        )
+        judged = NewsJudgmentStore(conn)
+        news = judged.list(since=now - timedelta(days=NEWS_DAYS), version=prompt_version())
+        weeks = {}
+        for sym in {j.symbol for j in news}:
+            week = judged.latest_summary(sym)
+            if week is not None and (now.date() - week.day).days <= NEWS_DAYS:
+                weeks[sym] = week
     finally:
         entries.close()
         daemon.close()
         conn.close()
-    return build_board(proposals, trades, book, news)
+    return build_board(proposals, trades, book, news, weeks)

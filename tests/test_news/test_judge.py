@@ -31,6 +31,16 @@ ET = mc.MARKET_TZ
 NOW = datetime(2026, 9, 27, 9, 0, tzinfo=ET)
 
 
+@pytest.fixture(autouse=True)
+def offline(monkeypatch):
+    """No publisher pages and no price history unless a test supplies them."""
+    from advisor.entry import sheet
+    from advisor.news import verify
+
+    monkeypatch.setattr(verify, "fetch_page", lambda url: None)
+    monkeypatch.setattr(sheet, "daily_closes", lambda symbol: [])
+
+
 def item(title="Nebius to hike prices next week", summary="GPU prices rise 10% on 1,250 racks",
          url="https://x.com/a", days_ago=1, tier=SourceTier.AGGREGATOR, symbol="NBIS"):  # fmt: skip
     return SourceItem(
@@ -197,9 +207,22 @@ class TestJudgeSymbol:
         assert judge_symbol(s, conn, "NBIS", NOW, complete=c) == ([], [])
         assert c.seen == []
 
-    def test_old_items_are_left_alone(self, stores):
+    def test_the_first_run_reads_a_month(self, stores):
+        """A name never judged starts 30 days back: its first reading is a month of news."""
         s, conn = stores
-        save(s, item(days_ago=judge.JUDGE_WINDOW_DAYS + 1))
+        save(s, item(days_ago=judge.JUDGE_WINDOW_DAYS + 5))
+        assert len(judge_symbol(s, conn, "NBIS", NOW, complete=fake([call()]))[0]) == 1
+
+    def test_past_the_first_run_window_is_left_alone(self, stores):
+        s, conn = stores
+        save(s, item(days_ago=judge.FIRST_RUN_DAYS + 1))
+        assert judge_symbol(s, conn, "NBIS", NOW, complete=fake([call()]))[0] == []
+
+    def test_after_the_first_run_only_the_week(self, stores):
+        s, conn = stores
+        save(s, item(days_ago=1, url="https://new", title="new story"))
+        judge_symbol(s, conn, "NBIS", NOW, complete=fake([call()]))
+        save(s, item(days_ago=judge.JUDGE_WINDOW_DAYS + 5, url="https://late", title="late"))
         assert judge_symbol(s, conn, "NBIS", NOW, complete=fake([call()]))[0] == []
 
     def test_news_with_an_unverified_date_is_not_judged(self, stores):
@@ -221,7 +244,7 @@ class TestJudgeSymbol:
 
     def test_a_date_corrected_out_of_the_window_is_left_alone(self, stores):
         s, conn = stores
-        old = NOW - timedelta(days=judge.JUDGE_WINDOW_DAYS + 3)
+        old = NOW - timedelta(days=judge.FIRST_RUN_DAYS + 3)
         save(s, item(days_ago=1), verified="CORRECTED", checked_at=old)
         assert judge_symbol(s, conn, "NBIS", NOW, complete=fake([call()]))[0] == []
 
@@ -266,14 +289,15 @@ class TestJudgeSymbol:
         js, problems = judge_symbol(s, conn, "NBIS", NOW, complete=boom)
         assert js == [] and "model failed" in problems[0]
 
-    def test_batches_of_ten(self, stores):
+    def test_batches(self, stores):
+        """12 items, each possibly a full article: judged BATCH at a time."""
         s, conn = stores
         for n in range(12):
             save(s, item(title=f"story {n}", url=f"https://x/{n}",
                                     summary=f"GPU prices rise 10% case {n}"))  # fmt: skip
-        c = fake([call(id=f"N{n}", why="Prices rise 10%.") for n in range(1, 11)])
+        c = fake([call(id=f"N{n}", why="Prices rise 10%.") for n in range(1, judge.BATCH + 1)])
         js, _ = judge_symbol(s, conn, "NBIS", NOW, complete=c)
-        assert len(c.seen) == 2 and len(js) == 12
+        assert len(c.seen) == -(-12 // judge.BATCH) and len(js) == 12
 
     def test_claims_are_offered_with_their_kind(self, stores):
         s, conn = stores

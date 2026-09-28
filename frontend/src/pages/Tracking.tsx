@@ -524,7 +524,6 @@ function RowDetail({ r }: { r: TrackRow }) {
             {r.held && r.cost != null && ` · ${fmtNum(r.quantity)} sh at ${fmtNum(r.cost)}`}
           </div>
         )}
-        <NewsList news={r.news} />
       </div>
       <div>
         <div className="text-xs uppercase tracking-wide text-muted">Trades</div>
@@ -551,6 +550,12 @@ function RowDetail({ r }: { r: TrackRow }) {
           </table>
         )}
       </div>
+      {(r.news_week || r.news.length > 0) && (
+        <div className="space-y-3 border-t border-border/40 pt-3 lg:col-span-2">
+          <NewsWeek w={r.news_week} />
+          <NewsList news={r.news} />
+        </div>
+      )}
     </div>
   );
 }
@@ -627,38 +632,90 @@ function NewsTally({ s }: { s: TrackRow["news_summary"] }) {
 
 const MATERIALITY = ["HIGH", "MEDIUM", "LOW"];
 
-function NewsList({ news }: { news: TrackRow["news"] }) {
-  if (!news || news.length === 0) return null;
-  const shown = [...news].sort(
-    (a, b) =>
-      Number(b.about_company) - Number(a.about_company) ||
-      MATERIALITY.indexOf(a.materiality) - MATERIALITY.indexOf(b.materiality)
+/** The agent's synthesis of the name's week: what changed, what is noise, what to watch. */
+function NewsWeek({ w }: { w: TrackRow["news_week"] }) {
+  if (!w) return null;
+  return (
+    <div className="rounded-md border border-border/60 bg-panel-2/40 p-3 text-sm">
+      <div className="flex flex-wrap items-baseline gap-2">
+        <span className="text-xs uppercase tracking-wide text-muted">The week in news</span>
+        <span className={cn("text-xs font-medium", DIR_STYLE[w.net])}>{w.net.toLowerCase()}</span>
+        <span className="text-xs text-muted">
+          {w.day} · from {w.items} item(s) · context only, not advice
+        </span>
+      </div>
+      <div className="mt-1 font-medium">{w.headline}</div>
+      <p className="mt-1 text-muted">{w.text}</p>
+      {w.thesis && (
+        <p className="mt-1">
+          <span className="text-muted">Thesis / position: </span>
+          {w.thesis}
+        </p>
+      )}
+      {w.watch.length > 0 && (
+        <ul className="mt-1 list-disc pl-5 text-xs text-muted">
+          {w.watch.map((x) => (
+            <li key={x}>{x}</li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
+}
+
+const READ_LABEL: Record<string, string> = {
+  article: "read the article",
+  feed: "read the feed text",
+  headline: "headline only",
+};
+
+const MARKET_LABEL: Record<string, string> = {
+  MOVED_WITH: "market moved with it",
+  MOVED_AGAINST: "market moved against it",
+  MOVED: "market moved",
+  QUIET: "market quiet",
+  UNKNOWN: "not traded yet",
+};
+
+function NewsList({ news }: { news: TrackRow["news"] }) {
+  const [showOff, setShowOff] = useState(false);
+  if (!news || news.length === 0) return null;
+  const about = [...news]
+    .filter((n) => n.about_company)
+    .sort(
+      (a, b) =>
+        MATERIALITY.indexOf(a.materiality) - MATERIALITY.indexOf(b.materiality) ||
+        b.published_at.localeCompare(a.published_at)
+    );
+  const off = news.filter((n) => !n.about_company);
   return (
     <div>
       <div className="text-xs uppercase tracking-wide text-muted">
-        News, last 7 days · news agent (context only, being measured)
+        Each item · news agent (context only, being measured)
       </div>
-      <ul className="mt-1 space-y-1.5">
-        {shown.map((n) => (
+      <ul className="mt-1 space-y-2.5">
+        {about.map((n) => (
           <li key={`${n.published_at}-${n.title}`} className="text-xs">
             <div className="flex flex-wrap items-baseline gap-1.5">
               <span className={cn("font-medium", DIR_STYLE[n.direction])}>
-                {n.about_company ? n.direction.toLowerCase() : "off-topic"}
+                {n.direction.toLowerCase()} {n.materiality.toLowerCase()}
               </span>
-              {n.about_company && (
-                <span className="text-muted">
-                  {n.materiality.toLowerCase()} · {n.event_type.toLowerCase()} ·{" "}
-                  {n.novelty.toLowerCase().replace("_", " ")} · {n.basis.toLowerCase()}
+              <span className="text-muted">
+                {n.event_type.toLowerCase()} · {n.novelty.toLowerCase().replace("_", " ")} ·{" "}
+                {n.basis.toLowerCase()} ·{" "}
+                <span title={n.market ?? ""}>{MARKET_LABEL[n.market_read] ?? n.market_read}</span>{" "}
+                ·{" "}
+                <span className={n.read_from === "headline" ? "text-warn" : ""}>
+                  {READ_LABEL[n.read_from] ?? n.read_from}
                 </span>
-              )}
+              </span>
               {n.thesis.map((t) => (
                 <span key={t} className={t.startsWith("against") ? "text-neg" : "text-pos"}>
                   {t} thesis
                 </span>
               ))}
             </div>
-            <div className={n.about_company ? "" : "text-muted"}>
+            <div>
               {n.url ? (
                 <a href={n.url} target="_blank" rel="noreferrer" className="hover:underline">
                   {n.title}
@@ -670,10 +727,43 @@ function NewsList({ news }: { news: TrackRow["news"] }) {
                 — {n.provider}, {fmtEt(n.published_at)}
               </span>
             </div>
-            {n.about_company && <div className="text-muted">{n.why}</div>}
+            <dl className="mt-0.5 grid grid-cols-[4.5rem_1fr] gap-x-2 text-muted">
+              {(
+                [
+                  ["what", n.what],
+                  ["size", n.magnitude],
+                  ["why", n.why],
+                  ["watch", n.watch],
+                ] as const
+              )
+                .filter(([, v]) => v)
+                .map(([k, v]) => (
+                  <Fragment key={k}>
+                    <dt className="uppercase tracking-wide">{k}</dt>
+                    <dd className={k === "why" ? "text-text" : ""}>{v}</dd>
+                  </Fragment>
+                ))}
+            </dl>
           </li>
         ))}
       </ul>
+      {off.length > 0 && (
+        <button
+          onClick={() => setShowOff(!showOff)}
+          className="mt-2 text-xs text-muted hover:text-text"
+        >
+          {showOff ? "hide" : "show"} {off.length} off-topic item(s)
+        </button>
+      )}
+      {showOff && (
+        <ul className="mt-1 space-y-0.5 text-xs text-muted">
+          {off.map((n) => (
+            <li key={`${n.published_at}-${n.title}`}>
+              off-topic — {n.title} ({n.provider})
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
