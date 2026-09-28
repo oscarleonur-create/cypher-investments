@@ -219,15 +219,13 @@ def picks(
     output: Annotated[str, typer.Option("--output", "-o")] = "table",
 ) -> None:
     """Names where two or more families agree, ordered by evidence, each with its reasons."""
-    from advisor.breadth.bars import last_closed_session
-    from advisor.breadth.picks import build_picks, latest_picks
+    from advisor.breadth.picks import latest_picks, refresh_picks
     from advisor.breadth.store import BreadthStore, breadth_path
     from advisor.daemon.market_calendar import now_et
 
     with BreadthStore(breadth_path(_db_path())) as store:
         if build:
-            now = now_et()
-            built = build_picks(store, last_closed_session(now), now, _db_path())
+            built = refresh_picks(store, now_et(), _db_path())
             if not built.get("ok"):
                 output_error(built.get("error", "could not build picks"))
                 return
@@ -238,7 +236,8 @@ def picks(
     if not data["picks"]:
         console.print("No picks on file: run `advisor breadth picks --build`.")
         return
-    console.print(f"Picks for {data['day']} (rules {data['rules']}), ordered by evidence:")
+    tag = " — PROVISIONAL, live prices" if data.get("provisional") else ""
+    console.print(f"Picks for {data['day']}{tag} (rules {data['rules']}), ordered by evidence:")
     for p in data["picks"]:
         flag = " [held]" if p.get("held") else ""
         console.print(

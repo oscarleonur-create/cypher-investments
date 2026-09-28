@@ -62,6 +62,7 @@ class TestRegistry:
             "learning_sweep",
             "news_judge",
             "news_judge_close",
+            "picks_intraday",
             "breadth_sync",
             "rule_expiry",
             "heartbeat",

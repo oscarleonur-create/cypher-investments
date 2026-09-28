@@ -64,6 +64,13 @@ class TestRationale:
         for banned in ("buy now", "target", "fair value", "worth", "undervalued", "should"):
             assert banned not in words
 
+    def test_a_high_left_since_is_said_as_such(self):
+        p = self.full()
+        p["p"]["from_52w_high"] = -0.081
+        text = " ".join(x["text"] for x in PK.rationale(p, 10)["reasons"])
+        assert "Came within 2% of its 52-week high in the last month; now -8.1%" in text
+        assert "Within 2% of its 52-week high (now -8.1%)" not in text
+
     def test_only_what_is_active(self):
         p = self.full()
         p["i"] = None

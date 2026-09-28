@@ -630,6 +630,28 @@ def _with_scanner_store(db_path, fn, now):
         store.close()
 
 
+async def run_picks_intraday(ctx: JobContext) -> JobResult:
+    """During the session: today's picks on live prices, marked provisional."""
+    import asyncio
+
+    def _run() -> dict:
+        from advisor.breadth.picks import refresh_picks
+        from advisor.breadth.store import BreadthStore, breadth_path
+
+        if not breadth_path(ctx.store.db_path).exists():
+            return {"ok": False, "error": "no breadth store yet"}
+        with BreadthStore(breadth_path(ctx.store.db_path)) as store:
+            return refresh_picks(store, ctx.now, ctx.store.db_path)
+
+    out = await asyncio.to_thread(_run)
+    if not out.get("ok"):
+        return JobResult(job="picks_intraday", ok=False, detail=out.get("error", "failed"))
+    detail = f"{len(out['picks'])} picks for {out['day']} of {out['candidates']} names agreeing" + (
+        " (provisional)" if out.get("provisional") else ""
+    )
+    return JobResult(job="picks_intraday", ok=True, detail=detail)
+
+
 async def run_breadth_sync(ctx: JobContext) -> JobResult:
     """Nights: bring the market-wide stores up to the day's close and cut E0.
 
