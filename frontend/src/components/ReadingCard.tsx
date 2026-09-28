@@ -29,7 +29,10 @@ function ScoreRow({ row }: { row: ScorecardRow }) {
   const mark = row.status ? MARK[row.status] : null;
   return (
     <div
-      className="grid grid-cols-[16px_minmax(0,11rem)_minmax(0,7rem)_1fr] items-baseline gap-2 py-0.5"
+      // Phone: detail drops to its own line under label + value; from sm up,
+      // the four-column row. A fixed 18rem of label+value leaves no room at
+      // phone width and the detail wraps one word per line.
+      className="grid grid-cols-[16px_minmax(0,1fr)_auto] items-baseline gap-x-2 py-0.5 sm:grid-cols-[16px_minmax(0,11rem)_minmax(0,7rem)_1fr]"
       title={row.claim ? `Your claim: ${row.claim}` : row.source}
     >
       <span className={cn("text-xs", mark?.tone)} aria-label={mark?.title}>
@@ -37,7 +40,7 @@ function ScoreRow({ row }: { row: ScorecardRow }) {
       </span>
       <span className="truncate text-xs text-muted">{row.label}</span>
       <span className="text-sm font-medium tnum">{row.value}</span>
-      <span className="min-w-0 text-xs text-muted">
+      <span className="col-span-2 col-start-2 min-w-0 break-words text-xs text-muted sm:col-span-1 sm:col-start-auto">
         {row.detail}
         {row.source && <span className="opacity-60"> · {row.source}</span>}
       </span>
@@ -160,7 +163,7 @@ export function ReadingCard({ symbol }: { symbol: string }) {
         </div>
       )}
       {data.status === "UNAVAILABLE" && (
-        <div className="text-sm text-muted">
+        <div className="break-words text-sm text-muted">
           No reading: {data.problems[0] ?? "the model is unavailable"}.
         </div>
       )}
@@ -178,7 +181,7 @@ export function ReadingCard({ symbol }: { symbol: string }) {
           {data.facts.map((f) => (
             <li key={f.id} className="flex gap-2">
               <span className="w-7 shrink-0 tnum">{f.id}</span>
-              <span className="min-w-0">
+              <span className="min-w-0 break-words">
                 {f.date && <span className="tnum">{f.date} · </span>}
                 {f.url ? (
                   <a href={f.url} target="_blank" rel="noreferrer" className="hover:text-text">

@@ -214,7 +214,7 @@ function SystemCard({ q }: { q: ReturnType<typeof useQuery<SystemStatus>> }) {
       )}
 
       {open && (
-        <div className="mt-4 grid gap-4 lg:grid-cols-3">
+        <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
           <div>
             <div className="mb-1 text-xs uppercase tracking-wide text-muted">Code</div>
             <CodeLine label="main (last fetch)" rev={s.code.main} />
@@ -484,7 +484,7 @@ function Timeline({ points }: { points: TrackPoint[] }) {
 function RowDetail({ r }: { r: TrackRow }) {
   const l = r.latest;
   return (
-    <div className="grid gap-4 lg:grid-cols-2">
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
       <div className="space-y-2 text-sm">
         {l ? (
           <>
