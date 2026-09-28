@@ -14,9 +14,13 @@ from dataclasses import fields, replace
 
 import pytest
 from advisor.breadth import bars as breadth_bars
+from advisor.breadth import companies as breadth_companies
 from advisor.breadth import facts as breadth_facts
+from advisor.breadth import filings as breadth_filings
 from advisor.breadth import listings as breadth_listings
+from advisor.breadth import measure as breadth_measure
 from advisor.breadth import ruleset as breadth_ruleset
+from advisor.breadth import signals as breadth_signals
 from advisor.breadth import universe as breadth_universe
 from advisor.entry import distress, exits, freshness, proposal, sheet, zone
 from advisor.entry import ruleset as entry_ruleset
@@ -182,9 +186,38 @@ def test_breadth_declarations_exist():
     for label, names in breadth_ruleset.DECLARED.items():
         for name in names:
             assert hasattr(BREADTH_MODULES[label], name), f"{label}.{name}"
+    modules = {**BREADTH_MODULES, **SIGNAL_MODULES}
+    for label, names in breadth_ruleset.SIGNAL_DECLARED.items():
+        for name in names:
+            assert hasattr(modules[label], name), f"{label}.{name}"
     for key in breadth_ruleset.NOT_RULES:
         label, name = key.split(".", 1)
-        assert hasattr(BREADTH_MODULES[label], name), key
+        assert hasattr(modules[label], name), key
+
+
+SIGNAL_MODULES = {
+    "signals": breadth_signals,
+    "measure": breadth_measure,
+    "companies": breadth_companies,
+    "filings": breadth_filings,
+}
+
+
+@pytest.mark.parametrize("label,module", SIGNAL_MODULES.items())
+def test_breadth_signal_constants_are_declared_or_not_rules(label, module):
+    declared = set(breadth_ruleset.SIGNAL_DECLARED.get(label, {}))
+    known = {f"{label}.{n}" for n in declared} | set(breadth_ruleset.NOT_RULES)
+    missing = {f"{label}.{c}" for c in constants(module)} - known
+    assert not missing, f"declare in breadth/ruleset.py or list in NOT_RULES: {sorted(missing)}"
+
+
+def test_every_signal_threshold_is_in_the_stamp_and_moves_the_version():
+    s = breadth_ruleset.signal_rules()
+    assert {f"thresholds.{f.name}" for f in fields(breadth_signals.Thresholds)} <= set(s.params)
+    assert "universe.MIN_PRICE" in s.params  # the floor decides who can signal
+    other = breadth_ruleset.signal_rules(replace(breadth_signals.DEFAULT, accel_min=0.1))
+    assert other.version != s.version
+    assert s.version != breadth_ruleset.universe_rules().version
 
 
 def test_the_universe_floor_is_decided_and_versioned(monkeypatch):

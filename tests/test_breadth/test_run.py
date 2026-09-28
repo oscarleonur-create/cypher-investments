@@ -49,6 +49,8 @@ def run(tmp_path, **kw):
     kw.setdefault("fetch_bars", fake_bars)
     kw.setdefault("fetch_frame", lambda c, u, f: (200, []))
     kw.setdefault("fetch_concept", lambda cik, c: [])
+    kw.setdefault("fetch_company", lambda cik: {"sic": 3674, "sic_desc": "Semis", "name": "x"})
+    kw.setdefault("fetch_index", lambda year, q: "")
     return db, run_sync(db, NOW, sleep=lambda s: None, **kw)
 
 
@@ -62,8 +64,11 @@ def test_full_run(tmp_path):
     conn = sqlite3.connect(db)
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert not any(t.startswith("breadth_") for t in tables)
-    ruleset = conn.execute("SELECT ruleset FROM rule_versions").fetchall()
-    assert ruleset == [("breadth.universe",)]
+    ruleset = {r[0] for r in conn.execute("SELECT ruleset FROM rule_versions")}
+    assert ruleset == {"breadth.universe", "breadth.signals"}
+    # Measurement ran and recorded the day; it reached nothing the user reads.
+    assert s["signals"]["live"]["ok"], s["signals"]
+    assert s["signals"]["companies"]["read"] == 1  # only the eligible name's industry
     conn.close()
     with BreadthStore(breadth_path(db)) as store:
         assert store.last_run()["ok"] == 1

@@ -47,17 +47,47 @@ def _register(db_path, stamp) -> None:
         conn.close()
 
 
+def _sec_index():
+    from advisor.breadth.filings import sec_index
+
+    return sec_index
+
+
+def _signals(db_path, store, rows, day, now, fetch_company) -> dict:
+    """Industries for the eligible, then the day's records and every live outcome due.
+
+    Measurement only (B1): nothing here is shown to the user or reaches the
+    digest. A failure is reported in the summary and never fails the sync.
+    """
+    from advisor.breadth.companies import sec_submission, sync_companies
+    from advisor.breadth.measure import record_live
+    from advisor.breadth.ruleset import signal_rules
+
+    try:
+        eligible = sorted({r["cik"] for r in rows if r["eligible"] and r["cik"]})
+        companies = sync_companies(store, eligible, now, fetch=fetch_company or sec_submission)
+        _register(db_path, signal_rules())
+        live = record_live(store, day, now)
+        return {"companies": companies, "live": live}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("breadth signals failed")
+        return {"error": str(exc)}
+
+
 def run_sync(
     db_path,
     now: datetime,
     *,
     bars: bool = True,
     facts: bool = True,
+    signals: bool = True,
     limit: int | None = None,
     fetch_dir: Callable[[], Directory] = fetch_directory,
     fetch_bars: bars_mod.Fetch = bars_mod.yahoo_fetch,
     fetch_frame: facts_mod.FetchFrame = facts_mod.sec_frame,
     fetch_concept: facts_mod.FetchConcept = facts_mod.sec_concept,
+    fetch_company=None,
+    fetch_index=None,
     sleep: Callable[[float], None] = _time.sleep,
 ) -> dict:
     """Sync everything and return a summary. Never raises for a source failure."""
@@ -94,12 +124,18 @@ def run_sync(
                 fr = facts_mod.sync_frames(store, now, fetch=fetch_frame)
                 eligible = sorted({r["cik"] for r in rows if r["eligible"] and r["cik"]})
                 gaps = facts_mod.fill_gaps(store, eligible, now, fetch=fetch_concept)
+                from advisor.breadth.filings import sync_filings
+
+                summary["filings"] = sync_filings(store, now, fetch=fetch_index or _sec_index())
                 summary["facts"] = {
                     "frames": fr.as_dict(),
                     "gaps": gaps.as_dict(),
                     "coverage_of_eligible": facts_mod.coverage(store, eligible, now.date()),
                 }
                 logger.info("breadth facts: %s; %s", fr.summary(), gaps.summary())
+
+            if signals:
+                summary["signals"] = _signals(db_path, store, rows, day, now, fetch_company)
 
             summary["ok"] = not rate_limited
             return summary
