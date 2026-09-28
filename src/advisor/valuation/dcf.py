@@ -49,6 +49,13 @@ EARLY_YEARS = 3  # years 1–3 grow at ``growth_early``; the rest at ``growth_la
 DISCOUNT_RATE = 0.10
 TERMINAL_GROWTH = 0.03
 
+# A range needs at least this many positive readings of the steady-state
+# margin. With one, bear, base and bull share the assumption that moves the
+# answer most, and the range is falsely narrow: COHR's lone 3.3% (a three-year
+# median, against -14.4% today) valued it at $0.00 in every case on
+# 2026-09-27, INTC's lone 5.0% at $5–$7 against $123.
+MIN_MARGIN_READINGS = 2
+
 # How far the bear and bull cases move year-one growth from today's: a quarter
 # of the rate, and never less than three points.
 GROWTH_SPREAD = 0.25
@@ -426,6 +433,15 @@ def value_range(
     if anchors is None:
         return ValueRange(
             refused="no positive margin in the filings to anchor a steady state",
+        )
+    positive = [m for m in margins if m.value > 0]
+    if len(positive) < MIN_MARGIN_READINGS:
+        only = positive[0]
+        return ValueRange(
+            refused=(
+                f"one positive margin on file ({only.value:.1%}, {only.label}); a range "
+                f"needs at least {MIN_MARGIN_READINGS} readings of the steady state"
+            ),
         )
 
     notes = []

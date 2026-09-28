@@ -175,7 +175,9 @@ this symbol*.
   shows every margin the company offers, each labeled; a margin at or below
   zero is named and left out. The snapshot's base case stays generic (25%
   FCF), so thesis rules keep testing the same kind of quantity — though since
-  2026-09-27 it is discounted, and SPCX's reads 42.5% where it read 25.8%.
+  2026-09-27 it is discounted: at $148.75 SPCX's reads 44.0%, where the
+  undiscounted arithmetic read 25.5% at the same price. Its "must not exceed
+  25%" rule was written against the old number.
   Nothing margin-sensitive may size a position: the model's CONSTRUCTIVE
   stance, which leans on these rows, adds no risk.
 - **Trailing figures are rebuilt from the filings.** A 10-Q's cash flow is
@@ -206,9 +208,11 @@ this symbol*.
   per share from the company's *own* filed margins — the lowest, median and
   highest of FCF TTM, three-year median FCF and operating margin after tax —
   with today's growth fading to terminal, ±25% (at least 3 points). Every
-  assumption travels with the number. When the filings show no positive
-  margin, or no year-over-year comparison, the range is refused with the
-  reason — never built on a default. What the price *requires* stays the
+  assumption travels with the number. When the filings show fewer than two
+  positive margins, or no year-over-year comparison, the range is refused
+  with the reason — never built on a default. One reading cannot bracket the
+  assumption that moves the answer most: COHR's lone 3.3% valued it at $0.00
+  in all three cases, INTC's lone 5.0% at $5–$7 against $123. What the price *requires* stays the
   headline: it is arithmetic and falsifiable; the range is an opinion.
 - **XBRL is read undimensioned.** The same concept is tagged once per segment,
   instrument and class — SPCX's quarterly revenue appears sixteen times — so

@@ -247,3 +247,14 @@ class TestValueRange:
         vr = _range(net_cash=-1e9)
         assert all(s.value_per_share == 0.0 for s in vr.scenarios)
         assert all(math.isclose(s.upside, -1.0) for s in vr.scenarios)
+
+    def test_one_positive_margin_is_not_a_range(self):
+        """COHR on 2026-09-27: a lone 3.3% median against -14.4% today valued
+        it at $0.00 in all three cases. One reading cannot bracket anything."""
+        vr = _range(margins=[Margin(-0.144, "FCF TTM"), Margin(0.033, "FY median")])
+        assert vr.scenarios == ()
+        assert "one positive margin on file (3.3%, FY median)" in vr.refused
+
+    def test_exactly_two_positive_margins_make_a_range(self):
+        vr = _range(margins=[Margin(0.052, "median"), Margin(0.095, "nopat")])
+        assert [s.path.target_margin for s in vr.scenarios] == pytest.approx([0.052, 0.0735, 0.095])
