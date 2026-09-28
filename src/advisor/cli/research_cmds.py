@@ -809,8 +809,17 @@ def _render_dcf(dcf) -> None:  # type: ignore[no-untyped-def]
     console.print(
         f"\n[bold]DCF — {dcf.symbol}[/bold]  "
         f"Current: [cyan]{_fmt(dcf.current_price)}[/cyan]  "
-        f"WACC: {dcf.wacc:.1%}  Rf: {dcf.risk_free_rate:.1%}  β: {dcf.beta:.2f}"
+        f"Discount: {dcf.wacc:.1%}"
     )
+    if dcf.source:
+        console.print(f"[dim]{dcf.source}[/dim]")
+    if dcf.note:
+        console.print(f"[yellow]{dcf.note}[/yellow]")
+    if dcf.implied_margin is not None:
+        console.print(
+            f"[yellow]The price needs a steady-state FCF margin of "
+            f"{dcf.implied_margin:.1%} at today's growth, faded[/yellow]"
+        )
 
     table = Table(title="Scenario Analysis")
     table.add_column("Scenario", style="cyan")

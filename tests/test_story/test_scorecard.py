@@ -23,7 +23,7 @@ from advisor.valuation.consensus import (
     load_consensus,
     remaining_cagr,
 )
-from advisor.valuation.implied import implied_expectations
+from advisor.valuation.implied import undiscounted_expectations
 from advisor.valuation.models import Fundamentals, ValuationSnapshot
 
 
@@ -36,7 +36,7 @@ def store(tmp_path: Path):
 
 def valuation(*, yoy: float | None = 0.9194, price: float = 147.60) -> ValuationSnapshot:
     # EV = required revenue × margin × multiple: $301.6bn × 25% × 25x.
-    base = implied_expectations(1.885e12, 31.256e9, terminal_multiple=25, fcf_margin=0.25)
+    base = undiscounted_expectations(1.885e12, 31.256e9, terminal_multiple=25, fcf_margin=0.25)
     return ValuationSnapshot(
         symbol="SPCX", asof=date(2026, 9, 24), price=price, shares_outstanding=1.3e10,
         market_cap=1.95e12, net_cash=None, enterprise_value=1.885e12,

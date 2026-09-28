@@ -1,21 +1,28 @@
-"""DCF valuation engine.
+"""The research workstation's DCF, on the one engine the daemon uses.
 
-Produces base / bull / bear scenarios from explicit assumption structs.
-WACC is derived from CAPM (beta × ERP + Rf) + after-tax cost of debt (weighted).
+Every input comes from ``valuation.figures`` — the SEC's filings for revenue,
+cash flow, margins, balance sheet and shares, and the broker's feed for the
+price — and every projection from ``valuation.dcf``. This module only shapes
+the answer into the ``DcfResult`` the workstation, the Bayesian engine and the
+research agent already read.
 
-Inputs come from yfinance (price, beta, shares, net debt) and the
-StatementBundle (latest FCF margin, capex intensity).
-Risk-free rate is approximated from the 10-yr Treasury via yfinance (^TNX).
+It used to take price, shares, net debt and revenue from ``yfinance.info``.
+On 2026-09-27 Yahoo rate-limited every request; shares defaulted to 1.0, the
+price to 0, and JBL's DCF was published at $0.00 a share. It also valued its
+exit multiple on an EBITDA of 25% of revenue for every company. Both are gone:
+a missing input now produces a ``DcfResult`` with no scenarios and a ``note``
+saying which input, and the terminal value is a Gordon perpetuity at the
+stated discount rate.
 
 Public API used by the research workstation's what-if sliders:
-- `compute_dcf_scenario(assumptions, base_revenue, seed_fcf, net_debt, shares, current_price)`
-- `dcf_inputs_from_report(report)` returns the five values the function above needs.
+- ``compute_dcf_scenario(assumptions, base_revenue, seed_fcf, net_debt, shares, current_price)``
+- ``dcf_inputs_from_report(report)`` returns the five values the function above needs.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 from advisor.research.models import (
     DcfAssumptions,
@@ -24,115 +31,129 @@ from advisor.research.models import (
     ResearchReport,
     StatementBundle,
 )
+from advisor.valuation import dcf as engine
 
 logger = logging.getLogger(__name__)
 
-_EQUITY_RISK_PREMIUM = 0.055  # Damodaran long-run ERP
-_DEFAULT_RISK_FREE = 0.043  # fallback if TNX fetch fails
-_DEFAULT_TAX_RATE = 0.21
-_PROJECTION_YEARS = 10
+_PROJECTION_YEARS = engine.YEARS
 
 
 def build_dcf(
     symbol: str,
-    statements: StatementBundle | None = None,
+    statements: StatementBundle | None = None,  # noqa: ARG001 — kept for callers
     explicit_wacc: float | None = None,
+    *,
+    price: float | None = None,
+    figures=None,
 ) -> DcfResult:
-    """Compute base / bull / bear DCF for `symbol`."""
-    info = _yf_info(symbol)
+    """Bear / base / bull DCF for ``symbol`` from the company's own filings.
 
-    current_price = _f(info, "currentPrice") or _f(info, "regularMarketPrice") or 0.0
-    shares = _f(info, "sharesOutstanding") or _f(info, "floatShares") or 1.0
-    market_cap = current_price * shares
-    total_debt = _f(info, "totalDebt") or 0.0
-    cash = _f(info, "totalCash") or 0.0
-    net_debt = total_debt - cash
-    beta = _f(info, "beta") or 1.0
+    ``figures`` may be passed to value without the network (tests, or a caller
+    that already loaded them). ``explicit_wacc`` replaces the stated discount
+    rate. Never raises for missing data: the result says what is missing.
+    """
+    from advisor.valuation.figures import load_figures
 
-    rf = _risk_free_rate()
-    erp = _EQUITY_RISK_PREMIUM
-    cost_of_equity = rf + beta * erp
+    if figures is None:
+        figures = load_figures(symbol, price)
+    elif price is not None:
+        figures = figures.model_copy(update={"price": price})
 
-    debt_cost_pretax = _f(info, "averageInterestRate") or 0.04
-    tax_rate = _f(info, "effectiveTaxRate") or _DEFAULT_TAX_RATE
-    cost_of_debt = debt_cost_pretax * (1 - tax_rate)
-
-    ev = market_cap + net_debt
-    if ev > 0:
-        w_equity = market_cap / ev
-        w_debt = net_debt / ev
-    else:
-        w_equity, w_debt = 1.0, 0.0
-
-    wacc = explicit_wacc or (w_equity * cost_of_equity + max(w_debt, 0) * cost_of_debt)
-    wacc = max(wacc, 0.06)  # floor at 6%
-
-    # Seed FCF from statements or yfinance
-    seed_fcf = _seed_fcf(statements, info)
-    base_revenue = _f(info, "totalRevenue") or 0.0
-    exit_multiple = _f(info, "enterpriseToEbitda")
-
-    # Sanity-bound the drivers. Hypergrowth / cash-burning names report raw
-    # values (e.g. 684% revenue growth, -400% FCF margin) that, extrapolated
-    # over 10y, blow the model up to 1e18+. Clamp to defensible ranges and
-    # assume convergence to a normalized *positive* terminal FCF margin.
-    seed_growth = _clamp(_f(info, "revenueGrowth") or 0.05, -0.30, 0.60)
-    seed_margin = _clamp(_seed_fcf_margin(statements, info), 0.02, 0.40)
-    capex = _clamp(_seed_capex_intensity(statements, info), 0.0, 0.40)
-    exit_multiple = _clamp(exit_multiple, 2.0, 40.0) if exit_multiple else None
-
-    base_assump = DcfAssumptions(
-        scenario="base",
-        revenue_growth_yr1_3=seed_growth,
-        revenue_growth_yr4_10=_clamp(seed_growth * 0.5, 0.02, 0.25),
-        target_fcf_margin=seed_margin,
-        capex_intensity=capex,
-        terminal_growth_rate=0.025,
-        terminal_exit_multiple=exit_multiple,
-        wacc=wacc,
-    )
-    bull_assump = DcfAssumptions(
-        scenario="bull",
-        revenue_growth_yr1_3=_clamp(seed_growth * 1.3, 0.0, 0.65),
-        revenue_growth_yr4_10=_clamp(seed_growth * 0.7, 0.03, 0.30),
-        target_fcf_margin=_clamp(seed_margin * 1.15, 0.02, 0.45),
-        capex_intensity=capex,
-        terminal_growth_rate=0.030,
-        terminal_exit_multiple=exit_multiple,
-        wacc=max(wacc - 0.01, 0.06),
-    )
-    bear_assump = DcfAssumptions(
-        scenario="bear",
-        revenue_growth_yr1_3=_clamp(seed_growth * 0.5, 0.0, 0.40),
-        revenue_growth_yr4_10=_clamp(seed_growth * 0.2, 0.01, 0.20),
-        target_fcf_margin=_clamp(seed_margin * 0.80, 0.0, 0.40),
-        capex_intensity=capex,
-        terminal_growth_rate=0.020,
-        terminal_exit_multiple=exit_multiple,
-        wacc=wacc + 0.01,
-    )
-
-    return DcfResult(
+    rate = explicit_wacc or engine.DISCOUNT_RATE
+    shares = figures.shares or 0.0
+    net_cash = figures.net_cash
+    result = DcfResult(
         symbol=symbol.upper(),
-        current_price=current_price,
+        current_price=figures.price or 0.0,
         shares_outstanding=shares,
-        net_debt=net_debt,
-        wacc=wacc,
-        risk_free_rate=rf,
-        equity_risk_premium=erp,
-        beta=beta,
-        base=compute_dcf_scenario(
-            base_assump, base_revenue, seed_fcf, net_debt, shares, current_price
+        net_debt=-(net_cash or 0.0),
+        wacc=rate,
+        base_revenue=figures.revenue_base,
+        seed_fcf=(
+            figures.start_margin * figures.revenue_base
+            if figures.start_margin is not None and figures.revenue_base
+            else None
         ),
-        bull=compute_dcf_scenario(
-            bull_assump, base_revenue, seed_fcf, net_debt, shares, current_price
-        ),
-        bear=compute_dcf_scenario(
-            bear_assump, base_revenue, seed_fcf, net_debt, shares, current_price
-        ),
-        base_revenue=base_revenue,
-        seed_fcf=seed_fcf,
+        source=_source(figures),
     )
+
+    reading = engine.value_range(
+        price=figures.price,
+        shares=figures.shares,
+        net_cash=net_cash,
+        base_revenue=figures.revenue_base,
+        start_margin=figures.start_margin,
+        current_growth=figures.revenue_growth,
+        margins=figures.margin_readings(),
+        discount_rate=rate,
+    )
+    if reading.refused:
+        result.note = f"No value range: {reading.refused}."
+        logger.info("dcf: %s — %s", symbol.upper(), reading.refused)
+    else:
+        result.note = "; ".join(reading.notes)
+        # A value range was computed, so price, shares and revenue exist.
+        if result.seed_fcf is None:
+            # No trailing cash flow: the steady state applies from year one,
+            # and the sliders must replay that, so the seed carries it.
+            result.seed_fcf = reading.get("base").path.target_margin * figures.revenue_base
+        # Informational only: the projection runs on FCF margins, which are
+        # already net of capex.
+        capex = figures.capex_intensity or 0.0
+        for s in reading.scenarios:
+            assumptions = DcfAssumptions(
+                scenario=s.name,
+                revenue_growth_yr1_3=s.path.growth_early,
+                revenue_growth_yr4_10=s.path.growth_late,
+                target_fcf_margin=s.path.target_margin,
+                capex_intensity=capex,
+                terminal_growth_rate=s.path.terminal_growth,
+                terminal_exit_multiple=None,
+                wacc=s.path.discount_rate,
+                revenue_growth_path=list(s.path.growth),
+                growth_held_years=s.held_years,
+            )
+            setattr(
+                result,
+                s.name,
+                compute_dcf_scenario(
+                    assumptions,
+                    result.base_revenue,
+                    result.seed_fcf,
+                    result.net_debt,
+                    shares,
+                    figures.price,
+                ),
+            )
+
+    ev = figures.enterprise_value
+    if ev is not None and ev > 0 and figures.revenue_base and figures.revenue_growth is not None:
+        result.implied_margin = engine.implied_margin(
+            ev,
+            figures.revenue_base,
+            figures.start_margin,
+            figures.revenue_growth,
+            discount_rate=rate,
+        ).value
+    return result
+
+
+def _source(figures) -> str:
+    parts = []
+    if figures.price_source:
+        parts.append(f"price: {figures.price_source}")
+    if figures.revenue_base_label:
+        parts.append(f"revenue: {figures.revenue_base_label}")
+    if figures.revenue_growth_label:
+        parts.append(f"growth: {figures.revenue_growth_label}")
+    if figures.source_accession:
+        parts.append(
+            f"balance sheet and shares: {figures.source_accession} ({figures.balance_asof})"
+        )
+    if figures.margins:
+        parts.append("margins: " + "; ".join(f"{m.value:+.1%} {m.label}" for m in figures.margins))
+    parts.extend(figures.notes)
+    return " · ".join(parts)
 
 
 # ── Scenario engine (public — used by the dashboard's what-if sliders) ──────
@@ -142,8 +163,7 @@ class DcfInputs(NamedTuple):
     """The five values `compute_dcf_scenario` needs.
 
     Returned by `dcf_inputs_from_report` so callers don't have to know which
-    fields of a cached ResearchReport carry these (some live on `dcf`, some on
-    `statements`).
+    fields of a cached ResearchReport carry these.
     """
 
     base_revenue: float
@@ -154,38 +174,26 @@ class DcfInputs(NamedTuple):
 
 
 def dcf_inputs_from_report(report: ResearchReport) -> DcfInputs | None:
-    """Pull the inputs a cached report needs to recompute a DCF scenario.
+    """The inputs a cached report needs to recompute a DCF scenario, or None.
 
-    Prefers the inputs persisted on `DcfResult` (`base_revenue`, `seed_fcf`)
-    so the what-if sliders replay the base scenario exactly. Falls back to
-    deriving them from `statements` for old reports built before those
-    fields existed.
+    None when the report has no usable DCF: no price, no shares or no base
+    revenue. A report cached before 2026-09-27 may carry ``shares=1.0`` and
+    ``current_price=0`` from the old yfinance defaults; those are refused
+    here rather than replayed.
     """
-    if report.dcf is None:
+    dcf = report.dcf
+    if dcf is None or dcf.base is None:
         return None
-
-    base_revenue = report.dcf.base_revenue
-    seed_fcf = report.dcf.seed_fcf
-
-    if base_revenue is None or seed_fcf is None:
-        # Older cached report — derive from statements
-        if report.statements is None:
-            return None
-        inc = report.statements.latest_income()
-        cf = report.statements.latest_cashflow()
-        if inc is None or inc.revenue is None:
-            return None
-        base_revenue = float(inc.revenue)
-        seed_fcf = 0.0
-        if cf is not None:
-            seed_fcf = cf.free_cash_flow or ((cf.operating_cash_flow or 0.0) - abs(cf.capex or 0.0))
-
+    if not dcf.base_revenue or dcf.base_revenue <= 0 or dcf.seed_fcf is None:
+        return None
+    if dcf.current_price <= 0 or dcf.shares_outstanding <= 1.0:
+        return None
     return DcfInputs(
-        base_revenue=float(base_revenue),
-        seed_fcf=float(seed_fcf),
-        net_debt=float(report.dcf.net_debt),
-        shares=float(report.dcf.shares_outstanding),
-        current_price=float(report.dcf.current_price),
+        base_revenue=float(dcf.base_revenue),
+        seed_fcf=float(dcf.seed_fcf),
+        net_debt=float(dcf.net_debt),
+        shares=float(dcf.shares_outstanding),
+        current_price=float(dcf.current_price),
     )
 
 
@@ -197,68 +205,41 @@ def compute_dcf_scenario(
     shares: float,
     current_price: float,
 ) -> DcfScenario:
-    """Project 10 years of FCF under `assump`, discount, and return a DcfScenario.
+    """Project 10 years of FCF under ``assump``, discount, and return a DcfScenario.
 
-    Pure function — no I/O. The dashboard's sliders call this directly to
-    update the implied price live as the user moves a knob.
+    Pure — no I/O. The dashboard's sliders call this directly to update the
+    implied price live as the user moves a knob. The projection is the
+    engine's (``valuation.dcf.project``); ``terminal_exit_multiple`` is not
+    used, because the only EBITDA this module ever had was an assumed 25% of
+    revenue.
     """
-    wacc = assump.wacc
-    g_term = assump.terminal_growth_rate
-
-    projected_fcf: list[float] = []
-    revenue = base_revenue
-
-    # Starting FCF margin, clamped: cash-burning names report extreme negative
-    # margins (e.g. -419%) that, faded over 10y, sink every projected year and
-    # zero out the valuation. Bound it so the DCF stays meaningful.
-    if base_revenue:
-        start_margin = _clamp(seed_fcf / max(base_revenue, 1), -0.30, 0.40)
-    else:
-        start_margin = assump.target_fcf_margin
-    target_margin = assump.target_fcf_margin
-
-    for year in range(1, _PROJECTION_YEARS + 1):
-        g = assump.revenue_growth_yr1_3 if year <= 3 else assump.revenue_growth_yr4_10
-        # Linearly fade margin from (clamped) seed toward target over 10 years
-        margin_progress = year / _PROJECTION_YEARS
-        fcf_margin = (1 - margin_progress) * start_margin + margin_progress * target_margin
-        revenue *= 1 + g
-        projected_fcf.append(revenue * fcf_margin)
-
-    # PV of FCF
-    pv_fcf = sum(cf / (1 + wacc) ** t for t, cf in enumerate(projected_fcf, 1))
-
-    # Terminal value — Gordon growth. Only meaningful with positive terminal
-    # FCF; a negative terminal cash flow makes the perpetuity meaningless (and
-    # previously flipped to a huge positive value), so clamp it to zero.
-    terminal_fcf = projected_fcf[-1] * (1 + g_term)
-    tv_gordon = terminal_fcf / max(wacc - g_term, 0.001) if terminal_fcf > 0 else 0.0
-    pv_gordon = tv_gordon / (1 + wacc) ** _PROJECTION_YEARS
-
-    # Terminal value — exit multiple (if available). Requires positive terminal
-    # FCF + margin so the EBITDA proxy doesn't go negative.
-    pv_exit: float | None = None
-    if (
-        assump.terminal_exit_multiple
-        and projected_fcf
-        and projected_fcf[-1] > 0
-        and assump.target_fcf_margin > 0
-    ):
-        terminal_ebitda_proxy = projected_fcf[-1] / assump.target_fcf_margin * 0.25
-        tv_exit = terminal_ebitda_proxy * assump.terminal_exit_multiple
-        pv_exit = tv_exit / (1 + wacc) ** _PROJECTION_YEARS
-
-    pv_terminal = pv_exit if pv_exit is not None else pv_gordon
-    enterprise_value = pv_fcf + pv_terminal
-    equity_value = max(enterprise_value - net_debt, 0)
-    implied_price = equity_value / max(shares, 1)
-    upside = (implied_price / current_price - 1) if current_price else 0.0
-
+    start_margin = seed_fcf / base_revenue if base_revenue else assump.target_fcf_margin
+    path = engine.Path(
+        growth_early=assump.revenue_growth_yr1_3,
+        growth_late=assump.revenue_growth_yr4_10,
+        target_margin=assump.target_fcf_margin,
+        discount_rate=assump.wacc,
+        terminal_growth=assump.terminal_growth_rate,
+        growth=_path_if_unmoved(assump),
+    )
+    projection = engine.project(base_revenue, start_margin, path)
+    if projection is None:
+        return DcfScenario(
+            assumptions=assump,
+            enterprise_value=0.0,
+            equity_value=0.0,
+            implied_price=0.0,
+            upside_pct=0.0,
+        )
+    enterprise_value = projection.enterprise_value
+    equity_value = max(enterprise_value - net_debt, 0.0)
+    implied_price = engine.per_share(enterprise_value, -net_debt, shares) or 0.0
+    upside = (implied_price / current_price - 1) if current_price and current_price > 0 else 0.0
     return DcfScenario(
         assumptions=assump,
-        projected_fcf=projected_fcf,
-        terminal_value_gordon=pv_gordon,
-        terminal_value_exit=pv_exit,
+        projected_fcf=list(projection.fcf),
+        terminal_value_gordon=projection.pv_terminal,
+        terminal_value_exit=None,
         enterprise_value=enterprise_value,
         equity_value=equity_value,
         implied_price=implied_price,
@@ -266,80 +247,20 @@ def compute_dcf_scenario(
     )
 
 
-# ── Data helpers ─────────────────────────────────────────────────────────────
+def _path_if_unmoved(assump: DcfAssumptions) -> tuple[float, ...]:
+    """The stored yearly path, while its averages are still the two steps.
 
-
-def _yf_info(symbol: str) -> dict[str, Any]:
-    import yfinance as yf
-
-    try:
-        return yf.Ticker(symbol).info or {}
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("yfinance info failed for %s: %s", symbol, exc)
-        return {}
-
-
-def _risk_free_rate() -> float:
-    """Fetch 10-yr Treasury yield (^TNX) as a proxy for Rf."""
-    import yfinance as yf
-
-    try:
-        tnx = yf.Ticker("^TNX").fast_info
-        rate = getattr(tnx, "last_price", None)
-        if rate and 0 < rate < 20:
-            return rate / 100  # ^TNX is in percentage points
-    except Exception:  # noqa: BLE001
-        pass
-    return _DEFAULT_RISK_FREE
-
-
-def _seed_fcf(statements: StatementBundle | None, info: dict) -> float:
-    if statements:
-        cf = statements.latest_cashflow()
-        if cf:
-            fcf = cf.free_cash_flow
-            if fcf is not None:
-                return fcf
-            if cf.operating_cash_flow is not None:
-                return cf.operating_cash_flow - abs(cf.capex or 0)
-    return _f(info, "freeCashflow") or 0.0
-
-
-def _seed_fcf_margin(statements: StatementBundle | None, info: dict) -> float:
-    if statements:
-        inc = statements.latest_income()
-        cf = statements.latest_cashflow()
-        if inc and cf and inc.revenue:
-            fcf = cf.free_cash_flow or ((cf.operating_cash_flow or 0) - abs(cf.capex or 0))
-            if fcf:
-                return fcf / inc.revenue
-    revenue = _f(info, "totalRevenue") or 1.0
-    fcf = _f(info, "freeCashflow") or 0.0
-    return fcf / revenue if revenue else 0.10
-
-
-def _seed_capex_intensity(statements: StatementBundle | None, info: dict) -> float:
-    if statements:
-        inc = statements.latest_income()
-        cf = statements.latest_cashflow()
-        if inc and cf and inc.revenue and cf.capex:
-            return abs(cf.capex) / inc.revenue
-    return 0.05  # default 5% of revenue
-
-
-def _clamp(x: float | None, lo: float, hi: float) -> float:
-    """Clamp x into [lo, hi]; None falls back to lo."""
-    if x is None:
-        return lo
-    return max(lo, min(hi, x))
-
-
-def _f(info: dict[str, Any], key: str) -> float | None:
-    v = info.get(key)
-    if v is None:
-        return None
-    try:
-        f = float(v)
-        return None if f != f else f
-    except (TypeError, ValueError):
-        return None
+    The path is what the engine built; the steps are what a slider moves. Once
+    a step no longer matches the path's average, the user has moved it, and
+    the steps are the assumption.
+    """
+    path = tuple(assump.revenue_growth_path or ())
+    if len(path) != engine.YEARS:
+        return ()
+    early, late = engine.step_averages(path)
+    if (
+        abs(early - assump.revenue_growth_yr1_3) > 1e-9
+        or abs(late - assump.revenue_growth_yr4_10) > 1e-9
+    ):
+        return ()
+    return path

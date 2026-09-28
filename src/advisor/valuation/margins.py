@@ -137,18 +137,22 @@ class MarginReading:
 
 
 def required_range(snapshot, price: float | None = None) -> tuple[list[MarginReading], list[str]]:
-    """Required growth at the generic, trailing and median margins. Pure.
+    """Required growth at the generic margin and each of the company's own. Pure.
 
-    Returns (readings with a usable margin, notes on the ones left out). The
-    terminal multiple and horizon are the snapshot's base case; only the
-    margin varies, because the margin is the assumption that moves the answer.
+    Returns (readings with a usable margin, notes on the ones left out). Only
+    the margin varies, because the margin is the assumption that moves the
+    answer; the discount rate, terminal growth and revenue base are the
+    snapshot's. A snapshot stored before the engine discounted is read the
+    way it was computed, so an old row still shows what it said.
     """
     base = snapshot.base_case() if snapshot is not None else None
     if base is None:
         return [], []
     price = price or snapshot.price
-    runrate = snapshot.revenue_runrate
     ev = snapshot.shares_outstanding * price - (snapshot.net_cash or 0.0)
+    if getattr(snapshot, "method", "undiscounted") == "dcf":
+        return _discounted_range(snapshot, base, ev)
+    runrate = snapshot.revenue_runrate
 
     def required(margin: float) -> float | None:
         if not runrate or runrate <= 0 or ev <= 0 or margin <= 0:
@@ -169,3 +173,40 @@ def required_range(snapshot, price: float | None = None) -> tuple[list[MarginRea
         else:
             readings.append(MarginReading(margin, f"own {label}", required(margin)))
     return [r for r in readings if r.required is not None], notes
+
+
+def _discounted_range(snapshot, base, ev: float) -> tuple[list[MarginReading], list[str]]:
+    from advisor.valuation.dcf import GROWTH_BRACKET, implied_growth
+
+    revenue = snapshot.revenue_base
+    notes = []
+
+    def reading(margin: float, label: str) -> MarginReading | None:
+        if not revenue or revenue <= 0 or ev <= 0:
+            return None
+        solved = implied_growth(
+            ev,
+            revenue,
+            margin if snapshot.start_margin is None else snapshot.start_margin,
+            margin,
+            discount_rate=snapshot.discount_rate,
+            terminal_growth=snapshot.terminal_growth,
+        )
+        if solved.value is None:
+            lo, hi = GROWTH_BRACKET
+            bound = (
+                f"more than {hi:.0%}/yr" if solved.beyond == "above" else f"less than {lo:.0%}/yr"
+            )
+            notes.append(f"{label} at {margin:.1%}: the price needs {bound}")
+            return None
+        return MarginReading(margin, label, solved.value)
+
+    readings = [reading(base.fcf_margin, "generic")]
+    for own in snapshot.own_margins:
+        if own.value <= 0:
+            notes.append(f"own {own.label} {own.value:+.1%}: no steady state to read")
+            continue
+        readings.append(reading(own.value, f"own {own.label}"))
+    if not snapshot.own_margins:
+        notes.append("own margins: none on file")
+    return [r for r in readings if r is not None], notes

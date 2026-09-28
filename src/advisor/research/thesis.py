@@ -109,9 +109,10 @@ def _llm_enrich(
         # Build a compact context block from available data
         context_parts: list[str] = []
         if dcf:
+            # A beta the DCF does not have is left out, never written as 0.00.
             context_parts.append(
-                f"DCF — current price: ${dcf.current_price:.2f}, WACC: {dcf.wacc:.1%}, "
-                f"beta: {dcf.beta or 0:.2f}"
+                f"DCF — current price: ${dcf.current_price:.2f}, discount rate: {dcf.wacc:.1%}"
+                + (f", beta: {dcf.beta:.2f}" if dcf.beta is not None else "")
             )
             if dcf.base:
                 a = dcf.base.assumptions

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 from advisor.research.models import DcfAssumptions, DcfResult
 
@@ -91,47 +93,144 @@ def test_dcf_net_debt_reduces_equity_value():
     assert no_debt.equity_value - with_debt.equity_value == pytest.approx(200.0, rel=0.01)
 
 
-def test_dcf_exit_multiple_terminal_value():
+def test_an_exit_multiple_is_ignored_and_the_perpetuity_values_the_tail():
+    """The exit multiple was applied to an EBITDA of 25% of revenue for every
+    company. The engine values the tail as a Gordon perpetuity only."""
     from advisor.research.valuation.dcf import compute_dcf_scenario
 
-    a = _make_assumptions(terminal_exit_multiple=20.0)
-    scenario = compute_dcf_scenario(
-        a, base_revenue=1000.0, seed_fcf=150.0, net_debt=0.0, shares=100.0, current_price=50.0
+    kwargs = dict(
+        base_revenue=1000.0, seed_fcf=150.0, net_debt=0.0, shares=100.0, current_price=50.0
     )
-    assert scenario.terminal_value_exit is not None and scenario.terminal_value_exit > 0
+    with_exit = compute_dcf_scenario(_make_assumptions(terminal_exit_multiple=20.0), **kwargs)
+    without = compute_dcf_scenario(_make_assumptions(), **kwargs)
+    assert with_exit.terminal_value_exit is None
+    assert with_exit.enterprise_value == pytest.approx(without.enterprise_value)
+
+
+# ── The DCF built from the company's own figures ─────────────────────────────
+
+
+def test_build_dcf_values_bear_below_base_below_bull():
+    from advisor.research.valuation.dcf import build_dcf
+
+    from tests.test_research.dcf_figures import figures
+
+    dcf = build_dcf("TEST", figures=figures())
+    assert dcf.note == ""
+    assert dcf.bear.implied_price < dcf.base.implied_price < dcf.bull.implied_price
+    assert dcf.shares_outstanding == 100e6 and dcf.net_debt == pytest.approx(300e6)
+    assert dcf.base_revenue == 1000e6 and dcf.seed_fcf == pytest.approx(150e6)
+    # The margins are the company's own: min, median, max.
+    margins = [s.assumptions.target_fcf_margin for s in (dcf.bear, dcf.base, dcf.bull)]
+    assert margins == pytest.approx([0.12, 0.15, 0.18])
+    assert all(s.assumptions.wacc == 0.10 for s in (dcf.bear, dcf.base, dcf.bull))
+
+
+def test_the_sliders_replay_the_base_scenario_exactly():
+    """What the workstation recomputes from the report is what was stored."""
+    from advisor.research.models import ResearchReport
+    from advisor.research.valuation.dcf import (
+        build_dcf,
+        compute_dcf_scenario,
+        dcf_inputs_from_report,
+    )
+
+    from tests.test_research.dcf_figures import figures
+
+    dcf = build_dcf("TEST", figures=figures())
+    inputs = dcf_inputs_from_report(ResearchReport(symbol="TEST", as_of=date.today(), dcf=dcf))
+    replay = compute_dcf_scenario(dcf.base.assumptions, *inputs)
+    assert replay.implied_price == pytest.approx(dcf.base.implied_price, rel=1e-12)
+
+
+@pytest.mark.parametrize(
+    "missing,reason",
+    [
+        ({"price": None}, "no price"),
+        ({"price": 0.0}, "no price"),
+        ({"shares": None}, "no share count"),
+        ({"shares": 0.0}, "no share count"),
+        ({"revenue_base": None}, "no revenue"),
+        ({"net_cash": None}, "no balance sheet"),
+        ({"revenue_growth": None}, "no year-over-year revenue comparison"),
+        ({"margins": []}, "no positive margin"),
+    ],
+)
+def test_a_missing_input_is_a_stated_refusal_never_a_default(missing, reason):
+    """Rate-limited, the old DCF defaulted shares to 1.0 and price to 0 and
+    published JBL at $0.00. A missing input now yields no scenarios and a note."""
+    from advisor.research.valuation.dcf import build_dcf
+
+    from tests.test_research.dcf_figures import figures
+
+    dcf = build_dcf("TEST", figures=figures(**missing))
+    assert dcf.base is None and dcf.bull is None and dcf.bear is None
+    assert reason in dcf.note
+    assert dcf.shares_outstanding != 1.0
+
+
+def test_only_burning_cash_margins_refuse_a_value():
+    from advisor.research.valuation.dcf import build_dcf
+    from advisor.valuation.models import OwnMargin
+
+    from tests.test_research.dcf_figures import figures
+
+    burning = [
+        OwnMargin(kind="fcf", value=-0.2, label="FCF"),
+        OwnMargin(kind="nopat", value=-0.1, label="op"),
+    ]
+    dcf = build_dcf("TEST", figures=figures(margins=burning, start_margin=-0.2))
+    assert dcf.base is None
+    assert "no positive margin" in dcf.note
+
+
+def test_a_report_cached_with_the_old_defaults_is_not_replayed():
+    """shares=1.0 and price=0 were the yfinance fallbacks; never recompute on them."""
+    from advisor.research.models import ResearchReport
+    from advisor.research.valuation.dcf import build_dcf, dcf_inputs_from_report
+
+    from tests.test_research.dcf_figures import figures
+
+    dcf = build_dcf("TEST", figures=figures())
+    for broken in ({"shares_outstanding": 1.0}, {"current_price": 0.0}, {"base_revenue": 0.0}):
+        report = ResearchReport(
+            symbol="TEST", as_of=date.today(), dcf=dcf.model_copy(update=broken)
+        )
+        assert dcf_inputs_from_report(report) is None
 
 
 # ── Reverse-DCF ──────────────────────────────────────────────────────────────
 
 
-def test_reverse_dcf_returns_float(clean_bundle):
-    from unittest.mock import patch
+def test_reverse_dcf_reproduces_the_price():
+    """Run forward at the solved growth, the engine returns today's price."""
+    from advisor.research.valuation.dcf import build_dcf, compute_dcf_scenario
+    from advisor.research.valuation.reverse_dcf import solve_implied_growth
 
+    from tests.test_research.dcf_figures import figures
+
+    dcf = build_dcf("TEST", figures=figures())
+    g = solve_implied_growth(dcf)
+    assert g is not None
+    a = dcf.base.assumptions.model_copy(
+        update={"revenue_growth_yr1_3": g, "revenue_growth_yr4_10": g}
+    )
+    forward = compute_dcf_scenario(
+        a, dcf.base_revenue, dcf.seed_fcf, dcf.net_debt, dcf.shares_outstanding, 50.0
+    )
+    assert forward.implied_price == pytest.approx(50.0, rel=1e-4)
+
+
+def test_reverse_dcf_is_none_beyond_the_bracket_not_the_edge():
+    """The old solver returned +50% when the price needed more; that is a bound
+    dressed as an answer."""
     from advisor.research.valuation.dcf import build_dcf
     from advisor.research.valuation.reverse_dcf import solve_implied_growth
 
-    # Mock yfinance so we don't hit the network
-    fake_info = {
-        "currentPrice": 50.0,
-        "sharesOutstanding": 100e6,
-        "totalDebt": 500e6,
-        "totalCash": 200e6,
-        "beta": 1.2,
-        "totalRevenue": 1000e6,
-        "freeCashflow": 150e6,
-        "revenueGrowth": 0.10,
-        "enterpriseToEbitda": 15.0,
-    }
-    with (
-        patch("yfinance.Ticker") as mock_ticker,
-        patch("advisor.research.valuation.dcf._risk_free_rate", return_value=0.043),
-    ):
-        mock_ticker.return_value.info = fake_info
-        dcf = build_dcf("TEST", statements=None)
+    from tests.test_research.dcf_figures import figures
 
-    result = solve_implied_growth(dcf)
-    assert result is not None
-    assert -0.10 <= result <= 0.50
+    dcf = build_dcf("TEST", figures=figures())
+    assert solve_implied_growth(dcf.model_copy(update={"current_price": 1e9})) is None
 
 
 def test_reverse_dcf_none_when_no_current_price():
@@ -177,3 +276,21 @@ def test_peer_snapshot_fills_from_yfinance():
     assert snap.pe_trailing == pytest.approx(33.0)
     assert snap.gross_margin == pytest.approx(0.46)
     assert snap.ev_to_sales == pytest.approx(3.1e12 / 400e9)
+
+
+def test_moving_a_growth_step_drops_the_stored_path():
+    """The engine's yearly path stands until a slider moves a step."""
+    from advisor.research.valuation.dcf import build_dcf, compute_dcf_scenario
+
+    from tests.test_research.dcf_figures import figures
+
+    dcf = build_dcf("TEST", figures=figures())
+    a = dcf.base.assumptions
+    assert a.revenue_growth_path and a.growth_held_years == 3
+    args = (dcf.base_revenue, dcf.seed_fcf, dcf.net_debt, dcf.shares_outstanding, 50.0)
+    same = compute_dcf_scenario(a, *args)
+    moved = compute_dcf_scenario(
+        a.model_copy(update={"revenue_growth_yr1_3": a.revenue_growth_yr1_3 + 0.05}), *args
+    )
+    assert same.implied_price == pytest.approx(dcf.base.implied_price, rel=1e-12)
+    assert moved.implied_price > same.implied_price

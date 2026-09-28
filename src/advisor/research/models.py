@@ -255,6 +255,11 @@ class DcfAssumptions(BaseModel):
     terminal_growth_rate: float = 0.025
     terminal_exit_multiple: float | None = None  # EV/EBITDA; None → Gordon only
     wacc: float = 0.09
+    # Year-by-year growth when the scenario has one (built by the engine):
+    # today's rate held ``growth_held_years``, then faded. The two steps above
+    # are then its averages. A slider that moves a step drops the path.
+    revenue_growth_path: list[float] | None = None
+    growth_held_years: int | None = None
 
 
 class DcfScenario(BaseModel):
@@ -273,9 +278,9 @@ class DcfResult(BaseModel):
     current_price: float
     shares_outstanding: float
     net_debt: float
-    wacc: float
-    risk_free_rate: float
-    equity_risk_premium: float = 0.055
+    wacc: float  # the discount rate (a stated hurdle since 2026-09-27, not CAPM)
+    risk_free_rate: float | None = None
+    equity_risk_premium: float | None = None
     beta: float | None = None
     base: DcfScenario | None = None
     bull: DcfScenario | None = None
@@ -285,6 +290,12 @@ class DcfResult(BaseModel):
     # sliders can replay the base scenario exactly without re-fetching.
     base_revenue: float | None = None
     seed_fcf: float | None = None
+    # The steady-state FCF margin the price requires at today's growth, faded.
+    implied_margin: float | None = None
+    # Where every input came from, and why there are no scenarios when there
+    # are none. Empty scenarios with a note is a refusal, never a failure.
+    source: str = ""
+    note: str = ""
     fetched_at: datetime = Field(default_factory=datetime.now)
 
 

@@ -106,12 +106,54 @@ def _expectations(store: DaemonStore, symbol: str, consensus_loader) -> list[Row
             label="Price requires",
             value=value,
             detail=(
-                f"at ${valuation.price:,.2f} on {valuation.asof}, {base.terminal_multiple:g}x FCF: "
+                f"at ${valuation.price:,.2f} on {valuation.asof}, {valuation.assumptions_text()}: "
                 f"{each}" + (f" · {'; '.join(left_out)}" if left_out else "")
             ),
             source=f"valuation {valuation.asof}{stale}",
         )
     )
+    if valuation.implied_margin is not None:
+        rows.append(
+            Row(
+                label="Price needs margin",
+                value=f"{valuation.implied_margin:.1%} FCF",
+                detail=f"steady state, {valuation.implied_margin_label}",
+                source=f"valuation {valuation.asof}{stale}",
+            )
+        )
+    # An opinion, by user decision (2026-09-27), and labelled as one: built on
+    # the company's own filed margins, every assumption in the detail.
+    if valuation.value:
+        bear, mid, bull = (valuation.value_scenario(n) for n in ("bear", "base", "bull"))
+        if bear and mid and bull:
+            rows.append(
+                Row(
+                    label="Value range (opinion)",
+                    value=(
+                        f"${bear.value_per_share:,.2f} – ${bull.value_per_share:,.2f}, "
+                        f"base ${mid.value_per_share:,.2f}"
+                    ),
+                    detail=(
+                        f"base {_pct(mid.upside, sign=True)} vs ${valuation.price:,.2f}; "
+                        f"margins {bear.target_margin:.1%} / {mid.target_margin:.1%} / "
+                        f"{bull.target_margin:.1%} ({bear.margin_label} / {mid.margin_label} / "
+                        f"{bull.margin_label}); growth {_pct(mid.growth_start, sign=True)} held "
+                        f"{bear.held_years} / {mid.held_years} / {bull.held_years} years, then "
+                        f"fading to {mid.terminal_growth:.0%}; discounted at "
+                        f"{mid.discount_rate:.0%}"
+                    ),
+                    source=f"valuation {valuation.asof}{stale}",
+                )
+            )
+    elif valuation.value_refused:
+        rows.append(
+            Row(
+                label="Value range (opinion)",
+                value="none",
+                detail=valuation.value_refused,
+                source=f"valuation {valuation.asof}{stale}",
+            )
+        )
     if valuation.revenue_runrate:
         rows.append(
             Row(
@@ -158,14 +200,17 @@ def _expectations(store: DaemonStore, symbol: str, consensus_loader) -> list[Row
     # assumption. The single generic figure let a live reading say META would
     # need "-0.0% a year" after FY2027, which holds only at a 25% margin.
     remaining = []
-    if last and valuation.revenue_runrate:
+    # The revenue the requirement compounds from: the engine's base (trailing
+    # twelve months) on a discounted reading, the run-rate on an older one.
+    start = valuation.revenue_base or valuation.revenue_runrate
+    if last and start:
         for r in readings:
             # The generic reading keeps the stored scenario's figure, the one
             # every other surface has always shown.
             needed = (
                 base.required_revenue
                 if r.label == "generic"
-                else valuation.revenue_runrate * (1 + r.required) ** base.years
+                else start * (1 + r.required) ** base.years
             )
             got = remaining_cagr(needed, horizon_end, last)
             if got:

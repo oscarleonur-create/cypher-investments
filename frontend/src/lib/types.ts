@@ -6,15 +6,9 @@ export interface ResearchSummary {
   conviction: string | null;
   attention: "HIGH" | "MEDIUM" | "LOW";
   next_earnings_date: string | null;
-  base_upside: number | null;
   has_report: boolean;
   kpi_alerts: string[];
   sector: string | null;
-  bayes_upside: number | null;
-  bayes_prob_undervalued: number | null;
-  analyst_target: number | null;
-  analyst_upside: number | null;
-  analyst_n: number | null;
 }
 
 export interface Holding {
@@ -56,8 +50,6 @@ export interface PositionReview {
   thesis_status: string;
   kpi_alerts: string[];
   conviction: string | null;
-  base_target: number | null;
-  base_upside: number | null;
   report_was_built: boolean;
   has_report: boolean;
   near_term_catalysts: string[];
@@ -254,75 +246,6 @@ export interface ActionRecommendation {
   generated_at: string;
 }
 
-// ── Bayesian pricing (what-if posterior) ──────────────────────────────────────
-
-export interface PriorDriver {
-  key: string;
-  label: string;
-  mean: number;
-  std: number;
-  min: number;
-  max: number;
-  unit: "pct" | "x" | "ratio";
-}
-
-export interface EvidenceSignal {
-  key: string;
-  label: string;
-  target_driver: string;
-  observed: number | null;
-  precision: number;
-  weight: number;
-  note: string;
-}
-
-export interface EcosystemFactor {
-  key: string;
-  label: string;
-  kind: "customer" | "supplier" | "holder" | "peer";
-  driver: string;
-  active: boolean;
-  mean_delta: number;
-  std_delta: number;
-  note: string;
-}
-
-export interface HistogramBin {
-  x: number;
-  count: number;
-}
-
-export interface CatalystScenario {
-  label: string;
-  probability: number;
-  target_price: number;
-  upside_pct: number;
-  supporting_catalysts: string[];
-  invalidating_catalysts: string[];
-}
-
-export interface BayesianPriceResult {
-  symbol: string;
-  current_price: number;
-  n_draws: number;
-  drivers: PriorDriver[];
-  evidence: EvidenceSignal[];
-  ecosystem: EcosystemFactor[];
-  mean_price: number;
-  median_price: number;
-  p5: number;
-  p25: number;
-  p75: number;
-  p95: number;
-  prob_undervalued: number;
-  expected_upside_pct: number;
-  histogram: HistogramBin[];
-  meaningful: boolean;
-  note: string;
-  catalyst_scenarios: CatalystScenario[];
-  as_of: string;
-}
-
 // ── Price history + fundamentals overlay ──────────────────────────────────────
 
 export interface PriceBar {
@@ -361,36 +284,6 @@ export interface PriceHistoryResult {
 }
 
 // Slider adjustments POSTed back to recompute the posterior. All optional.
-export interface BayesianOverrides {
-  driver_mean?: Record<string, number>;
-  driver_std?: Record<string, number>;
-  evidence_weight?: Record<string, number>;
-  ecosystem_active?: Record<string, boolean>;
-  n_draws?: number;
-}
-
-// ── Fair price (consolidated valuation) ───────────────────────────────────────
-
-export interface FairPriceMethod {
-  name: string; // dcf_base | multiples | bayesian_median | analyst_target
-  label: string;
-  estimate: number;
-  weight: number;
-}
-
-export interface FairPriceResult {
-  symbol: string;
-  current_price: number;
-  fair_price: number;
-  low: number;
-  high: number;
-  upside_pct: number;
-  methods: FairPriceMethod[];
-  confidence: "HIGH" | "MEDIUM" | "LOW";
-  note: string;
-  as_of: string;
-}
-
 // ── Watchlist ─────────────────────────────────────────────────────────────────
 
 export interface WatchlistSummary {
@@ -398,10 +291,7 @@ export interface WatchlistSummary {
   thesis_status: string;
   attention: "HIGH" | "MEDIUM" | "LOW";
   conviction: string | null;
-  base_upside: number | null;
   current_price: number | null;
-  fair_price: number | null;
-  fair_upside: number | null;
   kpi_alerts: string[];
 }
 
@@ -1071,4 +961,44 @@ export interface SystemStatus {
     expired_recently: TrackRuleChange[];
   };
   stale_inputs: Record<string, string[]>;
+}
+
+// ── Price range (one valuation engine, four cases + rationale) ────────────────
+
+export type PriceCaseName = "bear" | "base" | "bull" | "market";
+
+export interface PriceCase {
+  name: PriceCaseName;
+  value_per_share: number;
+  upside: number;
+  growth: number | null;
+  held_years: number | null;
+  margin: number | null;
+  margin_label: string;
+}
+
+export interface PriceRange {
+  symbol: string;
+  asof: string;
+  price: number;
+  price_source: string;
+  live: boolean;
+  stale: boolean;
+  period_end: string;
+  market_cap: number;
+  net_cash: number | null;
+  enterprise_value: number;
+  revenue_base: number | null;
+  revenue_base_label: string;
+  ev_to_revenue: number | null;
+  growth: number | null;
+  growth_label: string;
+  own_margins: { kind: string; value: number; label: string }[];
+  cases: PriceCase[];
+  refused: string | null;
+  requires: { margin: number; label: string; growth: number }[];
+  verdict: "above_bull" | "above_base" | "above_bear" | "below_bear" | null;
+  rationale: string[];
+  assumptions: string;
+  notes: string[];
 }

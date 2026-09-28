@@ -232,6 +232,66 @@ def symbol_reading(
         store.close()
 
 
+# Live price ranges, kept an hour per symbol. A ticker page fires several SEC
+# requests at once; on 2026-09-28 a page view ran into the SEC's rate limit and
+# a live valuation came back without its balance sheet. A view should not
+# re-fetch filings that change four times a year.
+_LIVE_RANGE_TTL = timedelta(hours=1)
+_live_ranges: dict[str, tuple[object, dict]] = {}
+
+
+@router.get("/symbol/{symbol}/price-range")
+def symbol_price_range(symbol: str, refresh: bool = False) -> dict:
+    """The value range and its rationale for one name (``valuation.rationale``).
+
+    Reads the weekly job's snapshot. When there is none, when it predates the
+    discounted engine, or on ``refresh``, it is computed live from the SEC and
+    the broker's close — and not stored, so a page view can never feed the
+    daemon's shift detection.
+
+    Plain ``def``: a live computation makes several SEC calls.
+    """
+    from advisor.daemon.market_calendar import now_et
+    from advisor.valuation.figures import load_figures
+    from advisor.valuation.implied import build_snapshot
+    from advisor.valuation.rationale import price_range
+
+    sym = symbol.upper()
+    store = _store()
+    try:
+        stored = None if refresh else store.load_latest_valuation(sym)
+    finally:
+        store.close()
+    if stored is not None and stored.method == "dcf":
+        return price_range(stored).model_dump(mode="json")
+
+    cached = _live_ranges.get(sym)
+    if cached and not refresh and now_et() - cached[0] < _LIVE_RANGE_TTL:
+        return cached[1]
+
+    figures = load_figures(sym)
+    snapshot = build_snapshot(figures)
+    if snapshot is None:
+        absent = [
+            name
+            for name, value in (
+                ("price", figures.price),
+                ("share count", figures.shares),
+                ("balance sheet", figures.net_cash),
+                ("revenue", figures.revenue_base),
+            )
+            if value is None
+        ]
+        raise HTTPException(
+            404,
+            f"{sym}: could not value it — missing {', '.join(absent) or 'inputs'}. "
+            "The SEC may be rate-limiting; refresh in a minute.",
+        )
+    body = price_range(snapshot, live=True).model_dump(mode="json")
+    _live_ranges[sym] = (now_et(), body)
+    return body
+
+
 @router.get("/symbol/{symbol}")
 async def symbol_detail(symbol: str, days: int = Query(45, ge=7, le=365)) -> dict:
     """Everything the daemon holds on one name: filings, news, factors, events.

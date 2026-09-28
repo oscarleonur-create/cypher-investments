@@ -74,7 +74,8 @@ def spcx_valuation(store, price=152.64):
 
 class TestTheRealGap:
     def test_the_spcx_rule_is_reported_as_violated_right_now(self, store):
-        """25.8% against a 25% rule, with no event having fired."""
+        """Against a 25% rule, with no event having fired. Undiscounted, the
+        reading was 25.8%; discounted at 10% (2026-09-27) it is 42.5%."""
         spcx_valuation(store)
         result = evaluate_against_state(
             store,
@@ -83,7 +84,7 @@ class TestTheRealGap:
             book(),
         )
         assert result.tripped is True
-        assert result.observed == pytest.approx(0.258, abs=0.005)
+        assert result.observed == pytest.approx(0.425, abs=0.005)
         assert "right now" in result.note
 
     def test_a_rule_the_state_satisfies_is_not_tripped(self, store):
@@ -91,7 +92,7 @@ class TestTheRealGap:
         result = evaluate_against_state(
             store,
             "SPCX",
-            claim(kinds=["IMPLIED_EXPECTATIONS_SHIFT"], field="implied_cagr", threshold=0.35),
+            claim(kinds=["IMPLIED_EXPECTATIONS_SHIFT"], field="implied_cagr", threshold=0.50),
             book(),
         )
         assert result.tripped is False

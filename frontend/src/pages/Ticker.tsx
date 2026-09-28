@@ -12,15 +12,14 @@ import { Stat } from "@/components/common";
 import { AgentPanel } from "@/components/AgentPanel";
 import { TickerDaemonPanels } from "@/components/tickerDaemon";
 import { ReadingCard } from "@/components/ReadingCard";
+import { PriceRangeCard } from "@/components/PriceRangeCard";
 import { AnglesPanel } from "@/components/AnglesPanel";
 import { StoryCard } from "@/components/StoryCard";
 import { ClaimsPanel } from "@/components/ClaimsPanel";
 import {
-  BayesianPricingPanel,
   CatalystsPanel,
   DeepResearchPanel,
   EcosystemPanel,
-  FairPricePanel,
   FilingsPanel,
   FinancialsPanel,
   KpiPanel,
@@ -33,7 +32,6 @@ import {
   SentimentPanel,
   ThesisPanel,
   TranscriptsPanel,
-  ValuationPanel,
 } from "@/components/panels";
 
 export default function Ticker({ quotes }: { quotes: QuotesState }) {
@@ -113,6 +111,10 @@ export default function Ticker({ quotes }: { quotes: QuotesState }) {
           reads the daemon's store, and SPCX — the largest holding — had no
           cached research, so inside it the reading never showed. */}
       <ReadingCard symbol={sym} />
+      {/* The one pricing view: value range + what the price assumes + why.
+          Outside the research block, like the reading: it reads the daemon's
+          valuation (or computes one from the filings), not the cached report. */}
+      <PriceRangeCard symbol={sym} />
       <AnglesPanel symbol={sym} />
 
       {/* Interactive, tool-using research agent — always available on a ticker
@@ -141,14 +143,10 @@ export default function Ticker({ quotes }: { quotes: QuotesState }) {
           {/* On-demand BUY/SELL/INCREASE/DECREASE/HOLD recommendation, checks
               the real position + cached research. Decision support only. */}
           <RecommendationPanel symbol={sym} />
-          {/* Portfolio-only Bayesian what-if; renders nothing for non-holdings. */}
-          <BayesianPricingPanel symbol={sym} />
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <div className="space-y-4">
-            <FairPricePanel r={data} />
             <MemoPanel r={data} />
             <ThesisPanel r={data} />
-            <ValuationPanel r={data} />
             <FinancialsPanel r={data} />
             <RatiosPanel r={data} />
             <TranscriptsPanel r={data} />

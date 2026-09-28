@@ -48,19 +48,11 @@ function ScoreRow({ row }: { row: ScorecardRow }) {
   );
 }
 
-/** The numbers first. Read from stored filings, valuation, consensus and
- *  claims — no model writes any of this. */
+/** The numbers first: the holder's thresholds, read from stored state — no
+ *  model writes any of this. Valuation rows live in the Price range card. */
 function ScorecardTable({ card }: { card: Scorecard }) {
   return (
     <div className="mb-3 space-y-3">
-      {card.expectations.length > 0 && (
-        <div>
-          <div className="mb-1 text-[10px] uppercase tracking-wide text-muted">Expectations</div>
-          {card.expectations.map((r) => (
-            <ScoreRow key={r.label} row={r} />
-          ))}
-        </div>
-      )}
       {card.thresholds.length > 0 && (
         <div>
           <div className="mb-1 text-[10px] uppercase tracking-wide text-muted">
@@ -105,7 +97,7 @@ export function ReadingCard({ symbol }: { symbol: string }) {
 
   if (isLoading || !data) return null;
   const card = data.scorecard;
-  const hasNumbers = Boolean(card && (card.expectations.length || card.thresholds.length));
+  const hasNumbers = Boolean(card && card.thresholds.length);
   if (data.status === "NO_FACTS" && !hasNumbers) return null;
 
   const refresh = async () => {

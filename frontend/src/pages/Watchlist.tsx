@@ -6,7 +6,7 @@ import { api } from "@/lib/api";
 import type { WatchlistItem, WatchlistResponse } from "@/lib/types";
 import type { QuotesState } from "@/lib/useQuotes";
 import { useJob } from "@/lib/useJob";
-import { cn, fmtNum, fmtUpside, pnlColor } from "@/lib/utils";
+import { fmtNum } from "@/lib/utils";
 import { AttentionDot, Th, ThesisBadge } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -100,8 +100,6 @@ export default function Watchlist({ quotes }: { quotes: QuotesState }) {
                 <tr>
                   <Th>Symbol</Th>
                   <Th className="text-right">Price</Th>
-                  <Th className="text-right">Fair price</Th>
-                  <Th className="text-right">Upside</Th>
                   <Th>Thesis</Th>
                   <Th></Th>
                 </tr>
@@ -147,12 +145,6 @@ function WatchRow({
         </Link>
       </td>
       <td className="px-2 py-2 text-right tnum">{price > 0 ? fmtNum(price) : "—"}</td>
-      <td className="px-2 py-2 text-right tnum">
-        {r?.fair_price ? fmtNum(r.fair_price) : "—"}
-      </td>
-      <td className={cn("px-2 py-2 text-right tnum", pnlColor(r?.fair_upside))}>
-        {fmtUpside(r?.fair_upside)}
-      </td>
       <td className="px-2 py-2">
         <ThesisBadge status={r?.thesis_status} />
       </td>

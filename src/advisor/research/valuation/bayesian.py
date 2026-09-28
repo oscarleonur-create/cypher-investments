@@ -6,9 +6,9 @@ priors (precision-weighted Normal conjugate update), optionally perturbs them
 with **ecosystem** toggles, then Monte-Carlos the implied price to produce a
 **posterior distribution over fair value**.
 
-The Monte-Carlo projection is a vectorised (numpy) mirror of
-`dcf.compute_dcf_scenario` — same FCF fade, Gordon / exit-multiple terminal
-value, net-debt bridge and per-share floor — so thousands of draws recompute in
+The Monte-Carlo projection is a vectorised (numpy) mirror of the one DCF
+engine, ``valuation.dcf.project`` — same FCF fade, Gordon terminal value,
+net-debt bridge and per-share floor — so thousands of draws recompute in
 milliseconds (fast enough for live what-if sliders). A unit test pins the
 vectorised path to the canonical scalar function at the prior mean so the two
 cannot silently diverge.
@@ -37,6 +37,7 @@ from advisor.research.models import (
     ResearchReport,
 )
 from advisor.research.valuation.dcf import compute_dcf_scenario, dcf_inputs_from_report
+from advisor.valuation.dcf import START_MARGIN_BOUNDS
 
 logger = logging.getLogger(__name__)
 
@@ -44,27 +45,32 @@ _PROJECTION_YEARS = 10
 _DEFAULT_DRAWS = 8000
 _MAX_DRAWS = 40000
 
-# Slider / clamp ranges per driver — kept in lock-step with the clamps in
-# dcf.py so a sampled assumption never escapes the range the DCF defends.
+# Slider / clamp ranges per driver — kept consistent with the engine's bounds
+# (``valuation.dcf``) so a sampled assumption never escapes what it defends.
+# ``terminal_exit_multiple`` is listed for old cached reports only: the engine
+# no longer builds scenarios with one, so the slider never appears.
 _DRIVER_BOUNDS: dict[str, tuple[float, float, str, str]] = {
     # key: (min, max, unit, label)
     "revenue_growth_yr1_3": (-0.30, 0.60, "pct", "Revenue growth (yr 1-3)"),
-    "revenue_growth_yr4_10": (0.01, 0.30, "pct", "Revenue growth (yr 4-10)"),
-    "target_fcf_margin": (0.0, 0.45, "pct", "Terminal FCF margin"),
+    # A shrinking business fades toward terminal growth from below, so the
+    # later years can be negative too (WOLF, -12% TTM, fades through -2%);
+    # a grower held five years at the 60% bound averages ~34% over 4–10.
+    "revenue_growth_yr4_10": (-0.30, 0.60, "pct", "Revenue growth (yr 4-10)"),
+    # MSFT's operating margin after tax is 37%; a 45% ceiling clipped priors
+    # the filings themselves support.
+    "target_fcf_margin": (0.0, 0.60, "pct", "Terminal FCF margin"),
     "wacc": (0.06, 0.30, "pct", "Discount rate (WACC)"),
     "terminal_growth_rate": (0.0, 0.04, "pct", "Terminal growth"),
     "terminal_exit_multiple": (2.0, 40.0, "x", "Exit multiple (EV/EBITDA)"),
 }
 
-# A currently unprofitable company whose `target_fcf_margin` was seeded from its
-# (floored) trailing margin gets valued as if it never turns a profit — the DCF
-# then collapses to ~zero and the margin/growth sliders do nothing. For names
-# with revenue but a sub-threshold margin we instead anchor the *terminal* FCF
-# margin prior on a normalized at-scale margin (wide uncertainty), so the
-# posterior reflects "if they reach profitability" and the sliders come alive.
-_UNPROFITABLE_MARGIN = 0.05
-_NORMALIZED_TERMINAL_MARGIN = 0.15
-_NORMALIZED_TERMINAL_STD = 0.08
+# The terminal-margin prior is the base scenario's: the median of the
+# company's own filed margins. It used to be re-anchored to a generic 15%
+# whenever today's FCF margin was under 5%, which made sense when the old DCF
+# seeded the target from a floored trailing margin. On the engine it replaced
+# filed figures with a guess: JBL, profitable at 3–4% for years, got a
+# posterior median of $1,010 against a $273 base (2026-09-28). A company with
+# no positive margins gets no base DCF, and so no posterior, instead.
 
 # Solver bounds for the reverse-DCF / implied-growth bisection. A result pinned
 # to a bound means the DCF can't bracket the target at any sane growth, so the
@@ -102,12 +108,6 @@ def build_priors(report: ResearchReport) -> list[PriorDriver]:
     bull = dcf.bull.assumptions if dcf.bull else None
     bear = dcf.bear.assumptions if dcf.bear else None
 
-    # Trailing FCF margin (un-floored) tells us whether the company is currently
-    # profitable; if not, we re-anchor the terminal-margin prior (see below).
-    base_rev = float(dcf.base_revenue or 0.0)
-    seed_margin = (float(dcf.seed_fcf or 0.0) / base_rev) if base_rev > 0 else None
-    unprofitable = seed_margin is not None and seed_margin < _UNPROFITABLE_MARGIN
-
     drivers: list[PriorDriver] = []
     for key, (lo, hi, unit, label) in _DRIVER_BOUNDS.items():
         mean = getattr(base, key, None)
@@ -123,14 +123,6 @@ def build_priors(report: ResearchReport) -> list[PriorDriver]:
             if bv is not None and rv is not None:
                 spread = abs(float(bv) - float(rv)) / 4.0
         std = max(spread, _STD_REL_FLOOR * abs(mean), _STD_ABS_FLOOR.get(key, 0.01))
-
-        # Re-anchor the terminal FCF-margin prior for currently-unprofitable but
-        # revenue-generating names onto a normalized at-scale margin, with wide
-        # uncertainty — otherwise the DCF assumes perpetual break-even and the
-        # valuation collapses to zero regardless of the sliders.
-        if key == "target_fcf_margin" and unprofitable:
-            mean = _NORMALIZED_TERMINAL_MARGIN
-            std = max(std, _NORMALIZED_TERMINAL_STD)
 
         drivers.append(
             PriorDriver(
@@ -328,10 +320,10 @@ def _growth_implied_by_price(dcf: DcfResult, target_price: float) -> float | Non
     if dcf.base is None or target_price <= 0:
         return None
     a0 = dcf.base.assumptions
-    margin = max(a0.target_fcf_margin, 0.001)
-    base_revenue = dcf.base.projected_fcf[0] / margin if dcf.base.projected_fcf else None
-    seed_fcf = dcf.base.projected_fcf[0] if dcf.base.projected_fcf else None
-    if base_revenue is None or seed_fcf is None:
+    # The revenue and cash the DCF was actually built on. Year-one FCF over the
+    # target margin — what this used to divide — is neither.
+    base_revenue, seed_fcf = dcf.base_revenue, dcf.seed_fcf
+    if not base_revenue or base_revenue <= 0 or seed_fcf is None:
         return None
 
     def price_at(g: float) -> float:
@@ -522,10 +514,10 @@ def _simulate_prices(
     n: int,
     rng: np.random.Generator,
 ) -> np.ndarray:
-    """Vectorised mirror of dcf.compute_dcf_scenario over `n` sampled draws.
+    """Vectorised mirror of ``valuation.dcf.project`` over `n` sampled draws.
 
     Returns an array of implied per-share prices. Keep this in lock-step with
-    `compute_dcf_scenario` (tests/test_bayesian.py pins them at the prior mean).
+    the engine (tests/test_bayesian.py pins them at the prior mean).
     """
     by_key = {d.key: d for d in drivers}
 
@@ -533,7 +525,11 @@ def _simulate_prices(
         d = by_key.get(key)
         if d is None:
             return np.full(n, default)
-        draws = rng.normal(d.mean, max(d.std, 1e-9), n)
+        if d.std <= 0:
+            # No uncertainty is no draw: a floor of 1e-9 still injected noise
+            # the projection amplified past the parity test's tolerance.
+            return np.full(n, float(np.clip(d.mean, d.min, d.max)))
+        draws = rng.normal(d.mean, d.std, n)
         return np.clip(draws, d.min, d.max)
 
     g13 = sample("revenue_growth_yr1_3", 0.05)
@@ -541,14 +537,13 @@ def _simulate_prices(
     margin = sample("target_fcf_margin", 0.10)
     wacc = sample("wacc", 0.09)
     g_term = sample("terminal_growth_rate", 0.025)
-    has_exit = "terminal_exit_multiple" in by_key
-    exit_mult = sample("terminal_exit_multiple", 0.0) if has_exit else None
 
     shares = max(shares, 1.0)
 
-    # Starting FCF margin, clamped exactly as compute_dcf_scenario does.
+    # Starting FCF margin, clamped exactly as the engine does.
     if base_revenue:
-        start_margin = float(np.clip(seed_fcf / max(base_revenue, 1.0), -0.30, 0.40))
+        lo, hi = START_MARGIN_BOUNDS
+        start_margin = float(np.clip(seed_fcf / max(base_revenue, 1.0), lo, hi))
     else:
         start_margin = float(margin.mean())
 
@@ -557,8 +552,8 @@ def _simulate_prices(
     last_fcf = np.zeros(n)
     for year in range(1, _PROJECTION_YEARS + 1):
         g = g13 if year <= 3 else g410
-        mp = year / _PROJECTION_YEARS
-        fcf_margin = (1 - mp) * start_margin + mp * margin
+        # Written exactly as the engine interpolates, so the two agree to the bit.
+        fcf_margin = start_margin + (margin - start_margin) * year / _PROJECTION_YEARS
         revenue = revenue * (1 + g)
         fcf = revenue * fcf_margin
         pv_fcf += fcf / (1 + wacc) ** year
@@ -570,15 +565,9 @@ def _simulate_prices(
     tv_gordon = np.where(terminal_fcf > 0, terminal_fcf / np.maximum(wacc - g_term, 0.001), 0.0)
     pv_gordon = tv_gordon / (1 + wacc) ** _PROJECTION_YEARS
 
-    pv_terminal = pv_gordon
-    if exit_mult is not None:
-        safe_margin = np.where(margin > 0, margin, np.nan)
-        ebitda_proxy = last_fcf / safe_margin * 0.25
-        pv_exit = (ebitda_proxy * exit_mult) / (1 + wacc) ** _PROJECTION_YEARS
-        use_exit = (last_fcf > 0) & (margin > 0)
-        pv_terminal = np.where(use_exit, pv_exit, pv_gordon)
-
-    enterprise_value = pv_fcf + pv_terminal
+    # Gordon only, as the engine: the exit-multiple branch valued an EBITDA of
+    # 25% of revenue for every company and was removed on 2026-09-27.
+    enterprise_value = pv_fcf + pv_gordon
     equity_value = np.maximum(enterprise_value - net_debt, 0.0)
     implied = equity_value / shares
     return implied[np.isfinite(implied)]

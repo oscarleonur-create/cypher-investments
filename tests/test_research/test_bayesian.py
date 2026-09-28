@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import date
-from unittest.mock import patch
 
 import pytest
 from advisor.research.models import (
@@ -15,29 +14,15 @@ from advisor.research.models import (
     ResearchReport,
 )
 
+from tests.test_research.dcf_figures import figures
+
 
 def _build_report() -> ResearchReport:
-    """A report with a realistic DCF (mocked yfinance) + a consensus signal."""
+    """A report with a realistic DCF (figures passed in, no network) + a consensus signal."""
     from advisor.research.valuation.dcf import build_dcf
     from advisor.research.valuation.reverse_dcf import solve_implied_growth
 
-    fake_info = {
-        "currentPrice": 50.0,
-        "sharesOutstanding": 100e6,
-        "totalDebt": 500e6,
-        "totalCash": 200e6,
-        "beta": 1.2,
-        "totalRevenue": 1000e6,
-        "freeCashflow": 150e6,
-        "revenueGrowth": 0.10,
-        "enterpriseToEbitda": 15.0,
-    }
-    with (
-        patch("yfinance.Ticker") as mock_ticker,
-        patch("advisor.research.valuation.dcf._risk_free_rate", return_value=0.043),
-    ):
-        mock_ticker.return_value.info = fake_info
-        dcf = build_dcf("TEST", statements=None)
+    dcf = build_dcf("TEST", figures=figures())
     dcf.implied_growth_rate = solve_implied_growth(dcf)
 
     return ResearchReport(
@@ -181,3 +166,25 @@ def test_overrides_change_posterior():
         report, BayesianOverrides(driver_mean={"revenue_growth_yr1_3": 0.30})
     )
     assert bumped.median_price > base.median_price
+
+
+def test_a_low_margin_business_keeps_its_own_terminal_margin():
+    """JBL converts 3–4% of revenue to cash and always has. A generic 15%
+    re-anchor put its posterior median at $1,010 against a $273 base."""
+    from advisor.research.valuation.bayesian import build_bayesian_pricing, build_priors
+    from advisor.research.valuation.dcf import build_dcf
+    from advisor.valuation.models import OwnMargin
+
+    low = figures(
+        start_margin=0.039,
+        margins=[
+            OwnMargin(kind="fcf", value=0.039, label="FCF"),
+            OwnMargin(kind="median", value=0.032, label="median"),
+            OwnMargin(kind="nopat", value=0.034, label="nopat"),
+        ],
+    )
+    report = ResearchReport(symbol="TEST", as_of=date.today(), dcf=build_dcf("TEST", figures=low))
+    prior = {d.key: d for d in build_priors(report)}["target_fcf_margin"]
+    assert prior.mean == pytest.approx(0.034)
+    res = build_bayesian_pricing(report)
+    assert res.median_price < 2 * report.dcf.bull.implied_price

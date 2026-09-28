@@ -65,6 +65,18 @@ def shift_event(previous: ValuationSnapshot | None, current: ValuationSnapshot) 
     prior = previous.base_case()
     if prior is None:
         return None
+    if previous.method != current.method:
+        # The first discounted reading after the engine changed (2026-09-27)
+        # moved every symbol's requirement at once — AMZN's by more than ten
+        # points — with nothing about the business or the price behind it.
+        # A change of arithmetic is not news.
+        logger.info(
+            "valuation: %s method changed %s -> %s; not compared",
+            current.symbol,
+            previous.method,
+            current.method,
+        )
+        return None
 
     delta = base.implied_cagr - prior.implied_cagr
     if abs(delta) < MATERIAL_CAGR_SHIFT:
@@ -96,6 +108,8 @@ def shift_event(previous: ValuationSnapshot | None, current: ValuationSnapshot) 
             "price": current.price,
             "required_revenue": base.required_revenue,
             "terminal_multiple": base.terminal_multiple,
+            "discount_rate": base.discount_rate,
+            "method": current.method,
             "fcf_margin": base.fcf_margin,
             "years": base.years,
             "as_of_filing": current.source_accession,
@@ -114,20 +128,17 @@ async def refresh_valuations(
     prices: dict[str, float],
     *,
     asof: date | None = None,
-    trailing_loader=None,
-    median_loader=None,
+    figures_loader=None,
 ) -> ValuationResult:
-    """Recompute implied expectations for each symbol and emit any shifts.
+    """Recompute what each price requires, and its value range, and emit shifts.
 
-    The scenarios stay generic. Beside them the snapshot records the
-    company's own trailing and three-year median FCF margins, so required
-    growth can be shown as a range (``valuation.margins``).
+    The scenarios stay generic so thesis rules test the same kind of quantity
+    (``implied``). Beside them the snapshot records the company's own margins
+    and the value range built from them.
     """
-    from advisor.valuation.fundamentals import latest_fundamentals
-    from advisor.valuation.margins import load_median_margin, load_trailing_margin
+    from advisor.valuation.figures import load_figures
 
-    trailing_loader = trailing_loader or load_trailing_margin
-    median_loader = median_loader or load_median_margin
+    figures_loader = figures_loader or load_figures
     result = ValuationResult()
     today = asof or date.today()
 
@@ -137,24 +148,26 @@ async def refresh_valuations(
             result.skipped[symbol] = "no price"
             continue
         try:
-            fundamentals = latest_fundamentals(symbol)
+            figures = figures_loader(symbol, price, price_source="book or last close")
         except Exception as exc:  # noqa: BLE001
             logger.warning("valuation: %s failed: %s", symbol, exc)
             result.skipped[symbol] = str(exc)[:120]
             continue
-        if fundamentals is None:
-            result.skipped[symbol] = "no usable filing"
-            continue
 
-        snapshot = build_snapshot(fundamentals, price, asof=today)
-        if snapshot is not None:
-            trailing, median = trailing_loader(symbol), median_loader(symbol)
-            snapshot.margin_trailing = trailing.margin
-            snapshot.margin_trailing_label = trailing.label
-            snapshot.margin_median = median.margin
-            snapshot.margin_median_label = median.label
+        snapshot = build_snapshot(figures, asof=today)
         if snapshot is None:
-            result.skipped[symbol] = f"missing {', '.join(fundamentals.missing)}"
+            absent = [
+                name
+                for name, value in (
+                    ("shares", figures.shares),
+                    ("balance sheet", figures.net_cash),
+                    ("revenue", figures.revenue_base),
+                )
+                if value is None
+            ]
+            result.skipped[symbol] = (
+                f"missing {', '.join(absent)}" if absent else "no usable filing"
+            )
             continue
 
         previous = store.load_latest_valuation(symbol, before=today)

@@ -3,34 +3,19 @@
 from __future__ import annotations
 
 from datetime import date
-from unittest.mock import patch
 
 from advisor.research.models import AnalystConsensus, ResearchReport
 from advisor.research.store import ResearchStore
 from advisor.research.valuation.fair_price import build_fair_price
 
+from tests.test_research.dcf_figures import figures
+
 
 def _report_with_dcf(consensus_target: float | None = 70.0) -> ResearchReport:
-    """A report with a realistic DCF (mocked yfinance) + optional consensus."""
+    """A report with a realistic DCF (figures passed in, no network) + optional consensus."""
     from advisor.research.valuation.dcf import build_dcf
 
-    fake_info = {
-        "currentPrice": 50.0,
-        "sharesOutstanding": 100e6,
-        "totalDebt": 500e6,
-        "totalCash": 200e6,
-        "beta": 1.2,
-        "totalRevenue": 1000e6,
-        "freeCashflow": 150e6,
-        "revenueGrowth": 0.10,
-        "enterpriseToEbitda": 15.0,
-    }
-    with (
-        patch("yfinance.Ticker") as mock_ticker,
-        patch("advisor.research.valuation.dcf._risk_free_rate", return_value=0.043),
-    ):
-        mock_ticker.return_value.info = fake_info
-        dcf = build_dcf("TEST", statements=None)
+    dcf = build_dcf("TEST", figures=figures())
 
     consensus = (
         AnalystConsensus(symbol="TEST", n_analysts=12, target_price_mean=consensus_target)
