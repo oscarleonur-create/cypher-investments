@@ -103,6 +103,7 @@ DECLARED: dict[str, dict[str, Kind]] = {
 # Constants of the rule modules that decide nothing about a proposal.
 NOT_RULES: dict[str, str] = {
     "proposal.NEEDS_RATIONALE": "a ledger invariant: which actions must carry reasons",
+    "proposal.EVENTS_NAMED": "how many of today's events a rationale spells out: display",
     "distress.DISTRESS_REASONS": "the names of the searches, recorded on their events",
     "distress.LABELS": "display text for each situation",
     "proposal.PARAM_CONSTANTS": "a map from EntryParams fields to the constants above",
