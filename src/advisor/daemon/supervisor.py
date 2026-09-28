@@ -180,6 +180,16 @@ def build_registry() -> JobRegistry:
     )
     reg.register(
         Job(
+            name="breadth_sync",
+            # Every day, not only trading days: a laptop asleep on Friday
+            # evening catches up on Saturday; a run with nothing new is cheap.
+            trigger=DailyAt(time(18, 30), trading_days_only=False, grace_hours=14.0),
+            handler=handlers.run_breadth_sync,
+            description="market-wide daily bars, E0 universe snapshot, SEC revenue frames",
+        )
+    )
+    reg.register(
+        Job(
             name="rule_expiry",
             trigger=DailyAt(time(6, 40), trading_days_only=False, grace_hours=18.0),
             handler=handlers.run_rule_expiry,
