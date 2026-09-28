@@ -3,6 +3,10 @@
 *.txt
 *.data
 *.json
+# The blanket rule also swallowed the frontend's manifest and compiler config,
+# so a fresh checkout or worktree could not build the SPA.
+!frontend/package.json
+!frontend/tsconfig.json
 .env
 .env.*
 !.env.example
