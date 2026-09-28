@@ -418,6 +418,12 @@ def record_live(store: BreadthStore, day: date, now: datetime, t: S.Thresholds =
     out = Outcomes(panel, eligible, cik_of, sic_map(store))
     for r in recs:
         r["outcomes"] = out.of(r["symbol"], r["row"])
+    with store.conn:
+        # The day is rewritten whole: a record the current rules no longer
+        # make must not survive from an earlier run of the same day.
+        store.conn.execute(
+            "DELETE FROM breadth_records WHERE origin = 'live' AND day = ?", (day.isoformat(),)
+        )
     _write(store, recs, "live", "live", rules.version, cik_of, now)
 
     filled = 0

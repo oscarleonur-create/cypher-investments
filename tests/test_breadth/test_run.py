@@ -74,6 +74,26 @@ def test_full_run(tmp_path):
         assert store.last_run()["ok"] == 1
 
 
+def test_rerunning_a_day_rewrites_its_live_records(tmp_path):
+    db, _ = run(tmp_path)
+    with BreadthStore(breadth_path(db)) as store:
+        store.conn.execute(
+            "INSERT INTO breadth_records (id, origin, run_id, grp, symbol, day, rules, "
+            "detail_json, updated_at) VALUES ('stale', 'live', 'live', 'P', 'GONE', "
+            "'2026-09-25', 'old', '{}', 'x')"
+        )
+        store.conn.execute(
+            "INSERT INTO breadth_records (id, origin, run_id, grp, symbol, day, rules, "
+            "detail_json, updated_at) VALUES ('kept', 'live', 'live', 'P', 'PAST', "
+            "'2026-09-24', 'old', '{}', 'x')"
+        )
+        store.conn.commit()
+    run(tmp_path)
+    with BreadthStore(breadth_path(db)) as store:
+        ids = {r[0] for r in store.conn.execute("SELECT id FROM breadth_records")}
+    assert "stale" not in ids and "kept" in ids
+
+
 def test_directory_down_is_reported_not_raised(tmp_path):
     def down():
         raise TimeoutError("nasdaqtrader.com")
