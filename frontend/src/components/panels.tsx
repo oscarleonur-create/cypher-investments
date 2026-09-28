@@ -217,12 +217,17 @@ export function ValuationPanel({ r }: { r: ResearchReport }) {
         <div className="mb-4">
           <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted mb-2">
             <span>Current {fmtNum(dcf.current_price)}</span>
-            <span>WACC {fmtPct(dcf.wacc)}</span>
+            <span>Discount {fmtPct(dcf.wacc)}</span>
             {dcf.beta != null && <span>β {fmtNum(dcf.beta)}</span>}
             {dcf.implied_growth_rate != null && (
               <span>Implied growth {fmtPct(dcf.implied_growth_rate)}</span>
             )}
+            {dcf.implied_margin != null && (
+              <span>Price needs {fmtPct(dcf.implied_margin)} FCF margin</span>
+            )}
           </div>
+          {dcf.note && <div className="text-sm text-warn mb-2">{dcf.note}</div>}
+          {dcf.source && <div className="text-xs text-muted mb-2">{dcf.source}</div>}
           {data.length > 0 && dcfSane ? (
             <ResponsiveContainer width="100%" height={180}>
               <BarChart data={data} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>

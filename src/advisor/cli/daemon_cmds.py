@@ -533,23 +533,33 @@ def valuation_cmd(
     ] = None,
     output: Annotated[str, typer.Option("--output", "-o")] = "table",
 ) -> None:
-    """What the current price requires the business to deliver. Not a fair value."""
+    """What the price requires the business to deliver, and a value range from
+    its own filed margins. Every input is shown with its source."""
     import asyncio
 
     from rich.table import Table
 
     from advisor.daemon.book import fetch_book
-    from advisor.valuation.fundamentals import latest_fundamentals
+    from advisor.valuation.figures import last_price, load_figures
     from advisor.valuation.implied import build_snapshot
+    from advisor.valuation.margins import required_range
 
     sym = symbol.upper()
+    source = "--price" if price is not None else ""
     if price is None:
-        book = asyncio.run(fetch_book())
-        held = next((p for p in book.positions if p.underlying.upper() == sym), None)
-        if held is None or not held.price:
-            console.print(f"[red]No price for {sym} — pass --price[/red]")
-            raise typer.Exit(1)
-        price = held.price
+        try:
+            book = asyncio.run(fetch_book())
+            held = next((p for p in book.positions if p.underlying.upper() == sym), None)
+        except Exception:  # noqa: BLE001 — a name not held is valued at its close
+            held = None
+        if held is not None and held.price:
+            price, source = held.price, "position mark"
+        else:
+            quoted = last_price(sym)
+            if quoted is None:
+                console.print(f"[red]No price for {sym} — pass --price[/red]")
+                raise typer.Exit(1)
+            price, source = quoted
 
     # A blank-cheque company has no revenue by design. Running it through the
     # revenue model returns "no usable filing", which is true and useless; its
@@ -558,6 +568,9 @@ def valuation_cmd(
 
     trust = latest_trust_value(sym, price)
     if trust is not None:
+        if output == "json":
+            output_json({"symbol": sym, "spac": True, **trust.__dict__})
+            return
         console.print(f"\n[bold]{sym}[/bold] — blank-cheque company, valued on its trust")
         console.print(f"  filing {trust.source_accession}, period to {trust.asof}")
         console.print(
@@ -576,64 +589,95 @@ def valuation_cmd(
         )
         return
 
-    fundamentals = latest_fundamentals(sym)
-    if fundamentals is None:
-        console.print(f"[red]No usable filing for {sym}[/red]")
-        raise typer.Exit(1)
-
-    snapshot = build_snapshot(fundamentals, price)
+    figures = load_figures(sym, price, price_source=source)
+    snapshot = build_snapshot(figures)
     if snapshot is None:
-        console.print(f"[red]Cannot value {sym} — missing {', '.join(fundamentals.missing)}[/red]")
+        absent = [
+            name
+            for name, value in (
+                ("share count", figures.shares),
+                ("balance sheet", figures.net_cash),
+                ("revenue", figures.revenue_base),
+            )
+            if value is None
+        ]
+        console.print(f"[red]Cannot value {sym} — missing {', '.join(absent) or 'a filing'}[/red]")
         raise typer.Exit(1)
 
     if output == "json":
         output_json(snapshot.model_dump(mode="json"))
         return
 
+    bn = 1e9
     console.print(
-        f"\n[bold]{sym}[/bold] at ${snapshot.price:,.2f} — "
-        f"filing {snapshot.source_accession}, period to {snapshot.period_end}"
+        f"\n[bold]{sym}[/bold] at ${snapshot.price:,.2f} ({snapshot.price_source or 'given'}) — "
+        f"balance sheet {snapshot.source_accession}, {snapshot.period_end}"
     )
     if snapshot.is_stale():
         console.print(
-            f"  [yellow]⚠ the figures are {snapshot.period_age_days()} days old — "
-            f"the run-rate may describe a different business[/yellow]"
+            f"  [yellow]⚠ the balance sheet is {snapshot.period_age_days()} days old — "
+            f"it may describe a different business[/yellow]"
         )
     console.print(
-        f"  market cap ${snapshot.market_cap / 1e9:,.0f}bn  "
-        f"net cash ${(snapshot.net_cash or 0) / 1e9:,.0f}bn  "
-        f"[bold]EV ${snapshot.enterprise_value / 1e9:,.0f}bn[/bold]"
+        f"  market cap ${snapshot.market_cap / bn:,.1f}bn  "
+        f"net cash ${(snapshot.net_cash or 0) / bn:,.1f}bn  "
+        f"[bold]EV ${snapshot.enterprise_value / bn:,.1f}bn[/bold]"
     )
-    if snapshot.ev_to_revenue:
-        console.print(
-            f"  EV / revenue {snapshot.ev_to_revenue:,.1f}x on "
-            f"${(snapshot.revenue_runrate or 0) / 1e9:,.1f}bn run-rate"
-        )
-
-    table = Table(title="What the price requires, over 10 years")
-    table.add_column("terminal EV/FCF", justify="right")
-    table.add_column("FCF margin", justify="right")
-    table.add_column("revenue needed", justify="right")
-    table.add_column("implied CAGR", justify="right")
-    for scenario in snapshot.scenarios:
-        colour = (
-            "red"
-            if scenario.implied_cagr > 0.25
-            else "yellow"
-            if scenario.implied_cagr > 0.15
-            else "green"
-        )
-        table.add_row(
-            f"{scenario.terminal_multiple:g}x",
-            f"{scenario.fcf_margin:.0%}",
-            f"${scenario.required_revenue / 1e9:,.0f}bn",
-            f"[{colour}]{scenario.implied_cagr:.1%}[/{colour}]",
-        )
-    console.print(table)
     console.print(
-        "\n[dim]This is arithmetic, not advice: it says what would have to happen, "
-        "not whether it will. No business above $100bn of revenue has sustained "
-        "25% growth for a decade.[/dim]"
+        f"  revenue ${(snapshot.revenue_base or 0) / bn:,.2f}bn ({snapshot.revenue_base_label}) "
+        f"— EV/revenue {snapshot.ev_to_revenue:,.1f}x"
+    )
+    if snapshot.revenue_yoy is not None:
+        console.print(f"  growing {snapshot.revenue_yoy:+.1%} ({snapshot.revenue_growth_label})")
+    for m in snapshot.own_margins:
+        console.print(f"  own margin {m.value:+.1%} — {m.label}")
+
+    readings, left_out = required_range(snapshot)
+    base = snapshot.base_case()
+    table = Table(title=f"What the price requires, over {base.years if base else 10} years")
+    table.add_column("steady-state FCF margin", justify="right")
+    table.add_column("source")
+    table.add_column("revenue growth / yr", justify="right")
+    for r in readings:
+        colour = "red" if r.required > 0.25 else "yellow" if r.required > 0.15 else "green"
+        table.add_row(f"{r.margin:.1%}", r.label, f"[{colour}]{r.required:+.1%}[/{colour}]")
+    console.print(table)
+    for note in left_out:
+        console.print(f"  [dim]{note}[/dim]")
+    if snapshot.implied_margin is not None:
+        console.print(
+            f"  At the growth it is delivering, the price needs a steady-state FCF "
+            f"margin of [bold]{snapshot.implied_margin:.1%}[/bold] "
+            f"[dim]({snapshot.implied_margin_label})[/dim]"
+        )
+    elif snapshot.implied_margin_label:
+        console.print(f"  [dim]{snapshot.implied_margin_label}[/dim]")
+
+    if snapshot.value:
+        vt = Table(title="Value range — an opinion from the company's own margins")
+        vt.add_column("case")
+        vt.add_column("growth yr 1 → 10", justify="right")
+        vt.add_column("steady-state margin")
+        vt.add_column("value / share", justify="right")
+        vt.add_column("vs price", justify="right")
+        for v in snapshot.value:
+            colour = "green" if v.upside > 0.10 else "red" if v.upside < -0.10 else "yellow"
+            vt.add_row(
+                v.name,
+                f"{v.growth_start:+.1%} → {v.terminal_growth:.0%}",
+                f"{v.target_margin:.1%} ({v.margin_label})",
+                f"${v.value_per_share:,.2f}",
+                f"[{colour}]{v.upside:+.0%}[/{colour}]",
+            )
+        console.print(vt)
+    else:
+        console.print(f"\n  [yellow]No value range: {snapshot.value_refused}.[/yellow]")
+    for note in snapshot.notes:
+        console.print(f"  [dim]note: {note}[/dim]")
+    console.print(
+        f"\n[dim]{snapshot.assumptions_text()}. What the price requires is arithmetic; "
+        "the value range is an opinion built on the company's own filed margins and "
+        "moves most with the margin. Neither is advice.[/dim]"
     )
 
 

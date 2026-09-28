@@ -1,8 +1,14 @@
-"""Reverse-DCF: solve for the revenue growth rate implied by the current price.
+"""Reverse DCF: the constant revenue growth the current price implies.
 
-Uses bisection on the DCF model from dcf.py. Holds FCF margin and WACC at
-their base-case values, and solves for the single constant growth rate (yr1-10)
-that makes the implied price equal to the current market price.
+The engine's backward solve (``valuation.dcf.implied_growth``) at the base
+scenario's margin and discount rate, from the base revenue and today's margin
+the DCF was built on.
+
+It used to rebuild base revenue as year-one FCF over the *target* margin —
+neither the base year nor the margin that FCF was made at — and to return the
+bracket's edge (-10% or +50%) as if it were an answer when the price fell
+outside it. It returns None now; the workstation shows nothing rather than a
+bound dressed as a result.
 """
 
 from __future__ import annotations
@@ -10,66 +16,33 @@ from __future__ import annotations
 import logging
 
 from advisor.research.models import DcfResult
+from advisor.valuation import dcf as engine
 
 logger = logging.getLogger(__name__)
 
-_TOL = 0.001  # convergence: growth rates within 0.1% pp
-_MAX_ITER = 60
-
 
 def solve_implied_growth(dcf: DcfResult) -> float | None:
-    """Return the constant growth rate (yr1-10) that equates DCF price to market price.
+    """The constant growth (years 1–10) at which the DCF equals the market price.
 
-    Returns None if the model can't converge (e.g. current price > even 50% growth implies).
+    None when there is no base scenario, no price, no base revenue, or the
+    price lies outside what -50% to +150% a year could justify.
     """
-    if dcf.base is None or dcf.current_price <= 0:
+    if dcf.base is None or dcf.current_price <= 0 or dcf.shares_outstanding <= 0:
         return None
-
-    assump = dcf.base.assumptions
-    target_price = dcf.current_price
-
-    def _price_at_growth(g: float) -> float:
-        from advisor.research.models import DcfAssumptions
-        from advisor.research.valuation.dcf import compute_dcf_scenario
-
-        a = DcfAssumptions(
-            scenario="implied",
-            revenue_growth_yr1_3=g,
-            revenue_growth_yr4_10=g,  # constant for simplicity
-            target_fcf_margin=assump.target_fcf_margin,
-            capex_intensity=assump.capex_intensity,
-            terminal_growth_rate=assump.terminal_growth_rate,
-            terminal_exit_multiple=assump.terminal_exit_multiple,
-            wacc=assump.wacc,
-        )
-        scenario = compute_dcf_scenario(
-            a,
-            base_revenue=dcf.base.projected_fcf[0] / max(assump.target_fcf_margin, 0.001),
-            seed_fcf=dcf.base.projected_fcf[0],
-            net_debt=dcf.net_debt,
-            shares=dcf.shares_outstanding,
-            current_price=target_price,
-        )
-        return scenario.implied_price
-
-    lo, hi = -0.10, 0.50  # search from -10% to +50% growth
-
-    # Bracket check
-    if _price_at_growth(lo) > target_price:
-        logger.debug("Market price below even -10%% growth DCF — very cheap or broken model")
-        return lo
-    if _price_at_growth(hi) < target_price:
-        logger.debug("Market price above even 50%% growth DCF — very expensive or broken model")
-        return hi
-
-    for _ in range(_MAX_ITER):
-        mid = (lo + hi) / 2
-        price_mid = _price_at_growth(mid)
-        if abs(price_mid - target_price) / max(target_price, 1) < _TOL:
-            return mid
-        if price_mid < target_price:
-            lo = mid
-        else:
-            hi = mid
-
-    return (lo + hi) / 2
+    if not dcf.base_revenue or dcf.base_revenue <= 0 or dcf.seed_fcf is None:
+        return None
+    a = dcf.base.assumptions
+    ev = engine.market_ev(dcf.current_price, dcf.shares_outstanding, -dcf.net_debt)
+    if ev is None:
+        return None
+    solved = engine.implied_growth(
+        ev,
+        dcf.base_revenue,
+        dcf.seed_fcf / dcf.base_revenue,
+        a.target_fcf_margin,
+        discount_rate=a.wacc,
+        terminal_growth=a.terminal_growth_rate,
+    )
+    if solved.value is None:
+        logger.debug("reverse DCF for %s: %s", dcf.symbol, solved.describe())
+    return solved.value

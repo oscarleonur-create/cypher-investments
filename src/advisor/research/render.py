@@ -396,11 +396,17 @@ def _render_valuation(report: ResearchReport) -> str:
         dcf = report.dcf
         lines.append("### DCF Analysis\n")
         lines.append(
-            f"Current price: **${dcf.current_price:.2f}**  |  "
-            f"WACC: {dcf.wacc:.1%}  |  "
-            f"β: {dcf.beta or 0:.2f}  |  "
-            f"Rf: {dcf.risk_free_rate:.1%}"
+            f"Current price: **${dcf.current_price:.2f}**  |  " f"Discount rate: {dcf.wacc:.1%}"
         )
+        if dcf.source:
+            lines.append(f"\n_{dcf.source}_")
+        if dcf.note:
+            lines.append(f"\n**{dcf.note}**")
+        if dcf.implied_margin is not None:
+            lines.append(
+                f"\nSteady-state FCF margin the price requires at today's growth: "
+                f"**{dcf.implied_margin:.1%}**"
+            )
         if dcf.implied_growth_rate is not None:
             lines.append(
                 f"\nMarket-implied growth rate (reverse-DCF): " f"**{dcf.implied_growth_rate:.1%}**"

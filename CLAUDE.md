@@ -173,13 +173,43 @@ this symbol*.
   else: META required -0.4%, +2.3% or +5.7% a year at its 3-year median
   (32.7%), the generic 25% and its trailing (18.0%) margins. The scorecard
   shows every margin the company offers, each labeled; a margin at or below
-  zero is named and left out. The snapshot's base case stays generic, so
-  thesis rules keep testing the same quantity. Nothing margin-sensitive may
-  size a position: the model's CONSTRUCTIVE stance, which leans on these
-  rows, adds no risk.
-- **Never publish a fair value.** This project reports what a price requires,
-  never what a business is worth. The first is arithmetic and falsifiable; the
-  second is an opinion wearing a number.
+  zero is named and left out. The snapshot's base case stays generic (25%
+  FCF), so thesis rules keep testing the same kind of quantity — though since
+  2026-09-27 it is discounted, and SPCX's reads 42.5% where it read 25.8%.
+  Nothing margin-sensitive may size a position: the model's CONSTRUCTIVE
+  stance, which leans on these rows, adds no risk.
+- **Trailing figures are rebuilt from the filings.** A 10-Q's cash flow is
+  year to date, so TTM is `FY + YTD − prior YTD`, or stated outright, or —
+  across a fresh-start split like WOLF's 2025 bankruptcy exit — chained from
+  contiguous periods. A period of odd length is annualised by its own length:
+  WOLF's FY2026 10-K covers 272 days. A company too new for a fiscal year
+  (SPCX, CBRS) is read over its longest reported span, labelled.
+- **One engine prices everything (2026-09-27).** `valuation/dcf.py` is the only
+  discounted-cash-flow code: the daemon's weekly valuation, the research
+  workstation's DCF and reverse DCF, and the Bayesian Monte Carlo (a
+  vectorised mirror pinned by a parity test) all run through it. Inputs come
+  from `valuation/figures.py` — SEC filings for revenue, cash flow, margins,
+  balance sheet and shares; the broker's close for price; Yahoo only where
+  the SEC has nothing (IFRS filers), and labelled. Before this, the daemon did
+  not discount (AMZN "required" -6%/yr) and the workstation took everything
+  from `yfinance.info`, which when rate-limited defaulted shares to 1.0 and
+  published JBL at $0.00.
+- **Required growth is discounted.** At a stated 10% (the 10-year Treasury
+  closed at 5.18% on 2026-09-24, plus a 4.8% premium) with 3% terminal
+  growth, from trailing-twelve-month revenue. The rate is fixed so a thesis
+  tests the same quantity week to week; it is the investor's hurdle, not a
+  scenario, so it does not vary between bear and bull. Rows stored before the
+  change are marked `method="undiscounted"` and never compared with new ones
+  as a move.
+- **A fair value is published only as a range, as an opinion (user decision,
+  2026-09-27, replacing "never publish a fair value").** Bear / base / bull
+  per share from the company's *own* filed margins — the lowest, median and
+  highest of FCF TTM, three-year median FCF and operating margin after tax —
+  with today's growth fading to terminal, ±25% (at least 3 points). Every
+  assumption travels with the number. When the filings show no positive
+  margin, or no year-over-year comparison, the range is refused with the
+  reason — never built on a default. What the price *requires* stays the
+  headline: it is arithmetic and falsifiable; the range is an opinion.
 - **XBRL is read undimensioned.** The same concept is tagged once per segment,
   instrument and class — SPCX's quarterly revenue appears sixteen times — so
   every extraction filters on the undimensioned fact. The one deliberate

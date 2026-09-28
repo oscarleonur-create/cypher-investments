@@ -92,7 +92,8 @@ class TestPersistence:
         store.save_valuation(snap(151.21))
         loaded = store.load_latest_valuation("SPCX")
         assert loaded.price == pytest.approx(151.21)
-        assert loaded.base_case().implied_cagr == pytest.approx(0.258, abs=0.005)
+        assert loaded.method == "dcf"
+        assert loaded.base_case().implied_cagr == pytest.approx(0.4235, abs=0.001)
 
     def test_before_returns_the_prior_day_not_todays(self, store):
         store.save_valuation(snap(120.0, asof=date(2026, 9, 12)))
