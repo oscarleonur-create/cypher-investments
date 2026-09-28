@@ -143,7 +143,7 @@ export default function Ticker({ quotes }: { quotes: QuotesState }) {
           <RecommendationPanel symbol={sym} />
           {/* Portfolio-only Bayesian what-if; renders nothing for non-holdings. */}
           <BayesianPricingPanel symbol={sym} />
-          <div className="grid gap-4 lg:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <div className="space-y-4">
             <FairPricePanel r={data} />
             <MemoPanel r={data} />
