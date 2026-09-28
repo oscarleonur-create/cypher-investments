@@ -630,6 +630,32 @@ def _with_scanner_store(db_path, fn, now):
         store.close()
 
 
+async def run_breadth_sync(ctx: JobContext) -> JobResult:
+    """Nights: bring the market-wide stores up to the day's close and cut E0.
+
+    The first run backfills four years for ~5,000 names and takes minutes;
+    later runs read two weeks per name. A pull the bar source refuses is
+    reported as a failure — the names it missed are fetched on the next run.
+    """
+    import asyncio
+
+    from advisor.breadth.run import run_sync
+
+    summary = await asyncio.to_thread(run_sync, ctx.store.db_path, ctx.now)
+    if "error" in summary:
+        return JobResult(job="breadth_sync", ok=False, detail=summary["error"])
+    u = summary.get("universe", {})
+    b = summary.get("bars", {})
+    detail = (
+        f"{u.get('eligible')} eligible of {u.get('common_stock_sec_filers')} common stock on "
+        f"{u.get('day')}; bars {b.get('fetched')} fetched, {b.get('current')} current"
+        + (f", RATE-LIMITED ({b.get('remaining')} left)" if b.get("rate_limited") else "")
+        + f"; {summary.get('seconds')} s"
+    )
+    logger.info("breadth_sync: %s", detail)
+    return JobResult(job="breadth_sync", ok=summary["ok"], detail=detail)
+
+
 async def run_learning_sweep(ctx: JobContext) -> JobResult:
     """Monthly, evenings: search the thresholds over the replay; file survivors as PENDING.
 

@@ -13,6 +13,11 @@ import inspect
 from dataclasses import fields, replace
 
 import pytest
+from advisor.breadth import bars as breadth_bars
+from advisor.breadth import facts as breadth_facts
+from advisor.breadth import listings as breadth_listings
+from advisor.breadth import ruleset as breadth_ruleset
+from advisor.breadth import universe as breadth_universe
 from advisor.entry import distress, exits, freshness, proposal, sheet, zone
 from advisor.entry import ruleset as entry_ruleset
 from advisor.learning.rules import Kind
@@ -153,3 +158,38 @@ class TestKinds:
         kinds = entry_ruleset.entry_rules().kinds
         searchable = {n for n, k in kinds.items() if k is Kind.THRESHOLD}
         assert not {n for n in searchable if "RISK" in n or "LIMIT" in n or "BONUS" in n}
+
+
+# ── breadth ────────────────────────────────────────────────────────────────
+
+BREADTH_MODULES = {
+    "universe": breadth_universe,
+    "listings": breadth_listings,
+    "bars": breadth_bars,
+    "facts": breadth_facts,
+}
+
+
+@pytest.mark.parametrize("label,module", BREADTH_MODULES.items())
+def test_breadth_constants_are_declared_or_not_rules(label, module):
+    declared = set(breadth_ruleset.DECLARED.get(label, {}))
+    known = {f"{label}.{n}" for n in declared} | set(breadth_ruleset.NOT_RULES)
+    missing = {f"{label}.{c}" for c in constants(module)} - known
+    assert not missing, f"declare in breadth/ruleset.py or list in NOT_RULES: {sorted(missing)}"
+
+
+def test_breadth_declarations_exist():
+    for label, names in breadth_ruleset.DECLARED.items():
+        for name in names:
+            assert hasattr(BREADTH_MODULES[label], name), f"{label}.{name}"
+    for key in breadth_ruleset.NOT_RULES:
+        label, name = key.split(".", 1)
+        assert hasattr(BREADTH_MODULES[label], name), key
+
+
+def test_the_universe_floor_is_decided_and_versioned(monkeypatch):
+    s = breadth_ruleset.universe_rules()
+    assert s.kinds["universe.MIN_PRICE"] is Kind.DECIDED
+    assert s.kinds["universe.MIN_DOLLAR_VOLUME"] is Kind.DECIDED
+    monkeypatch.setattr(breadth_universe, "MIN_PRICE", 3.0)
+    assert breadth_ruleset.universe_rules().version != s.version
