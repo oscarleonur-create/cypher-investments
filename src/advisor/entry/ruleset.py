@@ -93,6 +93,17 @@ DECLARED: dict[str, dict[str, Kind]] = {
         "MAX_RESULTS": Kind.MODEL,
         "DISTRESS_TITLE_PATTERN": Kind.MODEL,
     },
+    # How the company's health is described beside every reading and proposal
+    # (2026-09-28). It changes no action; it shapes what the reading sees.
+    "health": {
+        "TREND_POINTS": Kind.MODEL,
+        "DILUTION_CONCERN": Kind.MODEL,
+        "NET_DEBT_FCF_YEARS": Kind.MODEL,
+        "MARGIN_DROP": Kind.MODEL,
+        "MARGIN_MEANINGFUL": Kind.MODEL,
+        "FINANCIAL_SIC": Kind.MODEL,
+        "MAX_AGE_DAYS": Kind.MODEL,
+    },
     # How a headline names each company: the holder reviews the list.
     "names": {
         "COMPANY_NAMES": Kind.DECIDED,
@@ -103,6 +114,9 @@ DECLARED: dict[str, dict[str, Kind]] = {
 # Constants of the rule modules that decide nothing about a proposal.
 NOT_RULES: dict[str, str] = {
     "proposal.NEEDS_RATIONALE": "a ledger invariant: which actions must carry reasons",
+    "proposal.EVENTS_NAMED": "how many of today's events a rationale spells out: display",
+    "health._SCHEMA": "the table the health is stored in",
+    "health._COMPUTED": "a per-process memo of names computed today",
     "distress.DISTRESS_REASONS": "the names of the searches, recorded on their events",
     "distress.LABELS": "display text for each situation",
     "proposal.PARAM_CONSTANTS": "a map from EntryParams fields to the constants above",
@@ -120,7 +134,7 @@ def entry_rules(params=None) -> RuleStamp:
     """The version of the rules ``build_proposal`` runs with ``params`` (default: the code's)."""
     from dataclasses import asdict
 
-    from advisor.entry import distress, exits, freshness, proposal, sheet, zone
+    from advisor.entry import distress, exits, freshness, health, proposal, sheet, zone
     from advisor.news import google_news, halts
     from advisor.news import names as company_names
 
@@ -131,6 +145,7 @@ def entry_rules(params=None) -> RuleStamp:
         "exits": exits,
         "distress": distress,
         "freshness": freshness,
+        "health": health,
         "halts": halts,
         "google_news": google_news,
         "names": company_names,

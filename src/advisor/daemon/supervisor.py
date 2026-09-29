@@ -206,6 +206,16 @@ def build_registry() -> JobRegistry:
     )
     reg.register(
         Job(
+            name="company_health",
+            # Before the brief and the first proposals, which read it. Minutes
+            # on the SEC; 06:00 is the quietest hour of the halts poll.
+            trigger=DailyAt(time(6, 0), grace_hours=3.5),
+            handler=handlers.run_company_health,
+            description="each held and watched company's health from its filings",
+        )
+    )
+    reg.register(
+        Job(
             name="rule_expiry",
             trigger=DailyAt(time(6, 40), trading_days_only=False, grace_hours=18.0),
             handler=handlers.run_rule_expiry,

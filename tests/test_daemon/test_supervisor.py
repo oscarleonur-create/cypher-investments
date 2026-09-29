@@ -64,9 +64,22 @@ class TestRegistry:
             "news_judge_close",
             "picks_intraday",
             "breadth_sync",
+            "company_health",
             "rule_expiry",
             "heartbeat",
         }
+
+    def test_company_health_runs_before_the_brief_and_the_first_proposals(self):
+        from datetime import datetime
+
+        from advisor.daemon import market_calendar as mc
+
+        trig = {j.name: j.trigger for j in build_registry()}["company_health"]
+        at = lambda d, h, m: datetime(2026, 9, d, h, m, tzinfo=mc.MARKET_TZ)  # noqa: E731
+        assert not trig.is_due(at(28, 5, 59), None)
+        assert trig.is_due(at(28, 6, 0), None)  # Monday, before the 07:00 brief
+        assert trig.is_due(at(28, 9, 29), None)  # a laptop asleep at 06:00 catches up
+        assert not trig.is_due(at(27, 6, 0), None)  # Sunday: no new filings to read
 
     def test_halts_are_polled_from_the_premarket_to_the_evening_on_trading_days(self):
         """The feed keeps a few days, so a sleeping laptop catches up on waking."""

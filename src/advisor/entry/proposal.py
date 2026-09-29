@@ -363,10 +363,15 @@ def build_proposal(
                 source="latest filing XBRL; yfinance consensus",
             )
         )
-    if sheet.events_today:
+    # Each event by what it is, not a count: "1 event(s) since the previous
+    # close" was MDB's CEO leaving for Meta (2026-09-28), read by nobody.
+    for e in sheet.events_today[:EVENTS_NAMED]:
+        p.reasons.append(Reason(text=event_text(e), source=event_source(e)))
+    if len(sheet.events_today) > EVENTS_NAMED:
         p.reasons.append(
             Reason(
-                text=f"{len(sheet.events_today)} event(s) since the previous close",
+                text=f"and {len(sheet.events_today) - EVENTS_NAMED} more event(s) since the "
+                "previous close",
                 source="event stream",
             )
         )
@@ -520,7 +525,31 @@ def build_proposal(
         p.action = Action.WAIT if p.blockers else Action.IN_ZONE
     elif z is not None or sheet.candidates:
         p.action = Action.NONE
+    # The why comes first: an ADD whose reasons were a P/S line and an event
+    # count read as an action without a rationale (the user, 2026-09-28).
+    if p.action in (Action.ENTER, Action.ADD, Action.WAIT) and p.triggers:
+        p.reasons = [
+            Reason(text=f"Why {p.action.value}: {t}", source="entry rules") for t in p.triggers
+        ] + p.reasons
     return _held(p, sheet, net_liq) if held else p
+
+
+EVENTS_NAMED = 4  # events spelled out in a proposal's reasons; the rest are counted
+
+
+def event_text(e) -> str:
+    """One event as a reason: its time and what it is. Pure."""
+    when = mc.to_et(e.ts).strftime("%m-%d %H:%M ET")
+    return f"{when}: {e.text}"
+
+
+def event_source(e) -> str:
+    """Where an event came from, as specific as the event says. Pure."""
+    if e.items:
+        return f"SEC EDGAR 8-K item {', '.join(e.items)}"
+    if e.kind.startswith("FILING"):
+        return "SEC EDGAR"
+    return f"event stream ({e.kind.replace('_', ' ').lower()}, tier {e.tier})"
 
 
 def _held(p: Proposal, sheet: Sheet, net_liq: float | None) -> Proposal:

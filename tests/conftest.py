@@ -21,6 +21,25 @@ def _no_news_verification_network(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_news_rationale_network(monkeypatch):
+    """An acting proposal pulls and judges news for its rationale; no test may.
+
+    Tests of the news rationale pass their own ``news`` / ``puller``.
+    """
+    from advisor.entry import run
+    from advisor.story import reading
+
+    monkeypatch.setattr(run, "default_news", lambda *a, **k: [])
+    # Every reading and proposal refreshes the company's health from the SEC.
+    monkeypatch.setattr(reading, "ensure_health", lambda *a, **k: None)
+    monkeypatch.setattr(run, "default_health", lambda *a, **k: None)
+    from advisor.research import deep_research
+
+    monkeypatch.setattr(deep_research, "_health", lambda *a, **k: None)
+    monkeypatch.setattr(deep_research, "_judged_news", lambda *a, **k: [])
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_environment(monkeypatch):
     """No test may depend on the holder's ``.env`` or reach the live broker.
 

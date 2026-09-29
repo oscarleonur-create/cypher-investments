@@ -36,6 +36,7 @@ from advisor.research.models import (
 
 logger = logging.getLogger(__name__)
 
+_INLINE_MARK = re.compile(r"\[(\d+)\]")  # an inline citation in the abstract
 _BUSINESS_CHAR_CAP = 50_000
 _SNIPPET_CHARS = 800
 
@@ -84,6 +85,43 @@ def build_deep_research(
         sec_source_id = sources[0].id if sources and business_text else None
 
         snippet_by_url: dict[str, str] = {}
+
+        # The company's health from its filings, so the brief weighs the news
+        # against the business (user, 2026-09-28: every analysis sees it).
+        health = _health(sym)
+        if health is not None and health.lines():
+            url = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&ticker={sym}"
+            snippet_by_url[url] = "\n".join(health.lines())
+            sources.append(
+                Reference(
+                    id=len(sources) + 1,
+                    title=f"{name} financial health, {health.source_label()}",
+                    url=url,
+                    source_type=SourceType.OTHER,
+                    published_date=str(health.period_end or ""),
+                    detail="SEC XBRL figures",
+                )
+            )
+
+        # What happened this week, as the news agent judged it: dated, checked,
+        # about the company. The contract search below never finds a CEO leaving.
+        for j in _judged_news(sym):
+            if not j.url or j.url in snippet_by_url:
+                continue
+            snippet_by_url[j.url] = (
+                f"{j.published_at.date()}: {j.direction.value.lower()}, "
+                f"{j.materiality.value.lower()} materiality — {j.what or j.why or ''}"
+            )
+            sources.append(
+                Reference(
+                    id=len(sources) + 1,
+                    title=j.title,
+                    url=j.url,
+                    source_type=SourceType.NEWS,
+                    published_date=j.published_at.date().isoformat(),
+                    detail=_domain(j.url),
+                )
+            )
 
         news = searcher.search(
             f"{name} {sym} contract award order win market share competitors 2025 2026",
@@ -178,6 +216,35 @@ def _slice_business(text: str) -> str:
 # ── LLM synthesis ────────────────────────────────────────────────────────────
 
 
+def _health(sym: str):
+    """Today's company health (stored, or from the SEC once a day). None on failure."""
+    try:
+        from advisor.daemon.market_calendar import now_et
+        from advisor.entry.health import refresh_health
+        from advisor.research.config import get_settings
+
+        return refresh_health(get_settings().db_path, sym, now_et())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Deep research: no health for %s: %s", sym, exc)
+        return None
+
+
+JUDGED_NEWS = 5  # the news agent's items of the week given to the brief
+
+
+def _judged_news(sym: str) -> list:
+    """The news agent's judgments about the company this week, most material first."""
+    try:
+        from advisor.daemon.market_calendar import now_et
+        from advisor.entry.run import judged_news
+        from advisor.research.config import get_settings
+
+        return judged_news(get_settings().db_path, sym, now_et())[:JUDGED_NEWS]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Deep research: no judged news for %s: %s", sym, exc)
+        return []
+
+
 def _build_context(
     business_text: str, snippet_by_url: dict[str, str], sources: list[Reference]
 ) -> str:
@@ -188,6 +255,11 @@ def _build_context(
             parts.append(
                 f"[{ref.id}] ({ref.detail}, filed {ref.published_date}) {ref.url}\n"
                 f"{business_text}"
+            )
+        elif ref.source_type == SourceType.OTHER:
+            parts.append(
+                f"[{ref.id}] (FINANCIAL HEALTH, {ref.detail}, period to {ref.published_date})\n"
+                f"{snippet_by_url.get(ref.url, '')}"
             )
         else:
             snippet = (snippet_by_url.get(ref.url, "") or "")[:_SNIPPET_CHARS]
@@ -259,7 +331,13 @@ def _llm_synthesise(llm, name: str, sym: str, sector: str, industry: str, contex
         "- second_order_thesis: a forward-looking, ADJACENT-MARKET optionality thesis "
         "with historical analogs. This is speculative inference — keep it clearly "
         "framed as a hypothesis.\n"
-        "- abstract: a 2-4 sentence white-paper abstract. what_they_do: one precise line."
+        "- abstract: a 2-4 sentence white-paper abstract. what_they_do: one precise line.\n"
+        "- When a FINANCIAL HEALTH source is given, the abstract must weigh the recent "
+        "news against it (cite it): is the business itself weakening — growth, cash, "
+        "balance sheet, dilution — or is the news about something the filings cannot "
+        "show yet (management, a customer, guidance)? Copy its numbers exactly; it is "
+        "dated by its period and predates news after it. Name the most material recent "
+        "news — a leadership change, a guidance change, a financing — in the abstract."
     )
     user_prompt = (
         f"Company: {name} ({sym})\nSector: {sector}\nIndustry: {industry}\n\n"
@@ -373,6 +451,12 @@ def _assemble(
     for q in quotes:
         if q.citation_id is not None:
             cited.add(q.citation_id)
+    # The abstract cites inline, "[1][6]": those count, and are renumbered below
+    # with the rest (they were not, and pointed at other sources after pruning).
+    known = {r.id for r in sources}
+    cited.update(int(n) for n in _INLINE_MARK.findall(out.abstract or "") if int(n) in known)
+    # The company's financial health is always listed: the abstract weighs it.
+    cited.update(r.id for r in sources if r.source_type == SourceType.OTHER)
 
     kept = [r for r in sources if r.id in cited]
     remap = {r.id: new_id for new_id, r in enumerate(kept, start=1)}
@@ -402,9 +486,13 @@ def _assemble(
     for q in quotes:
         q.citation_id = remap.get(q.citation_id) if q.citation_id is not None else None
 
+    def _renumber(match: re.Match) -> str:
+        new = remap.get(int(match.group(1)))
+        return f"[{new}]" if new is not None else ""  # a source never received: dropped
+
     return DeepResearch(
         symbol=sym,
-        abstract=out.abstract,
+        abstract=_INLINE_MARK.sub(_renumber, out.abstract or "").strip(),
         what_they_do=out.what_they_do,
         customers=customers,
         supply_chain=supply,

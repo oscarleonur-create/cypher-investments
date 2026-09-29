@@ -107,6 +107,7 @@ class TestStatus:
             "news_judge_close",
             "picks_intraday",
             "breadth_sync",
+            "company_health",
             "rule_expiry",
             "heartbeat",
         } == names
