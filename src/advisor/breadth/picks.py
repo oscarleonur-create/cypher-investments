@@ -11,10 +11,19 @@ so a pick says exactly what was measured and no more:
 - **The order is evidence, not a forecast.** More families first; then F
   present (the one family whose interval has cleared zero, in the three-year
   replay only); then the size of F's acceleration; then the most recent
-  agreement. No score, no expected return, no price target, no fair value.
+  agreement. No score and no fair value; the only prices a pick quotes
+  beyond its own are the replay's averages for its group (the plan, below).
 - **Every pick carries its group's track record** — the latest replay's cells
   and the live count — and the caveats, so the evidence behind the list
   travels with it.
+- **Every pick carries an entry plan** (user, 2026-09-29: *"no me dice entra a
+  x precio dado que está sucediendo esto y esperamos esto"*). The price, what
+  is happening in one sentence, what has to keep happening, and what the
+  group did next in the replay, as prices for this name, with the entry
+  engine's own stop and size (``entry_plan``). What is expected is only what
+  was measured: the replay entered on the *first* day the families agreed,
+  so a pick further in is told how far into that window it is, and that
+  entering later was not measured.
 
 Computed once a night by ``breadth_sync`` and stored; the API only reads.
 """
@@ -23,6 +32,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -31,6 +41,7 @@ import numpy as np
 import pandas as pd
 
 from advisor.breadth import signals as S
+from advisor.breadth.measure import HORIZONS
 from advisor.breadth.panel import Panel, load_panel
 from advisor.breadth.store import BreadthStore
 
@@ -38,6 +49,10 @@ logger = logging.getLogger(__name__)
 
 TOP_N = 10
 HISTORY_DAYS = 600  # a year for momentum and E0, plus the windows
+# The horizon an entry plan quotes: the one whose interval has cleared zero
+# (the three-year replay, 2026-09-28). The longer ones have too few
+# independent windows for an interval at all.
+PLAN_HORIZON = "d20"
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS breadth_picks (
@@ -151,12 +166,16 @@ def rationale(p: dict, eligible_count: int) -> dict:
         )
         undo.append("the next quarter's year-on-year growth slows")
     if pp.get("momentum_on"):
+        mom = _pct(pp.get("momentum_12_1"))
         reasons.append(
             {
                 "family": "P",
                 "text": (
-                    f"12-month return excluding the last month: {_pct(pp.get('momentum_12_1'))}, "
+                    f"12-month return excluding the last month: {mom}, "
                     f"in the top decile of the {eligible_count:,} eligible names."
+                    if pp.get("momentum_now", True)
+                    else f"In the top decile of 12-month returns within the last month; now {mom}, "
+                    f"out of it among the {eligible_count:,} eligible names."
                 ),
                 "source": "daily closes (Yahoo), ranked the same session",
             }
@@ -221,6 +240,259 @@ def rationale(p: dict, eligible_count: int) -> dict:
     return {"reasons": reasons, "invalidates": undo}
 
 
+def plan_group(families: list[str]) -> str:
+    """The replay group a pick's record belongs to: F+P has its own, the rest are 2+."""
+    return "F+P" if set(families) == {"F", "P"} else "2+"
+
+
+def _because(p: dict) -> str:
+    """What is happening, in one sentence, from the pick's own numbers. Pure."""
+    f, i, pp = p.get("f"), p.get("i"), p.get("p") or {}
+    parts = []
+    if f:
+        parts.append(
+            f"revenue is accelerating ({_pct(f['growth'])} a year in the quarter to "
+            f"{f.get('quarter_end') or f['quarter']}, from {_pct(f['growth_before'])})"
+        )
+    if i:
+        parts.append(
+            f"{i['buyers']} insiders bought {_usd(i['value'])} of stock on the open market "
+            f"(to {i['filed']})"
+        )
+    # Only what is still true today leads; a state that was on earlier in the
+    # window is said as such (P counts any session of the window).
+    strength, faded = [], []
+    mom = _pct(pp.get("momentum_12_1"))
+    if pp.get("momentum_on"):
+        if pp.get("momentum_now", True):
+            strength.append(f"top decile of 12-month returns ({mom})")
+        else:
+            faded.append(f"was top decile of 12-month returns, now {mom}")
+    if pp.get("breakout_on") and pp.get("breakout_day"):
+        rvol = pp.get("breakout_rvol")
+        strength.append(
+            f"broke out on {pp['breakout_day']}" + (f" on {rvol:.1f}x volume" if rvol else "")
+        )
+    if pp.get("high_on"):
+        off = pp.get("from_52w_high")
+        if off is not None and off >= -0.02:
+            strength.append(f"within 2% of its 52-week high ({_pct(off)})")
+        else:
+            faded.append(f"came within 2% of its 52-week high this month, now {_pct(off)}")
+    if strength or faded:
+        parts.append(
+            ("the price is strong: " + ", ".join(strength) if strength else "the price was strong")
+            + (" (" + "; ".join(faded) + ")" if faded else "")
+        )
+    if not parts:
+        return ""
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def _expects(p: dict) -> list[str]:
+    """What has to keep happening for the pick to stand: the mirror of what undoes it."""
+    out = []
+    if p.get("f"):
+        out.append(
+            f"the next quarter's revenue grows at least {_pct(p['f']['growth'])} a year "
+            "(still accelerating, or holding)"
+        )
+    if p.get("p"):
+        out.append("the price keeps its strength: top decile of 12-month returns or near its high")
+    if p.get("i"):
+        out.append("the insiders who bought do not sell")
+    return out
+
+
+def entry_plan(
+    p: dict,
+    track: list[dict],
+    *,
+    sigma: float | None,
+    measured_price: float | None,
+    measured_end: str | None,
+    review_on: str | None,
+    net_liq: float | None,
+    day: str,
+) -> dict:
+    """Enter at what price, because of what, expecting what — as measured. Pure.
+
+    - **Price**: the pick's own close (or live price when provisional).
+    - **Because**: the families' numbers in one sentence (``_because``).
+    - **Expecting**: what has to keep happening (``_expects``), and what the
+      pick's group did next in every replay window, each as prices *for this
+      name* from the price the replay would have entered at — the close on
+      the first day of agreement. Not a target: an average of past names,
+      with its interval and how often they beat their peers.
+    - **Timing**: how far into the measured window the pick is. The replay
+      never measured entering later, and the plan says so rather than
+      pretending the record transfers.
+    - **Stop and size**: the entry engine's position-leg rules unchanged —
+      2·σ·√10 of the name's own daily moves, kept in 8–25%, 2% of net liq at
+      risk, at most 20% of the book (``entry.proposal``). Nothing new decided.
+    """
+    from advisor.entry import proposal as EP
+
+    k = int(HORIZONS[PLAN_HORIZON])
+    entry = p.get("price")
+    if not entry or entry != entry or entry <= 0:
+        return {"ok": False, "gap": "no price on the session: no plan"}
+    group = plan_group(p["families"])
+    sessions_in = int(p.get("sessions_since") or 0)
+    base = measured_price if measured_price and measured_price > 0 else None
+
+    expect = []
+    for w in track:
+        c = next(
+            (x for x in w.get("cells", []) if x.get("group") == group
+             and x.get("horizon") == PLAN_HORIZON and x.get("n")),
+            None,
+        )  # fmt: skip
+        if c is None or c.get("mean") is None:
+            continue
+        e = {
+            "years": w["years"],
+            "from": w.get("from"),
+            "to": w.get("to"),
+            "group": group,
+            "n": c["n"],
+            "mean": c["mean"],
+            "control": c.get("control"),
+            "excess": c.get("excess"),
+            "ci": c.get("ci"),
+            "beat": c.get("beat"),
+            "tail": c.get("tail"),
+            "verdict": c.get("verdict"),
+        }
+        if base:
+            e["price_mean"] = base * (1 + c["mean"])
+            if c.get("tail") is not None:
+                e["price_tail"] = base * (1 + c["tail"])
+        e["text"] = (
+            f"{w['years']}-year replay ({w.get('from')} → {w.get('to')}, {c['n']:,} records): "
+            f"names entering {group} rose {_pct(c['mean'])} on average over {k} sessions "
+            f"against {_pct(c.get('control'))} for their peers"
+            + (
+                f" (95% interval of the difference {_pct(c['ci'][0])} … {_pct(c['ci'][1])})"
+                if c.get("ci")
+                else ""
+            )
+            + (f", beating them {c['beat']:.0%} of the time" if c.get("beat") is not None else "")
+            + f" — {c.get('verdict')}."
+            + (
+                f" The typical worst drop on the way was {_pct(c['tail'])}."
+                if c.get("tail") is not None
+                else ""
+            )
+        )
+        expect.append(e)
+
+    if sessions_in <= 0:
+        timing = "Today is the first session the families agree: the entry the replay measured."
+        stage = "fresh"
+    elif sessions_in < k:
+        timing = (
+            f"{sessions_in} of the {k} measured sessions have passed since {p['since']}"
+            + (f" ({_pct(p.get('move_since'))} since)" if p.get("move_since") is not None else "")
+            + f"; the window ends {measured_end or 'n/a'}. The replay entered on the first day, "
+            "not later: entering now was not measured."
+        )
+        stage = "late"
+    else:
+        timing = (
+            f"The {k}-session window measured from {p['since']} has ended"
+            + (f" ({_pct(p.get('move_since'))} since)" if p.get("move_since") is not None else "")
+            + ": the record says nothing about entering now."
+        )
+        stage = "past"
+
+    stop_pct = EP.position_stop_pct(sigma)
+    stop = entry * (1 - stop_pct) if stop_pct is not None else None
+    size: dict = {}
+    if p.get("held"):
+        size = {"note": "already held: Evaluate position for an ADD, which checks the book"}
+    elif stop is None:
+        size = {"note": "no volatility estimate: no stop, so no size"}
+    elif not net_liq or net_liq <= 0:
+        size = {"note": "no book on file: no size"}
+    else:
+        shares, notional = EP._size(net_liq, EP.POSITION_RISK, entry, stop)
+        room = EP.BOOK_LIMIT * net_liq
+        note = f"{EP.POSITION_RISK:.0%} of ${net_liq:,.0f} net liq at risk to the stop"
+        if notional > room:
+            shares = math.floor(room / entry)
+            notional = shares * entry
+            note += f"; capped at the {EP.BOOK_LIMIT:.0%} book limit"
+        if shares == 0:
+            note += f"; one share (${entry:,.2f}) is more than that allows"
+        size = {"shares": shares, "notional": notional, "risk_pct": EP.POSITION_RISK,
+                "note": note}  # fmt: skip
+
+    because = _because(p)
+    # Only the entry the replay measured is phrased as one; later it is a
+    # conditional, because the record does not reach it.
+    lead = "Enter near" if stage == "fresh" else "If entered now: near"
+    summary = f"{lead} ${entry:,.2f} ({'live' if p.get('provisional') else 'close'} {day})"
+    summary += f" because {because}." if because else "."
+    if stop is not None:
+        summary += f" Stop ${stop:,.2f} ({_pct(-stop_pct)})"
+        summary += f", review on {review_on} ({k} sessions)." if review_on else "."
+    return {
+        "ok": True,
+        "entry": entry,
+        "because": because,
+        "expects": _expects(p),
+        "expect": expect,
+        "group": group,
+        "horizon_sessions": k,
+        "stage": stage,
+        "timing": timing,
+        "measured": {"day": p.get("since"), "price": base, "ends": measured_end},
+        "stop": stop,
+        "stop_pct": stop_pct,
+        "stop_basis": (
+            f"{EP.POSITION_STOP_SIGMAS:g}·σ·√{EP.POSITION_STOP_SESSIONS} of its daily moves "
+            f"(σ {sigma:.2%}/day), kept in {EP.POSITION_STOP_MIN:.0%}–{EP.POSITION_STOP_MAX:.0%}: "
+            "the entry engine's position stop"
+            if stop_pct is not None
+            else None
+        ),
+        "review_on": review_on,
+        "size": size,
+        "summary": summary,
+    }
+
+
+def sigma_before(closes: np.ndarray) -> float | None:
+    """Daily σ as the entry engine measures it: simple returns of the sessions before the last.
+
+    The last value is the pick's own session and is left out, so its move never
+    inflates the yardstick (``entry.sheet.move_from_closes``).
+    """
+    import statistics
+
+    from advisor.entry.sheet import SIGMA_SESSIONS
+
+    prior = [float(c) for c in closes[:-1] if np.isfinite(c) and c > 0]
+    rets = [b / a - 1 for a, b in zip(prior, prior[1:])][-SIGMA_SESSIONS:]
+    if len(rets) < 20:
+        return None
+    s = statistics.stdev(rets)
+    return s if s > 0 else None
+
+
+def after_sessions(day: date, n: int) -> date:
+    """The trading day ``n`` sessions after ``day``, by the market calendar."""
+    from advisor.daemon import market_calendar as mc
+
+    d = day
+    while n > 0:
+        d += timedelta(days=1)
+        if mc.is_trading_day(d):
+            n -= 1
+    return d
+
+
 def _replay_record(store: BreadthStore) -> list[dict]:
     """The latest replay of each window, longest first.
 
@@ -254,15 +526,20 @@ def _replay_record(store: BreadthStore) -> list[dict]:
     return [latest[y] for y in sorted(latest, reverse=True)]
 
 
-def _held(db_path) -> set[str]:
+def _book(db_path) -> tuple[set[str], float | None]:
+    """The names held and the net liq, from the latest book; nothing when there is none."""
     try:
+        from pathlib import Path
+
         from advisor.daemon.store import DaemonStore
 
-        book = DaemonStore(db_path).load_latest_book()
-        return {p.underlying.upper() for p in book.positions} if book else set()
+        book = DaemonStore(Path(db_path)).load_latest_book()
+        if book is None:
+            return set(), None
+        return {p.underlying.upper() for p in book.positions}, book.net_liq or None
     except Exception as exc:  # noqa: BLE001
         logger.info("picks: no book: %s", exc)
-        return set()
+        return set(), None
 
 
 LiveFetch = Callable[[list[str], date], dict]  # symbols, day -> {symbol: Bar of that day}
@@ -360,7 +637,7 @@ def build_picks(
             "(SELECT MAX(day) FROM breadth_universe)"
         )
     }
-    held = _held(db_path) if db_path else set()
+    held, net_liq = _book(db_path) if db_path else (set(), None)
     close = panel.close.to_numpy()
     high = panel.high.to_numpy()
     volume = panel.volume.to_numpy()
@@ -382,6 +659,9 @@ def build_picks(
             top = np.nanmax(high[max(0, row - S.HIGH_WINDOW + 1) : row + 1, j])
             p_detail = {
                 "momentum_on": bool(states["momentum"].iloc[lo : row + 1, j].any()),
+                # On in the window is not on today (FLNC, 2026-09-28: "top
+                # decile" beside a 12-month return of -2.6%).
+                "momentum_now": bool(states["momentum"].iloc[row, j]),
                 "momentum_12_1": float(mom) if np.isfinite(mom) else None,
                 "high_on": bool(states["high"].iloc[lo : row + 1, j].any()),
                 "from_52w_high": float(c_now / top - 1) if top > 0 else None,
@@ -427,12 +707,30 @@ def build_picks(
     picks.sort(key=order_key)
     top = picks[:n]
     n_eligible = int(eligible[row].sum())
+    track = _replay_record(store)
+    k = int(HORIZONS[PLAN_HORIZON])
     for p in top:
         p.update(rationale(p, n_eligible))
         p["provisional"] = live is not None
         p["asof"] = now.isoformat()
+        j, since = cols[p["symbol"]], p["since_row"]
+        measured = close[since, j]
+        ends = since + k
+        p["plan"] = entry_plan(
+            p,
+            track,
+            sigma=sigma_before(close[: row + 1, j]),
+            measured_price=float(measured) if np.isfinite(measured) else None,
+            measured_end=(
+                sessions[ends].date().isoformat()
+                if ends < len(sessions)
+                else after_sessions(day, ends - row).isoformat()
+            ),
+            review_on=after_sessions(day, k).isoformat(),
+            net_liq=net_liq,
+            day=day.isoformat(),
+        )
     rules = signal_rules().version
-    track = _replay_record(store)
     live_records = {
         g: c
         for g, c in store.conn.execute(

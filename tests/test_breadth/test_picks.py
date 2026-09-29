@@ -250,3 +250,176 @@ def test_the_endpoint_without_a_breadth_store(monkeypatch, tmp_path):
 
     monkeypatch.setattr(router, "_db", lambda: tmp_path / "nothing" / "research.db")
     assert router._latest()["picks"] == []
+
+
+# ── the entry plan ────────────────────────────────────────────────────────
+
+
+def track(group="F+P", n=1561, mean=0.023, tail=-0.067, verdict="EDGE", years=3):
+    cell = {"group": group, "horizon": "d20", "n": n, "mean": mean, "control": 0.011,
+            "excess": 0.012, "ci": [0.003, 0.022], "beat": 0.52, "tail": tail,
+            "verdict": verdict}  # fmt: skip
+    return {"years": years, "from": "2023-09-27", "to": "2026-09-25", "cells": [cell]}
+
+
+def plan_pick(families=("F", "P"), sessions_since=0, price=100.0, **kw):
+    p = TestRationale().full()
+    p.update(symbol="X", families=list(families), sessions_since=sessions_since, price=price,
+             since="2026-09-28", held=False)  # fmt: skip
+    if "F" not in families:
+        p["f"] = None
+    if "I" not in families:
+        p["i"] = None
+    p.update(kw)
+    return p
+
+
+def plan(p, trk=None, sigma=0.02, measured=100.0, net_liq=10_000.0):
+    return PK.entry_plan(
+        p, [track()] if trk is None else trk, sigma=sigma, measured_price=measured,
+        measured_end="2026-10-26", review_on="2026-10-26", net_liq=net_liq, day="2026-09-28",
+    )  # fmt: skip
+
+
+class TestEntryPlan:
+    """User, 2026-09-29: "no me dice entra a x precio dado que está sucediendo esto y
+    esperamos esto"."""
+
+    def test_fresh_pick_enter_because_expecting_with_the_engines_stop_and_size(self):
+        from advisor.entry.proposal import position_stop_pct
+
+        pl = plan(plan_pick())
+        assert pl["ok"] and pl["stage"] == "fresh" and pl["group"] == "F+P"
+        assert pl["summary"].startswith("Enter near $100.00 (close 2026-09-28) because revenue")
+        assert "+69.8% a year" in pl["because"] and "the price is strong" in pl["because"]
+        stop_pct = position_stop_pct(0.02)  # 2·0.02·√10 = 12.6%
+        assert pl["stop"] == pytest.approx(100 * (1 - stop_pct))
+        assert pl["size"]["shares"] == int(10_000 * 0.02 // (100 - pl["stop"]))
+        (e,) = pl["expect"]
+        assert e["price_mean"] == pytest.approx(102.3) and e["price_tail"] == pytest.approx(93.3)
+        assert "rose +2.3% on average over 20 sessions against +1.1%" in e["text"]
+        assert "EDGE" in e["text"] and "52%" in e["text"]
+        assert pl["expects"][0].startswith("the next quarter's revenue grows at least +69.8%")
+
+    def test_a_late_pick_is_told_the_record_does_not_reach_it(self):
+        pl = plan(plan_pick(sessions_since=17, move_since=-0.134), measured=410.4)
+        assert pl["stage"] == "late"
+        assert pl["summary"].startswith("If entered now: near $100.00")
+        assert "17 of the 20 measured sessions" in pl["timing"]
+        assert "entering now was not measured" in pl["timing"]
+        # The group's average is priced from the measured entry, not today's.
+        assert pl["expect"][0]["price_mean"] == pytest.approx(410.4 * 1.023)
+
+    @pytest.mark.parametrize("n,stage", [(0, "fresh"), (1, "late"), (19, "late"), (20, "past"),
+                                         (45, "past")])  # fmt: skip
+    def test_stage_at_the_window_boundaries(self, n, stage):
+        pl = plan(plan_pick(sessions_since=n))
+        assert pl["stage"] == stage
+        if stage == "past":
+            assert "the record says nothing about entering now" in pl["timing"]
+
+    @pytest.mark.parametrize(
+        "fams,group",
+        [(("F", "P"), "F+P"), (("I", "P"), "2+"), (("F", "I", "P"), "2+"), (("F", "I"), "2+")],
+    )
+    def test_group_is_the_one_the_replay_judged(self, fams, group):
+        assert PK.plan_group(list(fams)) == group
+
+    def test_every_window_is_quoted_and_empty_cells_skipped(self):
+        trk = [track(), track(mean=0.016, verdict="UNDETERMINED", years=2), track(group="2+")]
+        trk.append({"years": 1, "cells": [{"group": "F+P", "horizon": "d20", "n": 0}]})
+        pl = plan(plan_pick(), trk=trk)
+        assert [e["years"] for e in pl["expect"]] == [3, 2]
+        assert plan(plan_pick(), trk=[])["expect"] == []
+
+    def test_no_volatility_no_stop_no_size(self):
+        pl = plan(plan_pick(), sigma=None)
+        assert pl["stop"] is None and pl["size"]["note"].startswith("no volatility")
+        assert "Stop" not in pl["summary"]
+
+    def test_no_book_or_held_is_no_size(self):
+        assert plan(plan_pick(), net_liq=None)["size"]["note"] == "no book on file: no size"
+        assert plan(plan_pick(), net_liq=0.0)["size"]["note"] == "no book on file: no size"
+        assert "already held" in plan(plan_pick(held=True))["size"]["note"]
+
+    def test_size_is_capped_at_the_book_limit(self):
+        pl = plan(plan_pick(), sigma=0.001)  # stop at the 8% floor: 2% risk = 25% of the book
+        assert pl["stop_pct"] == pytest.approx(0.08)
+        assert pl["size"]["shares"] == 20 and "20% book limit" in pl["size"]["note"]
+
+    def test_one_share_above_the_budget_is_said(self):
+        pl = plan(plan_pick(price=5000.0), measured=5000.0, net_liq=8000.0)
+        assert pl["size"]["shares"] == 0 and "one share ($5,000.00)" in pl["size"]["note"]
+
+    @pytest.mark.parametrize("price", [None, 0.0, float("nan"), -3.0])
+    def test_no_price_no_plan(self, price):
+        pl = plan(plan_pick(price=price))
+        assert not pl["ok"] and "no price" in pl["gap"]
+
+    def test_no_measured_price_quotes_percentages_only(self):
+        (e,) = plan(plan_pick(), measured=None)["expect"]
+        assert "price_mean" not in e and "rose +2.3%" in e["text"]
+
+    def test_provisional_says_live(self):
+        assert "(live 2026-09-28)" in plan(plan_pick(provisional=True))["summary"]
+
+    def test_it_names_no_value_and_no_target(self):
+        pl = plan(plan_pick())
+        words = (pl["summary"] + pl["because"] + " ".join(pl["expects"])).lower()
+        for banned in ("target", "fair value", "worth", "undervalued"):
+            assert banned not in words
+
+
+class TestFaded:
+    """P counts a state on at any session of the window; the text says which still holds."""
+
+    def test_momentum_left_the_top_decile(self):
+        p = plan_pick(families=("I", "P"))
+        p["p"] = {"momentum_on": True, "momentum_now": False, "momentum_12_1": -0.026}
+        text = " ".join(x["text"] for x in PK.rationale(p, 2298)["reasons"])
+        assert "now -2.6%, out of it" in text and "-2.6%, in the top decile" not in text
+        because = PK._because(p)
+        assert "the price was strong (was top decile of 12-month returns, now -2.6%)" in because
+
+    def test_an_old_payload_without_the_flag_reads_as_before(self):
+        p = plan_pick()
+        p["p"] = {"momentum_on": True, "momentum_12_1": 1.14}
+        assert "in the top decile" in PK.rationale(p, 10)["reasons"][1]["text"]
+
+    def test_high_near_or_left(self):
+        p = plan_pick(families=("I", "P"))
+        p["p"] = {"high_on": True, "from_52w_high": -0.02}
+        assert "within 2% of its 52-week high (-2.0%)" in PK._because(p)
+        p["p"]["from_52w_high"] = -0.109
+        assert "came within 2% of its 52-week high this month, now -10.9%" in PK._because(p)
+
+
+class TestHelpers:
+    def test_sigma_leaves_the_last_session_out_and_needs_twenty_returns(self):
+        closes = np.array([100.0, 101.0] * 15 + [200.0])  # the last session's jump is excluded
+        s = PK.sigma_before(closes)
+        assert s == pytest.approx(np.std(np.diff(closes[:-1]) / closes[:-2], ddof=1))
+        assert PK.sigma_before(np.array([100.0] * 10)) is None
+        assert PK.sigma_before(np.array([100.0] * 40)) is None  # flat: no volatility
+        with_gaps = np.array([100.0, np.nan, 101.0] * 15 + [100.0])
+        assert PK.sigma_before(with_gaps) is not None
+
+    def test_sessions_skip_weekends_and_holidays(self):
+        assert PK.after_sessions(date(2026, 11, 25), 1) == date(2026, 11, 27)  # Thanksgiving
+        assert PK.after_sessions(date(2026, 9, 25), 1) == date(2026, 9, 28)  # a Friday
+        assert PK.after_sessions(date(2026, 9, 28), 20) == date(2026, 10, 26)
+        assert PK.after_sessions(date(2026, 9, 28), 0) == date(2026, 9, 28)
+
+
+def test_built_picks_carry_a_plan(store, inputs, tmp_path):
+    from advisor.daemon.book import BookSnapshot
+    from advisor.daemon.store import DaemonStore
+
+    db = tmp_path / "research.db"
+    DaemonStore(db).save_book(BookSnapshot(net_liq=7700.0))
+    r = PK.build_picks(store, date(2026, 9, 25), NOW, db)
+    pl = r["picks"][0]["plan"]
+    assert pl["ok"] and pl["group"] == "2+" and pl["review_on"] == "2026-10-23"
+    # Flat test bars: no volatility, so no stop and no size — said, not guessed.
+    assert pl["stop"] is None and pl["size"]["note"].startswith("no volatility")
+    assert PK.latest_picks(store)["picks"][0]["plan"] == pl

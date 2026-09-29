@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
-import type { Pick, PickCell, PicksResponse, ReplayWindow } from "@/lib/types";
+import type { Pick, PickCell, PickPlan, PicksResponse, ReplayWindow } from "@/lib/types";
 import { useJob } from "@/lib/useJob";
 import { cn, fmtEt, fmtPct, fmtUsd, pnlColor } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -73,6 +73,113 @@ function Evidence({ data }: { data: PicksResponse }) {
   );
 }
 
+const STAGE: Record<string, { label: string; variant: "pos" | "warn" | "muted" }> = {
+  fresh: { label: "measured entry", variant: "pos" },
+  late: { label: "late: not measured", variant: "warn" },
+  past: { label: "window over", variant: "muted" },
+};
+
+/** Enter at what price, because of what, expecting what: every number from the pick or the replay. */
+function EntryPlan({ plan, price }: { plan: PickPlan; price: number }) {
+  if (!plan.ok) {
+    return <div className="text-xs text-muted">No entry plan: {plan.gap}</div>;
+  }
+  const stage = STAGE[plan.stage ?? ""] ?? STAGE.past;
+  const m = plan.measured;
+  const fresh = plan.stage === "fresh";
+  return (
+    <div className="space-y-2 rounded-md border border-border bg-panel-2/40 p-3 text-sm">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium">Entry plan</span>
+        <Badge variant={stage.variant}>{stage.label}</Badge>
+        {plan.group && <span className="text-xs text-muted">record of group {plan.group}</span>}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div>
+          <div className="text-xs uppercase tracking-wide text-muted">{fresh ? "Enter near" : "If entered now"}</div>
+          <div className="font-semibold tnum">{fmtUsd(plan.entry)}</div>
+        </div>
+        <div>
+          <div className="text-xs uppercase tracking-wide text-muted">Stop</div>
+          <div className="font-semibold tnum text-neg">
+            {plan.stop != null ? fmtUsd(plan.stop) : "—"}
+            {plan.stop_pct != null && (
+              <span className="ml-1 text-xs font-normal">({fmtPct(-plan.stop_pct, { sign: true })})</span>
+            )}
+          </div>
+        </div>
+        <div>
+          <div className="text-xs uppercase tracking-wide text-muted">Size</div>
+          <div className="font-semibold tnum">
+            {plan.size?.shares != null ? `${plan.size.shares} sh · ${fmtUsd(plan.size.notional)}` : "—"}
+          </div>
+        </div>
+        <div>
+          <div className="text-xs uppercase tracking-wide text-muted">Review on</div>
+          <div className="font-semibold tnum">{plan.review_on ?? "—"}</div>
+        </div>
+      </div>
+
+      {plan.because && (
+        <div>
+          <span className="font-medium">Because </span>
+          {plan.because}.
+        </div>
+      )}
+
+      {plan.expects && plan.expects.length > 0 && (
+        <div>
+          <span className="font-medium">For it to stand: </span>
+          {plan.expects.join("; ")}.
+        </div>
+      )}
+
+      {plan.expect && plan.expect.length > 0 && (
+        <div className="space-y-1">
+          <div className="font-medium">
+            What we expect — only what was measured, over {plan.horizon_sessions} sessions:
+          </div>
+          <ul className="space-y-1 text-muted">
+            {plan.expect.map((e) => (
+              <li key={e.years}>
+                {e.text}
+                {e.price_mean != null && m?.price != null && (
+                  <span className="text-text">
+                    {" "}
+                    For this name from {fmtUsd(m.price)} on {m.day}: the average is{" "}
+                    <span className="tnum">{fmtUsd(e.price_mean)}</span>
+                    {e.price_tail != null && (
+                      <>
+                        , the typical worst drop <span className="tnum">{fmtUsd(e.price_tail)}</span>
+                      </>
+                    )}
+                    {!fresh && (
+                      <>
+                        ; it is at <span className="tnum">{fmtUsd(price)}</span>
+                      </>
+                    )}
+                    .
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {plan.timing && <div className={cn(fresh ? "text-muted" : "text-warn")}>{plan.timing}</div>}
+
+      <div className="text-xs text-muted">
+        {plan.stop_basis && <>Stop: {plan.stop_basis}. </>}
+        {plan.size?.note && <>Size: {plan.size.note}. </>}
+        An average of past names, not a target: check the zone, results date and news with Evaluate
+        position before acting.
+      </div>
+    </div>
+  );
+}
+
 function PickCard({ p, depth }: { p: Pick; depth?: DepthStatus }) {
   return (
     <Card>
@@ -124,6 +231,8 @@ function PickCard({ p, depth }: { p: Pick; depth?: DepthStatus }) {
             )}
           </div>
         </div>
+
+        {p.plan && <EntryPlan plan={p.plan} price={p.price} />}
 
         <ul className="space-y-1.5">
           {p.reasons.map((r, i) => (
