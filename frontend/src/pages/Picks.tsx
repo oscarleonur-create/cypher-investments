@@ -168,6 +168,22 @@ function EntryPlan({ plan, price }: { plan: PickPlan; price: number }) {
         </div>
       )}
 
+      {plan.replayed && plan.replayed.length > 0 && (
+        <div className="space-y-1">
+          <div className="font-medium">The plan as shown, replayed — this entry delay, with and without its stop:</div>
+          <ul className="space-y-1 text-muted">
+            {plan.replayed.map((r) => (
+              <li key={r.years}>
+                {r.text}{" "}
+                <span className={cn("text-text", pnlColor(r.stop_effect))}>
+                  The stop changed the average by {fmtPct(r.stop_effect, { sign: true })}.
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {plan.timing && <div className={cn(fresh ? "text-muted" : "text-warn")}>{plan.timing}</div>}
 
       <div className="text-xs text-muted">

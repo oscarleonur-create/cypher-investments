@@ -110,6 +110,50 @@ def replay(
     _print_study(summary)
 
 
+@app.command("plan-replay")
+def plan_replay(
+    years: Annotated[int, typer.Option("--years", help="Sessions judged: the last N years")] = 3,
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Replay a pick's entry plan: entered 0/5/10/15 sessions in, with and without its stop."""
+    from advisor.breadth.plan_replay import replay_plan
+    from advisor.breadth.store import BreadthStore, breadth_path
+    from advisor.daemon.market_calendar import now_et
+
+    with BreadthStore(breadth_path(_db_path())) as store:
+        s = replay_plan(store, now_et(), years=years)
+    if output == "json":
+        output_json(s)
+        return
+    if not s.get("ok"):
+        output_error(s.get("error", "plan replay failed"))
+        return
+    console.print(
+        f"Plan replay {s['run_id']} (rules {s['rules']}): {s['from']} → {s['to']}, "
+        f"{s['records']} records, {s['trades']} trades, skipped {s['skipped']}"
+    )
+    table = Table(title=f"The plan over {s['hold']} sessions, beyond matched peers")
+    for col in ("group", "entry", "n", "peers", "no stop", "vs peers", "CI", "verdict",
+                "with stop", "vs peers ", "CI ", "verdict ", "stopped", "stop avg"):  # fmt: skip
+        table.add_column(col, justify="left" if col in ("group", "entry") else "right")
+    for c in s["cells"]:
+        if not c["n"]:
+            table.add_row(c["group"], f"day +{c['offset']}", "0", *[""] * 11)
+            continue
+        p, w = c["plain"], c["with_stop"]
+
+        def ci(x):
+            return f"{_pct(x['ci'][0])} … {_pct(x['ci'][1])}" if x["ci"] else "—"
+
+        table.add_row(
+            c["group"], f"day +{c['offset']}", str(c["n"]), _pct(c["peers"]),
+            _pct(p["mean"]), _pct(p["excess"]), ci(p), p["verdict"],
+            _pct(w["mean"]), _pct(w["excess"]), ci(w), w["verdict"],
+            f"{c['stopped'] * 100:.0f}%", _pct(-c["stop_pct"]),
+        )  # fmt: skip
+    console.print(table)
+
+
 def _pct(x) -> str:
     return "—" if x is None else f"{x * 100:+.2f}%"
 
