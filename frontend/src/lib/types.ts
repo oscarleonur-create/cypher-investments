@@ -1068,6 +1068,18 @@ export interface PlanExpect {
   text: string;
 }
 
+export interface PlanReplayed {
+  years: number;
+  offset: number;
+  n: number;
+  peers: number;
+  with_stop: { mean: number; excess: number; ci: [number, number] | null; verdict: string };
+  plain: { mean: number; excess: number; ci: [number, number] | null; verdict: string };
+  stopped: number;
+  stop_effect: number;
+  text: string;
+}
+
 export interface PickPlan {
   ok: boolean;
   gap?: string;
@@ -1075,6 +1087,8 @@ export interface PickPlan {
   because?: string;
   expects?: string[];
   expect?: PlanExpect[];
+  /** The plan as shown (its stop, this entry delay) replayed, per window (``breadth.plan_replay``). */
+  replayed?: PlanReplayed[];
   group?: string;
   horizon_sessions?: number;
   /** fresh: the entry the replay measured; late: inside its window; past: the window is over. */

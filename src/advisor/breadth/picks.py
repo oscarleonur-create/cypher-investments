@@ -314,6 +314,7 @@ def entry_plan(
     review_on: str | None,
     net_liq: float | None,
     day: str,
+    plan_runs: list[dict] | None = None,
 ) -> dict:
     """Enter at what price, because of what, expecting what — as measured. Pure.
 
@@ -387,6 +388,7 @@ def entry_plan(
         )
         expect.append(e)
 
+    replayed = plan_record(group, sessions_in, plan_runs or [])
     if sessions_in <= 0:
         timing = "Today is the first session the families agree: the entry the replay measured."
         stage = "fresh"
@@ -394,8 +396,14 @@ def entry_plan(
         timing = (
             f"{sessions_in} of the {k} measured sessions have passed since {p['since']}"
             + (f" ({_pct(p.get('move_since'))} since)" if p.get("move_since") is not None else "")
-            + f"; the window ends {measured_end or 'n/a'}. The replay entered on the first day, "
-            "not later: entering now was not measured."
+            + f"; the window ends {measured_end or 'n/a'}. "
+            + (
+                f"The signal replay entered on the first day; the plan replay measured entering "
+                f"{replayed[0]['offset']} sessions in (below)."
+                if replayed
+                else "The replay entered on the first day, not later: "
+                "entering now was not measured."
+            )
         )
         stage = "late"
     else:
@@ -443,6 +451,7 @@ def entry_plan(
         "because": because,
         "expects": _expects(p),
         "expect": expect,
+        "replayed": replayed,
         "group": group,
         "horizon_sessions": k,
         "stage": stage,
@@ -461,6 +470,58 @@ def entry_plan(
         "size": size,
         "summary": summary,
     }
+
+
+def plan_record(group: str, sessions_in: int, runs: list[dict]) -> list[dict]:
+    """What the plan as shown did in the plan replay, for this group and entry delay. Pure.
+
+    The delay measured nearest to ``sessions_in`` (``plan_replay.OFFSETS``, ties
+    to the earlier); nothing once the plan's own window is over, which no
+    delay measured. Every window, longest first.
+    """
+    from advisor.breadth.plan_replay import HOLD, OFFSETS
+
+    if sessions_in >= HOLD:
+        return []
+    offset = min(OFFSETS, key=lambda o: (abs(o - sessions_in), o))
+    out = []
+    for run in runs:
+        c = next(
+            (x for x in run.get("cells", [])
+             if x.get("group") == group and x.get("offset") == offset and x.get("n")),
+            None,
+        )  # fmt: skip
+        if c is None:
+            continue
+        w, pl = c["with_stop"], c["plain"]
+
+        def ci(x):
+            return f", 95% interval {_pct(x['ci'][0])} … {_pct(x['ci'][1])}" if x.get("ci") else ""
+
+        when = "on the first day" if offset == 0 else f"{offset} sessions after the first day"
+        out.append(
+            {
+                "years": run.get("years"),
+                "from": run.get("from"),
+                "to": run.get("to"),
+                "offset": offset,
+                "n": c["n"],
+                "peers": c["peers"],
+                "with_stop": w,
+                "plain": pl,
+                "stopped": c["stopped"],
+                "stop_effect": c["stop_effect"],
+                "text": (
+                    f"{run.get('years')}-year plan replay, entering {when} ({c['n']:,} trades): "
+                    f"with the stop {_pct(w['mean'])} over {HOLD} sessions against "
+                    f"{_pct(c['peers'])} for peers ({_pct(w['excess'])} beyond them{ci(w)}) — "
+                    f"{w['verdict']}; stopped out {c['stopped']:.0%} of the time. Without the "
+                    f"stop {_pct(pl['mean'])} ({_pct(pl['excess'])} beyond peers{ci(pl)}) — "
+                    f"{pl['verdict']}."
+                ),
+            }
+        )
+    return out
 
 
 def sigma_before(closes: np.ndarray) -> float | None:
@@ -708,6 +769,9 @@ def build_picks(
     top = picks[:n]
     n_eligible = int(eligible[row].sum())
     track = _replay_record(store)
+    from advisor.breadth.plan_replay import latest_plan_runs
+
+    plan_runs = latest_plan_runs(store)
     k = int(HORIZONS[PLAN_HORIZON])
     for p in top:
         p.update(rationale(p, n_eligible))
@@ -729,6 +793,7 @@ def build_picks(
             review_on=after_sessions(day, k).isoformat(),
             net_liq=net_liq,
             day=day.isoformat(),
+            plan_runs=plan_runs,
         )
     rules = signal_rules().version
     live_records = {

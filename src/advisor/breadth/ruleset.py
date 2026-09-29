@@ -77,6 +77,10 @@ NOT_RULES: dict[str, str] = {
     "insiders._SCHEMA": "table definitions",
     "picks.TOP_N": "how many picks are shown: display, not what qualifies",
     "picks.PLAN_HORIZON": "which measured horizon an entry plan quotes: display, no pick changes",
+    "plan_replay.OFFSETS": "which entry delays the plan replay measures: measurement, no rule",
+    "plan_replay.HOLD": "the plan's horizon, measured as shown (its review date)",
+    "plan_replay.GROUPS": "the groups a pick's plan quotes",
+    "plan_replay._SCHEMA": "table definitions",
     "picks.HISTORY_DAYS": "how much history a build loads, enough for every window",
     "picks._SCHEMA": "table definitions",
 }

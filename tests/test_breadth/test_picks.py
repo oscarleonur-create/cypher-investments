@@ -370,6 +370,56 @@ class TestEntryPlan:
             assert banned not in words
 
 
+def plan_run(years=3, group="F+P", offsets=(0, 5, 10, 15)):
+    def side(mean, ex, verdict):
+        return {"mean": mean, "excess": ex, "ci": [ex - 0.01, ex + 0.01], "verdict": verdict}
+
+    cells = [
+        {"group": group, "offset": k, "n": 1000 - k, "peers": 0.01, "stopped": 0.15,
+         "stop_effect": -0.004, "with_stop": side(0.018, 0.008, "UNDETERMINED"),
+         "plain": side(0.022, 0.012, "EDGE")}
+        for k in offsets
+    ]  # fmt: skip
+    return {"years": years, "from": "2023-09-29", "to": "2026-09-28", "cells": cells}
+
+
+class TestPlanReplayed:
+    """The plan as shown — its stop, the delay it is entered at — replayed."""
+
+    @pytest.mark.parametrize("n,offset", [(0, 0), (2, 0), (3, 5), (7, 5), (8, 10), (12, 10),
+                                          (13, 15), (19, 15)])  # fmt: skip
+    def test_the_nearest_measured_delay(self, n, offset):
+        (r,) = PK.plan_record("F+P", n, [plan_run()])
+        assert r["offset"] == offset
+
+    def test_past_the_window_nothing_was_measured(self):
+        assert PK.plan_record("F+P", 20, [plan_run()]) == []
+
+    def test_other_group_or_missing_cell_is_left_out(self):
+        assert PK.plan_record("2+", 0, [plan_run()]) == []
+        assert PK.plan_record("F+P", 7, [plan_run(offsets=(0,))]) == []
+        assert PK.plan_record("F+P", 0, []) == []
+
+    def test_text_says_both_with_and_without_the_stop(self):
+        (r,) = PK.plan_record("F+P", 6, [plan_run()])
+        assert "entering 5 sessions after the first day (995 trades)" in r["text"]
+        assert "with the stop +1.8%" in r["text"] and "stopped out 15%" in r["text"]
+        assert "Without the stop +2.2%" in r["text"] and "EDGE" in r["text"]
+
+    def test_a_late_plan_points_to_the_measured_delay(self):
+        p = plan_pick(sessions_since=6, move_since=0.02)
+        pl = PK.entry_plan(p, [track()], sigma=0.02, measured_price=100.0,
+                           measured_end="2026-10-26", review_on="2026-10-26", net_liq=1e4,
+                           day="2026-09-28", plan_runs=[plan_run(), plan_run(years=2)])  # fmt: skip
+        assert [r["years"] for r in pl["replayed"]] == [3, 2]
+        assert "the plan replay measured entering 5 sessions in" in pl["timing"]
+        assert "not measured" not in pl["timing"]
+
+    def test_without_a_plan_run_the_plan_reads_as_before(self):
+        pl = plan(plan_pick(sessions_since=6))
+        assert pl["replayed"] == [] and "entering now was not measured" in pl["timing"]
+
+
 class TestFaded:
     """P counts a state on at any session of the window; the text says which still holds."""
 
