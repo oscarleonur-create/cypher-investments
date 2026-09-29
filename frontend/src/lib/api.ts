@@ -32,6 +32,7 @@ import type {
   TrackRow,
   WatchlistResponse,
   PriceRange,
+  CompanyOverview,
   PicksResponse,
   EntryProposal,
   DepthStatus,
@@ -152,6 +153,7 @@ export const api = {
     }),
   daemonReading: (symbol: string, refresh = false) =>
     get<TickerReading>(`/api/daemon/symbol/${symbol}/reading?refresh=${refresh}`),
+  overview: (symbol: string) => get<CompanyOverview>(`/api/daemon/symbol/${symbol}/overview`),
   priceRange: (symbol: string, refresh = false) =>
     get<PriceRange>(`/api/daemon/symbol/${symbol}/price-range?refresh=${refresh}`),
   daemonReconcile: () => post<ReconcileReport>("/api/daemon/reconcile"),

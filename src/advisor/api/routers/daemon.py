@@ -240,6 +240,26 @@ _LIVE_RANGE_TTL = timedelta(hours=1)
 _live_ranges: dict[str, tuple[object, dict]] = {}
 
 
+@router.get("/symbol/{symbol}/overview")
+def symbol_overview(symbol: str) -> dict:
+    """The company in a few bullets, each sourced (``story.overview``).
+
+    Plain ``def``: the first view of the day computes the company's health
+    from the SEC; after that it is read from the store.
+    """
+    from advisor.daemon.market_calendar import now_et
+    from advisor.story.overview import load_overview
+
+    sym = symbol.upper()
+    if not sym.replace(".", "").replace("-", "").isalnum() or len(sym) > 10:
+        raise HTTPException(400, f"not a symbol: {symbol!r}")
+    store = _store()
+    try:
+        return load_overview(store, sym, now_et()).model_dump(mode="json")
+    finally:
+        store.close()
+
+
 @router.get("/symbol/{symbol}/price-range")
 def symbol_price_range(symbol: str, refresh: bool = False) -> dict:
     """The value range and its rationale for one name (``valuation.rationale``).

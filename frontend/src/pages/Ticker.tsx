@@ -12,6 +12,7 @@ import { Stat } from "@/components/common";
 import { AgentPanel } from "@/components/AgentPanel";
 import { TickerDaemonPanels } from "@/components/tickerDaemon";
 import { ReadingCard } from "@/components/ReadingCard";
+import { OverviewCard } from "@/components/OverviewCard";
 import { PriceRangeCard } from "@/components/PriceRangeCard";
 import { AnglesPanel } from "@/components/AnglesPanel";
 import { StoryCard } from "@/components/StoryCard";
@@ -84,6 +85,9 @@ export default function Ticker({ quotes }: { quotes: QuotesState }) {
             : `Rebuilding… ${job.job.message}`}
         </div>
       )}
+
+      {/* Where the company stands today, first: a summary of everything below. */}
+      <OverviewCard symbol={sym} />
 
       {/* Market data strip */}
       {md && (

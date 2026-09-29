@@ -977,6 +977,21 @@ export interface PriceCase {
   margin_label: string;
 }
 
+/** The company in a few sourced bullets (``story.overview``). */
+export interface OverviewBullet {
+  topic: string;
+  text: string;
+  source: string;
+  tone: "pos" | "neg" | "warn" | "neutral";
+}
+
+export interface CompanyOverview {
+  symbol: string;
+  as_of: string;
+  bullets: OverviewBullet[];
+  gaps: string[];
+}
+
 export interface PriceRange {
   symbol: string;
   asof: string;
