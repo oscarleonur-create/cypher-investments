@@ -48,6 +48,10 @@ REBASE_TOLERANCE = 0.02
 # A symbol Yahoo had nothing for is asked again after this long, not daily.
 EMPTY_RETRY_DAYS = 7
 SETTLE_MINUTES = 20
+# A session with bars for fewer names than this share of the session before
+# it is not complete: at 20:30 on 2026-09-28 Yahoo had that day's close for
+# 156 of 5,368 names, and the picks were built on it without prices.
+MIN_DAY_COVERAGE = 0.9
 
 
 @dataclass(frozen=True)
@@ -107,6 +111,22 @@ def last_closed_session(now: datetime) -> date:
         if now >= close + timedelta(minutes=SETTLE_MINUTES):
             return today
     return mc.previous_trading_day(today)
+
+
+def day_coverage(conn, day: date) -> tuple[int, int]:
+    """Names with a bar on ``day``, and on the latest session before it that has any."""
+    on_day = conn.execute("SELECT COUNT(*) FROM breadth_bars WHERE day = ?", (day.isoformat(),))
+    before = conn.execute(
+        "SELECT COUNT(*) FROM breadth_bars WHERE day = "
+        "(SELECT MAX(day) FROM breadth_bars WHERE day < ?)",
+        (day.isoformat(),),
+    )
+    return int(on_day.fetchone()[0]), int(before.fetchone()[0])
+
+
+def complete(on_day: int, before: int) -> bool:
+    """True when a session's bars cover enough of the names the session before had. Pure."""
+    return before == 0 or on_day >= MIN_DAY_COVERAGE * before
 
 
 def needs_rebase(stored: dict[date, float], fresh: list[Bar]) -> bool:

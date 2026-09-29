@@ -204,6 +204,18 @@ def build_registry() -> JobRegistry:
             description="market-wide daily bars, E0 universe snapshot, SEC revenue frames",
         )
     )
+    # Second chances for the nightly sync, each a no-op when the session is
+    # already built: a failed run counts as run, so 20:30 never retries. 23:00
+    # is after the halts poll; 03:30 ends before it restarts at 04:00.
+    for name, at in (("breadth_sync_late", time(23, 0)), ("breadth_sync_dawn", time(3, 30))):
+        reg.register(
+            Job(
+                name=name,
+                trigger=DailyAt(at, trading_days_only=False, grace_hours=0.4),
+                handler=handlers.breadth_retry(name),
+                description="the nightly breadth sync again, only if its session is not built",
+            )
+        )
     reg.register(
         Job(
             name="company_health",

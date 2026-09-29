@@ -53,6 +53,7 @@ NOT_RULES: dict[str, str] = {
     "bars.REBASE_TOLERANCE": "when stored bars are refetched after a split",
     "bars.EMPTY_RETRY_DAYS": "how often a symbol with no data is asked again",
     "bars.SETTLE_MINUTES": "when a session's bar is final; a data-integrity margin",
+    "bars.MIN_DAY_COVERAGE": "when a session's bars are complete enough to build on; integrity",
     "facts.FIRST_YEAR": "how much history is stored",
     "facts.SETTLED_AFTER_DAYS": "when a frame stops being re-read",
     "facts.STALE_TTM_DAYS": "when a company's own series is read to fill a gap",

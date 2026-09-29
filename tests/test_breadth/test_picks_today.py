@@ -127,6 +127,63 @@ def test_evaluate_position_records_and_returns_the_engine_proposal(tmp_path):
     assert latest_evaluation(db, "pl")["action"] == "ENTER"
 
 
+def test_re_evaluating_in_the_same_session_shows_the_new_rationale(tmp_path):
+    """2026-09-29, before the open: FEIM re-evaluated showed yesterday's 18:26 call.
+
+    The ledger keeps the first call of a session (it is what gets scored); the
+    screen shows the latest evaluation.
+    """
+    from datetime import timedelta
+
+    from advisor.breadth.position import evaluate_position, latest_evaluation
+    from advisor.entry.proposal import Action, Proposal, Reason
+
+    db = tmp_path / "research.db"
+
+    def runner_saying(text):
+        def runner(daemon, now, *, symbols, entry_store, read):
+            p = Proposal(symbol=symbols[0], session=date(2026, 9, 28), built_at=now,
+                         action=Action.NONE, price=82.49,
+                         reasons=[Reason(text=text, source="test")])  # fmt: skip
+            entry_store.add(p)
+            return [p], []
+
+        return runner
+
+    evaluate_position(db, "FEIM", NOW, runner=runner_saying("yesterday"))
+    later = evaluate_position(db, "FEIM", NOW + timedelta(hours=13),
+                              runner=runner_saying("Health: revenue +69.8%"))  # fmt: skip
+    assert later["recorded"] is False  # the ledger keeps the first call
+    assert latest_evaluation(db, "FEIM")["reasons"][0]["text"] == "Health: revenue +69.8%"
+
+
+def test_the_ledger_wins_when_it_is_newer_than_the_last_evaluation(tmp_path):
+    from datetime import timedelta
+
+    from advisor.breadth.position import evaluate_position, latest_evaluation
+    from advisor.entry.proposal import Action, Proposal, Reason
+    from advisor.entry.store import EntryStore
+
+    db = tmp_path / "research.db"
+
+    def runner(daemon, now, *, symbols, entry_store, read):
+        p = Proposal(symbol="PL", session=date(2026, 9, 28), built_at=now, action=Action.NONE,
+                     price=16.0, reasons=[Reason(text="evaluated", source="t")])  # fmt: skip
+        return [p], []
+
+    evaluate_position(db, "PL", NOW, runner=runner)
+    hourly = Proposal(symbol="PL", session=date(2026, 9, 29), built_at=NOW + timedelta(days=1),
+                      action=Action.ENTER, price=16.5,
+                      reasons=[Reason(text="hourly job", source="t")])  # fmt: skip
+    EntryStore(db).add(hourly)
+    assert latest_evaluation(db, "PL")["reasons"][0]["text"] == "hourly job"
+
+
+def test_a_missing_price_reads_n_a_not_nan():
+    assert PK._pct(float("nan")) == "n/a" and PK._pct(None) == "n/a"
+    assert PK._pct(0.05) == "+5.0%"
+
+
 def test_evaluate_position_with_no_proposal(tmp_path):
     from advisor.breadth.position import evaluate_position
 

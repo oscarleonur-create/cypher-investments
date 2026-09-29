@@ -135,6 +135,19 @@ def run_sync(
                 logger.info("breadth bars: %s", report.summary())
 
             day = bars_mod.last_closed_session(now)
+            if bars:
+                on_day, before = bars_mod.day_coverage(store.conn, day)
+                summary["coverage"] = {"day": day.isoformat(), "names": on_day, "before": before}
+                if not bars_mod.complete(on_day, before):
+                    # Nothing is built on a session the source has not finished
+                    # serving: the universe, the records and the picks would all
+                    # read a day without its closes. A later run fills it.
+                    summary["error"] = (
+                        f"bars for {day} incomplete: {on_day} names against {before} the "
+                        f"session before; nothing built on it"
+                    )
+                    logger.warning("breadth: %s", summary["error"])
+                    return summary
             rules = universe_rules()
             _register(db_path, rules)
             rows = snapshot(store, directory, day, rules.version)

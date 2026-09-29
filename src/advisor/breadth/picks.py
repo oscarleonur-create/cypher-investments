@@ -115,7 +115,7 @@ def active_at(
 
 
 def _pct(x: float | None, sign: bool = True) -> str:
-    if x is None:
+    if x is None or x != x:  # NaN: a price the day's bars did not have
         return "n/a"
     return f"{x * 100:+.1f}%" if sign else f"{x * 100:.1f}%"
 
