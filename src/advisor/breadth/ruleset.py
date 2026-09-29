@@ -76,6 +76,7 @@ NOT_RULES: dict[str, str] = {
     "insiders.KEPT_CODES": "which codes are stored; which count is decided in signals",
     "insiders._SCHEMA": "table definitions",
     "picks.TOP_N": "how many picks are shown: display, not what qualifies",
+    "picks.PLAN_HORIZON": "which measured horizon an entry plan quotes: display, no pick changes",
     "picks.HISTORY_DAYS": "how much history a build loads, enough for every window",
     "picks._SCHEMA": "table definitions",
 }

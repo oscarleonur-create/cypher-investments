@@ -1044,6 +1044,49 @@ export interface Pick {
   asof?: string;
   /** For a past day's pick: its move from that day's price to the latest close. */
   since_pick?: { day: string; close: number; move: number } | null;
+  /** Enter at what price, because of what, expecting what — as measured (picks built since 2026-09-29). */
+  plan?: PickPlan | null;
+}
+
+/** What the pick's group did next in one replay window. */
+export interface PlanExpect {
+  years: number;
+  from: string | null;
+  to: string | null;
+  group: string;
+  n: number;
+  mean: number;
+  control: number | null;
+  excess: number | null;
+  ci: [number, number] | null;
+  beat: number | null;
+  tail: number | null;
+  verdict: string | null;
+  /** From the measured entry (the close on the first day of agreement). */
+  price_mean?: number;
+  price_tail?: number;
+  text: string;
+}
+
+export interface PickPlan {
+  ok: boolean;
+  gap?: string;
+  entry?: number;
+  because?: string;
+  expects?: string[];
+  expect?: PlanExpect[];
+  group?: string;
+  horizon_sessions?: number;
+  /** fresh: the entry the replay measured; late: inside its window; past: the window is over. */
+  stage?: "fresh" | "late" | "past";
+  timing?: string;
+  measured?: { day: string | null; price: number | null; ends: string | null };
+  stop?: number | null;
+  stop_pct?: number | null;
+  stop_basis?: string | null;
+  review_on?: string | null;
+  size?: { shares?: number; notional?: number; risk_pct?: number; note?: string };
+  summary?: string;
 }
 
 export interface EntryLeg {
