@@ -150,6 +150,21 @@ def default_news(daemon_store, symbol: str, now: datetime) -> list[Reason]:
     return news_rationale(daemon_store, symbol, now)
 
 
+def default_health(daemon_store, symbol: str, now: datetime):
+    """Today's company health, from the SEC once per name per day (replaced in tests)."""
+    from advisor.entry.health import refresh_health
+
+    return refresh_health(daemon_store.db_path, symbol, now)
+
+
+def health_reasons(health) -> list[Reason]:
+    """The company's health as reasons, each citing the filings it comes from."""
+    if health is None:
+        return []
+    source = health.source_label()
+    return [Reason(text=f"Health: {line}", source=source) for line in health.lines()]
+
+
 def propose_all(
     daemon_store,
     now: datetime,
@@ -164,6 +179,7 @@ def propose_all(
     params=None,
     shadow=None,
     news=None,
+    health_source=None,
 ) -> tuple[list[Proposal], list[str]]:
     """Proposals for ``symbols`` (default: held + watchlists). Returns (proposals, errors).
 
@@ -201,6 +217,18 @@ def propose_all(
             errors.append(f"{symbol}: sheet failed: {exc}")
             continue
         proposal = build_proposal(sheet, net_liq=net_liq, params=params)
+        # Every proposal, whatever its action, carries the company's health
+        # (user, 2026-09-28): a drop is read against the business, not alone.
+        health = None
+        try:
+            if read:
+                health = (health_source or default_health)(daemon_store, symbol, now)
+            else:
+                from advisor.entry.health import latest_health
+
+                health = latest_health(daemon_store.db_path, symbol, now.date())
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{symbol}: health failed: {exc}")
         # An action to take carries what the news says, read before the model
         # reads the facts so the reading sees it too.
         news_reasons: list[Reason] = []
@@ -234,6 +262,7 @@ def propose_all(
                 proposal = build_proposal(sheet, net_liq=net_liq, reading=reading, params=params)
             elif reading is not None:
                 proposal.gaps.append(f"reading {status or 'unavailable'}")
+        proposal.reasons.extend(health_reasons(health))
         if news_reasons:
             proposal.reasons.extend(news_reasons)
         if entry_store is not None:

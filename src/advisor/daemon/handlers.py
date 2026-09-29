@@ -778,6 +778,42 @@ async def run_rule_expiry(ctx: JobContext) -> JobResult:
     return JobResult(job="rule_expiry", ok=True, detail=detail, events_emitted=emitted)
 
 
+async def run_company_health(ctx: JobContext) -> JobResult:
+    """Daily before the open: each held and watched company's health, from its filings.
+
+    Every reading and proposal reads it (``entry.health``); computing it here
+    keeps the first hourly proposal run from spending minutes on the SEC.
+    A name that fails keeps its last stored health.
+    """
+    import asyncio
+
+    def _run(db_path, now):
+        from advisor.daemon.store import DaemonStore
+        from advisor.daemon.universe import research_symbols
+        from advisor.entry.health import refresh_health
+
+        daemon = DaemonStore(db_path)
+        try:
+            book = daemon.load_latest_book()
+            if book is None:
+                return [], ["no book snapshot stored"]
+            symbols, errors = research_symbols(book)
+        finally:
+            daemon.close()
+        done = []
+        for symbol in symbols:
+            if refresh_health(db_path, symbol, now) is not None:
+                done.append(symbol)
+            else:
+                errors.append(f"{symbol}: no health")
+        return done, errors
+
+    done, errors = await asyncio.to_thread(_run, ctx.store.db_path, ctx.now)
+    detail = f"{len(done)} companies" + (f"; {'; '.join(errors[:5])}" if errors else "")
+    logger.info("company_health: %s", detail)
+    return JobResult(job="company_health", ok=True, detail=detail)
+
+
 async def run_news_judge(ctx: JobContext) -> JobResult:
     """Judge every new news item on held, watched and Swing names; fill what followed.
 

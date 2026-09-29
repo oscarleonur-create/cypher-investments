@@ -74,7 +74,7 @@ class Stance(StrEnum):
 
 class Fact(BaseModel):
     id: str  # "F3"
-    kind: str  # POSITION | VALUATION | EVENT | NEWS | CLAIM
+    kind: str  # POSITION | VALUATION | SCORECARD | HEALTH | EVENT | NEWS | CLAIM
     text: str
     date: str | None = None
     url: str | None = None
@@ -216,6 +216,15 @@ def gather_facts(
         valuation = _valuation_fact(store, symbol)
         if valuation:
             add("VALUATION", valuation)
+
+    # The company's health from its filings, beside every reading (2026-09-28):
+    # MDB's CEO left and the reading saw headlines and nothing of the business.
+    from advisor.entry.health import latest_health
+
+    health = latest_health(store.db_path, symbol, now_et().date())
+    if health is not None:
+        for line in health.lines():
+            add("HEALTH", line, date=str(health.period_end) if health.period_end else None)
 
     since = now_et() - timedelta(days=days)
     seen_standing: set[str] = set()
@@ -544,10 +553,17 @@ belongs to that price; do not pair it with a price from another fact.
 text: never restate its rows. Say what they mean together — which number changes how \
 another should be read — or what the events add that the table cannot show.
 11. Put fact ids only in the "facts" list, never in the sentence text.
+12. HEALTH facts are the company's own filings — growth and its trend, cash, balance \
+sheet, dilution — dated by the period they cover, so they predate any news after it. \
+Read the bigger picture: when there are HEALTH facts, one sentence weighs the events \
+and news against them — does the news change what HEALTH measures, or something the \
+filings cannot show yet (management, a customer, guidance)? A price move alone is not \
+evidence the business weakened, and healthy filings do not cancel news that has not \
+reached them yet.
 
 stance: CONSTRUCTIVE (facts support the position), NEUTRAL, CAUTIOUS (facts raise the \
-bar), AT_RISK (facts cut against the position or its thesis). Choose from the facts, \
-not from price alone.
+bar), AT_RISK (facts cut against the business, the position or its thesis). Choose \
+from the facts — the company's health first — not from price alone.
 """
 
 
@@ -590,6 +606,16 @@ def _prompt_version() -> str:
 PROMPT_VERSION = _prompt_version()
 
 
+def ensure_health(store: DaemonStore, symbol: str) -> None:
+    """Today's company health in the store (network; replaced in tests). Never raises."""
+    from advisor.entry.health import refresh_health
+
+    try:
+        refresh_health(store.db_path, symbol, now_et())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("reading: health unavailable for %s: %s", symbol, exc)
+
+
 def read_symbol(
     store: DaemonStore,
     symbol: str,
@@ -603,6 +629,10 @@ def read_symbol(
 ) -> Reading:
     """The reading for ``symbol``, from cache unless its facts have changed."""
     symbol = symbol.upper()
+    # Every reading sees the company's health, whichever screen asks for it
+    # (user, 2026-09-28: "esto lo tienes que hacer para todos los análisis").
+    # From the SEC once per name per day; stored, then read like any fact.
+    ensure_health(store, symbol)
     loader = {"consensus_loader": consensus_loader} if consensus_loader else {}
     scorecard = build_scorecard(store, symbol, **loader)
     facts = gather_facts(store, symbol, days=days, scorecard=scorecard)
