@@ -678,6 +678,39 @@ async def run_breadth_sync(ctx: JobContext) -> JobResult:
     return JobResult(job="breadth_sync", ok=summary["ok"], detail=detail)
 
 
+def _breadth_day_built(db_path, now) -> bool:
+    """True when the last breadth run succeeded on the latest closed session."""
+    from advisor.breadth.bars import last_closed_session
+    from advisor.breadth.store import BreadthStore, breadth_path
+
+    with BreadthStore(breadth_path(db_path)) as store:
+        last = store.last_run()
+    if not last or not last.get("ok"):
+        return False
+    day = (last.get("summary") or {}).get("universe", {}).get("day")
+    return day == last_closed_session(now).isoformat()
+
+
+def breadth_retry(name: str):
+    """A second chance for the nightly sync; a no-op when the day is already built.
+
+    A failed job counts as run, so the 20:30 slot never retries: on 2026-09-28
+    Yahoo had served that day's close for 156 of 5,368 names at 20:30, and
+    the picks went out without prices until the next night.
+    """
+
+    async def handler(ctx: JobContext) -> JobResult:
+        import asyncio
+
+        built = await asyncio.to_thread(_breadth_day_built, ctx.store.db_path, ctx.now)
+        if built:
+            return JobResult(job=name, ok=True, detail="the session is already built")
+        result = await run_breadth_sync(ctx)
+        return JobResult(job=name, ok=result.ok, detail=result.detail)
+
+    return handler
+
+
 async def run_learning_sweep(ctx: JobContext) -> JobResult:
     """Monthly, evenings: search the thresholds over the replay; file survivors as PENDING.
 

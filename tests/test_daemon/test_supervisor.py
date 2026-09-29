@@ -64,6 +64,8 @@ class TestRegistry:
             "news_judge_close",
             "picks_intraday",
             "breadth_sync",
+            "breadth_sync_late",
+            "breadth_sync_dawn",
             "company_health",
             "rule_expiry",
             "heartbeat",

@@ -119,6 +119,63 @@ def test_refused_bars_still_snapshot_and_read_facts(tmp_path):
     assert "facts" in s
 
 
+# ── an incomplete session is not built on (2026-09-28: 156 of 5,368 names) ──
+
+LATER = datetime(2026, 9, 28, 20, 30, tzinfo=MARKET_TZ)
+
+
+def partial_bars(symbols, start):
+    """Monday's close served for LIQ only, as Yahoo did at 20:30 on 2026-09-28."""
+    out = fake_bars(symbols, start)
+    if "LIQ" in out:
+        out["LIQ"].append(B.Bar(date(2026, 9, 28), 20, 20, 20, 20.0, 1e6))
+    return out
+
+
+def test_a_session_the_source_has_not_finished_is_not_built(tmp_path):
+    db, first = run(tmp_path)
+    assert first["ok"]
+    s = run_sync(
+        db, LATER, sleep=lambda s: None, fetch_dir=lambda: build_directory(NASDAQ, OTHER, SEC),
+        fetch_bars=partial_bars, fetch_frame=lambda c, u, f: (200, []),
+        fetch_concept=lambda cik, c: [], fetch_index=lambda year, q: "",
+    )  # fmt: skip
+    assert not s["ok"] and "bars for 2026-09-28 incomplete: 1 names against 2" in s["error"]
+    assert "universe" not in s and "signals" not in s
+    with BreadthStore(breadth_path(db)) as store:
+        days = {r[0] for r in store.conn.execute("SELECT DISTINCT day FROM breadth_universe")}
+        assert "2026-09-28" not in days
+        assert not store.last_run()["ok"]
+
+
+def test_coverage_boundaries():
+    assert B.complete(90, 100) and not B.complete(89, 100)
+    assert B.complete(0, 0)  # the first backfill has nothing to compare with
+
+
+def test_the_retry_is_a_no_op_once_the_session_is_built(tmp_path, monkeypatch):
+    import asyncio
+
+    from advisor.daemon import handlers
+    from advisor.daemon.jobs import JobContext
+
+    db, _ = run(tmp_path)  # built 2026-09-25
+    calls = []
+
+    async def sync(ctx):
+        calls.append(ctx.now)
+        return handlers.JobResult(job="breadth_sync", ok=True, detail="synced")
+
+    monkeypatch.setattr(handlers, "run_breadth_sync", sync)
+    retry = handlers.breadth_retry("breadth_sync_late")
+    store = type("S", (), {"db_path": db})()
+    done = asyncio.run(retry(JobContext(store=store, now=NOW.replace(hour=23))))
+    assert done.ok and done.detail == "the session is already built" and calls == []
+    # Monday night, Monday not built: it syncs.
+    again = asyncio.run(retry(JobContext(store=store, now=LATER.replace(hour=23))))
+    assert again.detail == "synced" and len(calls) == 1
+
+
 def test_the_nightly_job_never_overlaps_the_halts_poll():
     # Jobs run one at a time; a sync of minutes inside 04:00-20:05 would delay
     # the halts poll, whose findings can be EXITs.
