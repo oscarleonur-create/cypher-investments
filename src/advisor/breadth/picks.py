@@ -308,7 +308,6 @@ def entry_plan(
     p: dict,
     track: list[dict],
     *,
-    sigma: float | None,
     measured_price: float | None,
     measured_end: str | None,
     review_on: str | None,
@@ -328,10 +327,13 @@ def entry_plan(
     - **Timing**: how far into the measured window the pick is. The replay
       never measured entering later, and the plan says so rather than
       pretending the record transfers.
-    - **Stop and size**: the entry engine's position-leg rules unchanged —
-      2·σ·√10 of the name's own daily moves, kept in 8–25%, 2% of net liq at
-      risk, at most 20% of the book (``entry.proposal``). Nothing new decided.
+    - **Exits** (user decision, 2026-09-30): a target ``TAKE_PROFIT`` above the
+      entry and a stop ``STOP_LOSS`` below it, else out at the close ``HOLD``
+      sessions later (``plan_replay``, which replays exactly this).
+    - **Size**: 2% of net liq at risk to the stop, at most 20% of the book
+      (the entry engine's budget and limit, ``entry.proposal``).
     """
+    from advisor.breadth import plan_replay as PR
     from advisor.entry import proposal as EP
 
     k = int(HORIZONS[PLAN_HORIZON])
@@ -414,13 +416,11 @@ def entry_plan(
         )
         stage = "past"
 
-    stop_pct = EP.position_stop_pct(sigma)
-    stop = entry * (1 - stop_pct) if stop_pct is not None else None
+    target, stop = PR.levels(entry)
+    exit_on = after_sessions(date.fromisoformat(day), PR.HOLD).isoformat()
     size: dict = {}
     if p.get("held"):
         size = {"note": "already held: Evaluate position for an ADD, which checks the book"}
-    elif stop is None:
-        size = {"note": "no volatility estimate: no stop, so no size"}
     elif not net_liq or net_liq <= 0:
         size = {"note": "no book on file: no size"}
     else:
@@ -430,7 +430,10 @@ def entry_plan(
         if notional > room:
             shares = math.floor(room / entry)
             notional = shares * entry
-            note += f"; capped at the {EP.BOOK_LIMIT:.0%} book limit"
+            note += (
+                f"; capped at the {EP.BOOK_LIMIT:.0%} book limit, so "
+                f"{shares * (entry - stop) / net_liq:.1%} of net liq is at risk"
+            )
         if shares == 0:
             note += f"; one share (${entry:,.2f}) is more than that allows"
         size = {"shares": shares, "notional": notional, "risk_pct": EP.POSITION_RISK,
@@ -442,9 +445,11 @@ def entry_plan(
     lead = "Enter near" if stage == "fresh" else "If entered now: near"
     summary = f"{lead} ${entry:,.2f} ({'live' if p.get('provisional') else 'close'} {day})"
     summary += f" because {because}." if because else "."
-    if stop is not None:
-        summary += f" Stop ${stop:,.2f} ({_pct(-stop_pct)})"
-        summary += f", review on {review_on} ({k} sessions)." if review_on else "."
+    summary += (
+        f" Target ${target:,.2f} ({_pct(PR.TAKE_PROFIT)}), stop ${stop:,.2f} "
+        f"({_pct(-PR.STOP_LOSS)}); otherwise out at the close on {exit_on} "
+        f"({PR.HOLD} sessions)."
+    )
     return {
         "ok": True,
         "entry": entry,
@@ -457,15 +462,15 @@ def entry_plan(
         "stage": stage,
         "timing": timing,
         "measured": {"day": p.get("since"), "price": base, "ends": measured_end},
+        "target": target,
+        "target_pct": PR.TAKE_PROFIT,
         "stop": stop,
-        "stop_pct": stop_pct,
+        "stop_pct": PR.STOP_LOSS,
         "stop_basis": (
-            f"{EP.POSITION_STOP_SIGMAS:g}·σ·√{EP.POSITION_STOP_SESSIONS} of its daily moves "
-            f"(σ {sigma:.2%}/day), kept in {EP.POSITION_STOP_MIN:.0%}–{EP.POSITION_STOP_MAX:.0%}: "
-            "the entry engine's position stop"
-            if stop_pct is not None
-            else None
+            f"{_pct(PR.TAKE_PROFIT)} / {_pct(-PR.STOP_LOSS)} from the entry, else out after "
+            f"{PR.HOLD} sessions: your exit for picks (2026-09-30)"
         ),
+        "exit_on": exit_on,
         "review_on": review_on,
         "size": size,
         "summary": summary,
@@ -491,13 +496,14 @@ def plan_record(group: str, sessions_in: int, runs: list[dict]) -> list[dict]:
              if x.get("group") == group and x.get("offset") == offset and x.get("n")),
             None,
         )  # fmt: skip
-        if c is None:
-            continue
-        w, pl = c["with_stop"], c["plain"]
+        if c is None or "raw" not in c:
+            continue  # a run of an older plan shape
+        raw, ex = c["raw"], c["excess"]
 
         def ci(x):
             return f", 95% interval {_pct(x['ci'][0])} … {_pct(x['ci'][1])}" if x.get("ci") else ""
 
+        x = c["exits"]
         when = "on the first day" if offset == 0 else f"{offset} sessions after the first day"
         out.append(
             {
@@ -506,40 +512,27 @@ def plan_record(group: str, sessions_in: int, runs: list[dict]) -> list[dict]:
                 "to": run.get("to"),
                 "offset": offset,
                 "n": c["n"],
+                "exits": x,
+                "both": c.get("both"),
+                "held_median": c.get("held_median"),
+                "ret": c["ret"],
                 "peers": c["peers"],
-                "with_stop": w,
-                "plain": pl,
-                "stopped": c["stopped"],
-                "stop_effect": c["stop_effect"],
+                "raw": raw,
+                "excess": ex,
+                "plain": c["plain"],
+                "plain_ret": c.get("plain_ret"),
                 "text": (
                     f"{run.get('years')}-year plan replay, entering {when} ({c['n']:,} trades): "
-                    f"with the stop {_pct(w['mean'])} over {HOLD} sessions against "
-                    f"{_pct(c['peers'])} for peers ({_pct(w['excess'])} beyond them{ci(w)}) — "
-                    f"{w['verdict']}; stopped out {c['stopped']:.0%} of the time. Without the "
-                    f"stop {_pct(pl['mean'])} ({_pct(pl['excess'])} beyond peers{ci(pl)}) — "
-                    f"{pl['verdict']}."
+                    f"target hit {x['target']:.0%}, stop {x['stop']:.0%}, out on time "
+                    f"{x['time']:.0%} (median {c.get('held_median', 0):g} sessions held). "
+                    f"{_pct(c['ret'])} a trade on average{ci(raw)} — {raw['verdict']}; "
+                    f"peers over the same sessions {_pct(c['peers'])}, so "
+                    f"{_pct(ex['mean'])} beyond them{ci(ex)} — {ex['verdict']}. "
+                    f"Held 20 sessions with no exits: {_pct(c.get('plain_ret'))}."
                 ),
             }
         )
     return out
-
-
-def sigma_before(closes: np.ndarray) -> float | None:
-    """Daily σ as the entry engine measures it: simple returns of the sessions before the last.
-
-    The last value is the pick's own session and is left out, so its move never
-    inflates the yardstick (``entry.sheet.move_from_closes``).
-    """
-    import statistics
-
-    from advisor.entry.sheet import SIGMA_SESSIONS
-
-    prior = [float(c) for c in closes[:-1] if np.isfinite(c) and c > 0]
-    rets = [b / a - 1 for a, b in zip(prior, prior[1:])][-SIGMA_SESSIONS:]
-    if len(rets) < 20:
-        return None
-    s = statistics.stdev(rets)
-    return s if s > 0 else None
 
 
 def after_sessions(day: date, n: int) -> date:
@@ -783,7 +776,6 @@ def build_picks(
         p["plan"] = entry_plan(
             p,
             track,
-            sigma=sigma_before(close[: row + 1, j]),
             measured_price=float(measured) if np.isfinite(measured) else None,
             measured_end=(
                 sessions[ends].date().isoformat()

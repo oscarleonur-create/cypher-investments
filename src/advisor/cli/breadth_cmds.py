@@ -132,24 +132,25 @@ def plan_replay(
         f"Plan replay {s['run_id']} (rules {s['rules']}): {s['from']} → {s['to']}, "
         f"{s['records']} records, {s['trades']} trades, skipped {s['skipped']}"
     )
-    table = Table(title=f"The plan over {s['hold']} sessions, beyond matched peers")
-    for col in ("group", "entry", "n", "peers", "no stop", "vs peers", "CI", "verdict",
-                "with stop", "vs peers ", "CI ", "verdict ", "stopped", "stop avg"):  # fmt: skip
+    exits = f"+{s['take_profit']:.1%} / -{s['stop_loss']:.1%}"
+    table = Table(title=f"{exits}, else out after {s['hold']} sessions")
+    for col in ("group", "entry", "n", "target", "stop", "time", "held", "per trade", "CI",
+                "verdict", "vs peers", "verdict ", "20d hold"):  # fmt: skip
         table.add_column(col, justify="left" if col in ("group", "entry") else "right")
     for c in s["cells"]:
         if not c["n"]:
-            table.add_row(c["group"], f"day +{c['offset']}", "0", *[""] * 11)
+            table.add_row(c["group"], f"day +{c['offset']}", "0", *[""] * 10)
             continue
-        p, w = c["plain"], c["with_stop"]
+        x, raw, ex = c["exits"], c["raw"], c["excess"]
 
-        def ci(x):
-            return f"{_pct(x['ci'][0])} … {_pct(x['ci'][1])}" if x["ci"] else "—"
+        def ci(v):
+            return f"{_pct(v['ci'][0])} … {_pct(v['ci'][1])}" if v["ci"] else "—"
 
         table.add_row(
-            c["group"], f"day +{c['offset']}", str(c["n"]), _pct(c["peers"]),
-            _pct(p["mean"]), _pct(p["excess"]), ci(p), p["verdict"],
-            _pct(w["mean"]), _pct(w["excess"]), ci(w), w["verdict"],
-            f"{c['stopped'] * 100:.0f}%", _pct(-c["stop_pct"]),
+            c["group"], f"day +{c['offset']}", str(c["n"]),
+            f"{x['target']:.0%}", f"{x['stop']:.0%}", f"{x['time']:.0%}", f"{c['held_median']:g}",
+            _pct(c["ret"]), ci(raw), raw["verdict"], _pct(ex["mean"]), ex["verdict"],
+            _pct(c["plain_ret"]),
         )  # fmt: skip
     console.print(table)
 
