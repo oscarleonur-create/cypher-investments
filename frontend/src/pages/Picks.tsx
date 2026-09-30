@@ -95,10 +95,19 @@ function EntryPlan({ plan, price }: { plan: PickPlan; price: number }) {
         {plan.group && <span className="text-xs text-muted">record of group {plan.group}</span>}
       </div>
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
         <div>
           <div className="text-xs uppercase tracking-wide text-muted">{fresh ? "Enter near" : "If entered now"}</div>
           <div className="font-semibold tnum">{fmtUsd(plan.entry)}</div>
+        </div>
+        <div>
+          <div className="text-xs uppercase tracking-wide text-muted">Target</div>
+          <div className="font-semibold tnum text-pos">
+            {plan.target != null ? fmtUsd(plan.target) : "—"}
+            {plan.target_pct != null && (
+              <span className="ml-1 text-xs font-normal">({fmtPct(plan.target_pct, { sign: true })})</span>
+            )}
+          </div>
         </div>
         <div>
           <div className="text-xs uppercase tracking-wide text-muted">Stop</div>
@@ -116,8 +125,8 @@ function EntryPlan({ plan, price }: { plan: PickPlan; price: number }) {
           </div>
         </div>
         <div>
-          <div className="text-xs uppercase tracking-wide text-muted">Review on</div>
-          <div className="font-semibold tnum">{plan.review_on ?? "—"}</div>
+          <div className="text-xs uppercase tracking-wide text-muted">Else out on</div>
+          <div className="font-semibold tnum">{plan.exit_on ?? plan.review_on ?? "—"}</div>
         </div>
       </div>
 
@@ -170,13 +179,13 @@ function EntryPlan({ plan, price }: { plan: PickPlan; price: number }) {
 
       {plan.replayed && plan.replayed.length > 0 && (
         <div className="space-y-1">
-          <div className="font-medium">The plan as shown, replayed — this entry delay, with and without its stop:</div>
+          <div className="font-medium">The plan as shown, replayed — +5% target, −2.5% stop, this entry delay:</div>
           <ul className="space-y-1 text-muted">
             {plan.replayed.map((r) => (
               <li key={r.years}>
                 {r.text}{" "}
-                <span className={cn("text-text", pnlColor(r.stop_effect))}>
-                  The stop changed the average by {fmtPct(r.stop_effect, { sign: true })}.
+                <span className={cn("text-text", pnlColor(r.ret))}>
+                  Per trade: {fmtPct(r.ret, { sign: true })} ({r.raw.verdict}).
                 </span>
               </li>
             ))}
@@ -189,7 +198,7 @@ function EntryPlan({ plan, price }: { plan: PickPlan; price: number }) {
       <div className="text-xs text-muted">
         {plan.stop_basis && <>Stop: {plan.stop_basis}. </>}
         {plan.size?.note && <>Size: {plan.size.note}. </>}
-        An average of past names, not a target: check the zone, results date and news with Evaluate
+        The replays are past names, not a forecast for this one: check the zone, results date and news with Evaluate
         position before acting.
       </div>
     </div>

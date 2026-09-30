@@ -191,7 +191,8 @@ def test_breadth_declarations_exist():
         for name in names:
             assert hasattr(BREADTH_MODULES[label], name), f"{label}.{name}"
     modules = {**BREADTH_MODULES, **SIGNAL_MODULES}
-    for label, names in breadth_ruleset.SIGNAL_DECLARED.items():
+    both = {**breadth_ruleset.SIGNAL_DECLARED, **breadth_ruleset.PLAN_DECLARED}
+    for label, names in both.items():
         for name in names:
             assert hasattr(modules[label], name), f"{label}.{name}"
     for key in breadth_ruleset.NOT_RULES:
@@ -213,6 +214,7 @@ SIGNAL_MODULES = {
 @pytest.mark.parametrize("label,module", SIGNAL_MODULES.items())
 def test_breadth_signal_constants_are_declared_or_not_rules(label, module):
     declared = set(breadth_ruleset.SIGNAL_DECLARED.get(label, {}))
+    declared |= set(breadth_ruleset.PLAN_DECLARED.get(label, {}))
     known = {f"{label}.{n}" for n in declared} | set(breadth_ruleset.NOT_RULES)
     missing = {f"{label}.{c}" for c in constants(module)} - known
     assert not missing, f"declare in breadth/ruleset.py or list in NOT_RULES: {sorted(missing)}"

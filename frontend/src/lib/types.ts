@@ -1068,15 +1068,26 @@ export interface PlanExpect {
   text: string;
 }
 
+interface Judged {
+  mean: number;
+  ci: [number, number] | null;
+  verdict: string;
+}
+
+/** The pick's bracket (+5% / −2.5%, else out after 20 sessions) replayed at this entry delay. */
 export interface PlanReplayed {
   years: number;
   offset: number;
   n: number;
+  exits: { target: number; stop: number; time: number };
+  both: number | null;
+  held_median: number | null;
+  ret: number;
   peers: number;
-  with_stop: { mean: number; excess: number; ci: [number, number] | null; verdict: string };
-  plain: { mean: number; excess: number; ci: [number, number] | null; verdict: string };
-  stopped: number;
-  stop_effect: number;
+  raw: Judged;
+  excess: Judged;
+  plain: Judged;
+  plain_ret: number | null;
   text: string;
 }
 
@@ -1095,9 +1106,13 @@ export interface PickPlan {
   stage?: "fresh" | "late" | "past";
   timing?: string;
   measured?: { day: string | null; price: number | null; ends: string | null };
+  target?: number | null;
+  target_pct?: number | null;
   stop?: number | null;
   stop_pct?: number | null;
   stop_basis?: string | null;
+  /** The time exit when neither level is reached. */
+  exit_on?: string | null;
   review_on?: string | null;
   size?: { shares?: number; notional?: number; risk_pct?: number; note?: string };
   summary?: string;

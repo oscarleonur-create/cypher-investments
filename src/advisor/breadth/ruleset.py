@@ -78,7 +78,6 @@ NOT_RULES: dict[str, str] = {
     "picks.TOP_N": "how many picks are shown: display, not what qualifies",
     "picks.PLAN_HORIZON": "which measured horizon an entry plan quotes: display, no pick changes",
     "plan_replay.OFFSETS": "which entry delays the plan replay measures: measurement, no rule",
-    "plan_replay.HOLD": "the plan's horizon, measured as shown (its review date)",
     "plan_replay.GROUPS": "the groups a pick's plan quotes",
     "plan_replay._SCHEMA": "table definitions",
     "picks.HISTORY_DAYS": "how much history a build loads, enough for every window",
@@ -120,6 +119,32 @@ SIGNAL_DECLARED: dict[str, dict[str, Kind]] = {
         "MAX_FILING_LAG_DAYS": Kind.MODEL,
     },
 }
+
+
+PLAN = "breadth.plan"
+
+# How a pick is traded (user decision, 2026-09-30: "+5% -2.5% del entry price").
+# Its own ruleset, so changing an exit re-versions the plan and not the signals:
+# the signal replay's runs stay valid.
+PLAN_DECLARED: dict[str, dict[str, Kind]] = {
+    "plan_replay": {
+        "TAKE_PROFIT": Kind.DECIDED,
+        "STOP_LOSS": Kind.DECIDED,
+        # The time exit when neither level is reached: the plan's review date.
+        "HOLD": Kind.MODEL,
+    },
+}
+
+
+def plan_rules() -> RuleStamp:
+    """The version of a pick's exits, with the signals they trade folded in."""
+    from advisor.breadth import plan_replay
+
+    declared = {"signals.version": (signal_rules().version, Kind.MODEL)}
+    for mod, names in PLAN_DECLARED.items():
+        for name, kind in names.items():
+            declared[f"{mod}.{name}"] = (getattr(plan_replay, name), kind)
+    return stamp(PLAN, declared)
 
 
 def signal_rules(t=None) -> RuleStamp:
