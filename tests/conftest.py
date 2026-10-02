@@ -37,6 +37,10 @@ def _no_news_rationale_network(monkeypatch):
 
     monkeypatch.setattr(deep_research, "_health", lambda *a, **k: None)
     monkeypatch.setattr(deep_research, "_judged_news", lambda *a, **k: [])
+    # Every pick is valued from the SEC's filings for its verdict.
+    from advisor.breadth import verdict
+
+    monkeypatch.setattr(verdict, "value_card", lambda *a, **k: (None, "not valued in tests"))
 
 
 @pytest.fixture(autouse=True)

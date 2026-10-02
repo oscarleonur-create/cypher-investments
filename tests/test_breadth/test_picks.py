@@ -473,3 +473,33 @@ def test_built_picks_carry_a_plan(store, inputs, tmp_path):
     # Flat test bars: no volatility, so no stop and no size — said, not guessed.
     assert pl["stop"] is None and pl["size"]["note"].startswith("no volatility")
     assert PK.latest_picks(store)["picks"][0]["plan"] == pl
+
+
+def test_every_pick_gets_its_own_verdict_with_the_measured_record(store, monkeypatch):
+    """Two picks, a stored value test: each verdict quotes it (a shadowed name once
+    handed the second pick a price where the record should be)."""
+    from advisor.breadth import verdict as V
+
+    def fake(store, panel, tally=None, t=S.DEFAULT):
+        elig = pd.DataFrame(True, index=panel.close.index, columns=panel.close.columns)
+        last = len(panel.sessions) - 1
+        events = [S.FEvent(s, last - 3, "2026Q3", 1e8, 0.4, 0.2, date(2026, 7, 31))
+                  for s in ("AAA", "BBB")]  # fmt: skip
+        ievents = [S.IEvent(s, last - 2, 3, 5e5, date(2026, 9, 21)) for s in ("AAA", "BBB")]
+        return {"AAA": 1, "BBB": 2, "CCC": 3}, elig, events, ievents
+
+    monkeypatch.setattr(M, "_inputs", fake)
+    card = {"verdict": "above_bear", "own_margins": [{"value": 0.2}], "rationale": [],
+            "cases": [{"name": "bear", "value_per_share": 40.0},
+                      {"name": "base", "value_per_share": 55.0},
+                      {"name": "bull", "value_per_share": 70.0},
+                      {"name": "market", "value_per_share": 50.0, "margin": 0.15}]}  # fmt: skip
+    monkeypatch.setattr(V, "value_card", lambda *a, **k: (card, ""))
+    record = {"below_base": {"n": 402, "excess": 0.0231, "ci": None, "verdict": "EDGE"}}
+    monkeypatch.setattr(V, "evidence", lambda store: record)
+    r = PK.build_picks(store, date(2026, 9, 25), NOW)
+    assert [p["symbol"] for p in r["picks"]] == ["AAA", "BBB"]
+    for p in r["picks"]:
+        v = p["verdict"]
+        assert v["action"] == "ENTER" and v["entry"] == 55.0 and v["target"] == 70.0
+        assert v["evidence"].startswith("Measured: 402 past picks like this beat peers by +2.3%")

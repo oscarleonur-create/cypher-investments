@@ -1046,6 +1046,24 @@ export interface Pick {
   since_pick?: { day: string; close: number; move: number } | null;
   /** Enter at what price, because of what, expecting what — as measured (picks built since 2026-09-29). */
   plan?: PickPlan | null;
+  /** Where the price sits against the company's own value, and what to do (picks built since 2026-10-02). */
+  verdict?: PickVerdict | null;
+}
+
+export interface PickVerdict {
+  action: "ENTER" | "WAIT" | "TRADE ONLY" | "UNPROVEN" | "CAN'T VALUE";
+  bucket: string;
+  /** Entry up to this price: the company's base value. */
+  entry?: number | null;
+  /** The bull case value. */
+  target?: number | null;
+  value?: number | null;
+  headline: string;
+  lines: string[];
+  /** The measured record of this bucket in the value test. */
+  evidence: string | null;
+  /** Why a margin-based value may misread this business, if it does. */
+  caveat: string | null;
 }
 
 /** What the pick's group did next in one replay window. */

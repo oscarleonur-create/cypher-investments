@@ -154,6 +154,48 @@ def plan_replay(
     console.print(table)
 
 
+@app.command("value-replay")
+def value_replay(
+    years: Annotated[int, typer.Option("--years", help="The signal replay window to value")] = 3,
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """Value each pick record as of its day; judge picks by where the price sat vs value."""
+    from advisor.breadth.store import breadth_path
+    from advisor.breadth.value_replay import replay_value
+    from advisor.daemon.market_calendar import now_et
+
+    s = replay_value(
+        breadth_path(_db_path()),
+        now_et(),
+        years=years,
+        progress=(
+            None
+            if output == "json"  # stdout carries the JSON only
+            else lambda k, n: console.print(f"valued {k:,}/{n:,}") if k % 1000 == 0 else None
+        ),
+    )
+    if output == "json":
+        output_json(s)
+        return
+    if not s.get("ok"):
+        output_error(s.get("error", "value replay failed"))
+        return
+    console.print(f"Value test {s['id']} over {s['signal_run']}: {s['records']:,} records")
+    table = Table(title="Excess over matched peers by where the price sat against value")
+    for col in ("group", "bucket", "horizon", "n", "excess", "95% CI", "beat", "verdict"):
+        table.add_column(col, justify="left" if col in ("group", "bucket", "verdict") else "right")
+    for c in s["cells"]:
+        if not c["n"]:
+            continue
+        ci = c.get("ci")
+        table.add_row(
+            c["group"], c["bucket"], c["horizon"], str(c["n"]), _pct(c["excess"]),
+            f"{_pct(ci[0])} … {_pct(ci[1])}" if ci else "—", f"{c['beat'] * 100:.0f}%",
+            c["verdict"],
+        )  # fmt: skip
+    console.print(table)
+
+
 def _pct(x) -> str:
     return "—" if x is None else f"{x * 100:+.2f}%"
 
