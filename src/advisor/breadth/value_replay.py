@@ -416,3 +416,71 @@ def run(breadth_db: Path, run_id: str, cache_path: Path, *, progress=None) -> di
         counts[r["grp"]][r["value"]["bucket"]] += 1
     return {"run_id": run_id, "records": len(recs), "counts": counts,
             "cells": evaluate(recs), "rows": recs}  # fmt: skip
+
+
+# ── stored runs: what a pick's verdict quotes ───────────────────────────────
+
+_RUNS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS breadth_value_runs (
+    id           TEXT PRIMARY KEY,
+    started_at   TEXT NOT NULL,
+    rules        TEXT NOT NULL,
+    years        INTEGER NOT NULL,
+    signal_run   TEXT NOT NULL,
+    summary_json TEXT NOT NULL
+);
+"""
+
+
+def replay_value(breadth_db: Path, now: datetime, *, years: int = 3, progress=None) -> dict:
+    """Value the latest signal replay of ``years`` (current rules); store the cells.
+
+    The companyfacts cache lives beside the run, in the breadth store: the
+    first run downloads ~1,500 companies (about 25 minutes), later ones reuse it.
+    """
+    import uuid
+
+    from advisor.breadth.ruleset import signal_rules, value_rules
+
+    conn = sqlite3.connect(str(breadth_db))
+    signal = None
+    for rid, params in conn.execute(
+        "SELECT id, params_json FROM breadth_replay_runs WHERE rules = ? ORDER BY started_at DESC",
+        (signal_rules().version,),
+    ):
+        if int(json.loads(params).get("years", 0)) == years:
+            signal = rid
+            break
+    conn.close()
+    if signal is None:
+        return {"ok": False, "error": f"no {years}-year signal replay under the current rules"}
+    out = run(breadth_db, signal, breadth_db, progress=progress)
+    out.pop("rows")
+    run_id = f"{now:%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
+    summary = {"ok": True, "id": run_id, "years": years, "signal_run": signal,
+               "rules": value_rules().version, **out}  # fmt: skip
+    conn = sqlite3.connect(str(breadth_db))
+    with conn:
+        conn.executescript(_RUNS_SCHEMA)
+        conn.execute(
+            "INSERT INTO breadth_value_runs VALUES (?, ?, ?, ?, ?, ?)",
+            (run_id, now.isoformat(), summary["rules"], years, signal,
+             json.dumps(summary, default=str)),
+        )  # fmt: skip
+    conn.close()
+    return summary
+
+
+def latest_value_runs(store) -> list[dict]:
+    """The latest value test of each window under the current rules, longest first."""
+    from advisor.breadth.ruleset import value_rules
+
+    store.conn.executescript(_RUNS_SCHEMA)
+    current = value_rules().version
+    latest: dict[int, dict] = {}
+    for summary, rules, years in store.conn.execute(
+        "SELECT summary_json, rules, years FROM breadth_value_runs ORDER BY started_at DESC"
+    ):
+        if rules == current and years not in latest:
+            latest[years] = json.loads(summary)
+    return [latest[y] for y in sorted(latest, reverse=True)]

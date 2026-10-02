@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
-import type { Pick, PickCell, PickPlan, PicksResponse, ReplayWindow } from "@/lib/types";
+import type { Pick, PickCell, PickPlan, PickVerdict, PicksResponse, ReplayWindow } from "@/lib/types";
 import { useJob } from "@/lib/useJob";
 import { cn, fmtEt, fmtPct, fmtUsd, pnlColor } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -196,6 +196,57 @@ function EntryPlan({ plan, price }: { plan: PickPlan; price: number }) {
   );
 }
 
+const VERDICT: Record<string, { tone: string; border: string }> = {
+  ENTER: { tone: "text-pos", border: "border-pos/40 bg-pos/10" },
+  WAIT: { tone: "text-warn", border: "border-warn/40 bg-warn/10" },
+  "TRADE ONLY": { tone: "text-neg", border: "border-neg/40 bg-neg/10" },
+  UNPROVEN: { tone: "text-muted", border: "border-border bg-panel-2/40" },
+  "CAN'T VALUE": { tone: "text-muted", border: "border-border bg-panel-2/40" },
+};
+
+/** A price to act on is shown to the cent, never abbreviated ($1,000.01, not $1.0K). */
+function exactUsd(x: number): string {
+  return `$${x.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/** The conclusion first: what to do, at what price, and the measured record behind it. */
+function Verdict({ v }: { v: PickVerdict }) {
+  const style = VERDICT[v.action] ?? VERDICT["CAN'T VALUE"];
+  return (
+    <div className={cn("space-y-1.5 rounded-md border px-3 py-2.5 text-sm", style.border)}>
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+        <span className={cn("text-base font-bold tracking-wide", style.tone)}>{v.action}</span>
+        {v.entry != null && (
+          <span className="tnum">
+            entry ≤ <span className="font-semibold">{exactUsd(v.entry)}</span>
+          </span>
+        )}
+        {v.target != null && (
+          <span className="tnum">
+            target <span className="font-semibold">{exactUsd(v.target)}</span>
+          </span>
+        )}
+      </div>
+      {/* The label above already says the action; the sentence starts after it. */}
+      <div className="text-text">{v.headline.replace(/^[A-Z' ]+?\s*(—|:)\s*/, "")}</div>
+      {v.caveat && (
+        <div className="flex gap-1.5 text-warn">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>The value may misread this business — it is {v.caveat}.</span>
+        </div>
+      )}
+      {v.lines.length > 0 && (
+        <ul className="space-y-0.5 text-xs text-muted">
+          {v.lines.map((l, i) => (
+            <li key={i}>{l}</li>
+          ))}
+        </ul>
+      )}
+      {v.evidence && <div className="text-xs text-muted">{v.evidence}</div>}
+    </div>
+  );
+}
+
 function PickCard({ p, depth }: { p: Pick; depth?: DepthStatus }) {
   return (
     <Card>
@@ -247,6 +298,8 @@ function PickCard({ p, depth }: { p: Pick; depth?: DepthStatus }) {
             )}
           </div>
         </div>
+
+        {p.verdict && <Verdict v={p.verdict} />}
 
         {p.plan && <EntryPlan plan={p.plan} price={p.price} />}
 

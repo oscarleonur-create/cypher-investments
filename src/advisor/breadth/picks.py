@@ -24,6 +24,11 @@ so a pick says exactly what was measured and no more:
   was measured: the replay entered on the *first* day the families agreed,
   so a pick further in is told how far into that window it is, and that
   entering later was not measured.
+- **Every pick leads with a verdict** (user, 2026-09-30: *"debería estar en X
+  valor"*): ENTER / WAIT / TRADE ONLY / UNPROVEN / CAN'T VALUE, from where its
+  price sits against the company's own base value (``breadth.verdict``). The
+  value test (``value_replay``) is why: picks at or below their base value beat
+  their peers over 20 sessions; those above it did not.
 
 Computed once a night by ``breadth_sync`` and stored; the API only reads.
 """
@@ -691,9 +696,9 @@ def build_picks(
         i_by.setdefault(e.symbol, []).append(e)
 
     names = {
-        r[0]: (r[1], r[2])
+        r[0]: (r[1], r[2], r[3])
         for r in store.conn.execute(
-            "SELECT u.symbol, u.name, c.sic_desc FROM breadth_universe u "
+            "SELECT u.symbol, u.name, c.sic_desc, c.sic FROM breadth_universe u "
             "LEFT JOIN breadth_companies c ON c.cik = u.cik WHERE u.day = "
             "(SELECT MAX(day) FROM breadth_universe)"
         )
@@ -735,12 +740,13 @@ def build_picks(
                 p_detail["breakout_day"] = sessions[b].date().isoformat()
                 p_detail["breakout_move"] = float(close[b, j] / close[b - 1, j] - 1)
                 p_detail["breakout_rvol"] = float(volume[b, j] / usual) if usual else None
-        name, sector = names.get(symbol, (None, None))
+        name, sector, sic = names.get(symbol, (None, None, None))
         picks.append(
             {
                 "symbol": symbol,
                 "name": name,
                 "sector": sector,
+                "sic": sic,
                 "held": symbol in held,
                 "families": a.families,
                 "since": sessions[a.since_row].date().isoformat(),
@@ -769,14 +775,22 @@ def build_picks(
     top = picks[:n]
     n_eligible = int(eligible[row].sum())
     track = _replay_record(store)
+    from advisor.breadth import verdict as V
     from advisor.breadth.plan_replay import latest_plan_runs
 
     plan_runs = latest_plan_runs(store)
+    value_record = V.evidence(store)
     k = int(HORIZONS[PLAN_HORIZON])
     for p in top:
         p.update(rationale(p, n_eligible))
         p["provisional"] = live is not None
         p["asof"] = now.isoformat()
+        # Where the price sits against the company's own value, and what to do
+        # (user, 2026-09-30: "debería estar en X valor").
+        card, why = V.value_card(p["symbol"], p["price"], day)
+        p["verdict"] = V.pick_verdict(
+            p["price"], card, sic=p.get("sic"), evidence=value_record, why_missing=why
+        )
         j, since = cols[p["symbol"]], p["since_row"]
         measured = close[since, j]
         ends = since + k

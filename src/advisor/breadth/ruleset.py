@@ -83,6 +83,15 @@ NOT_RULES: dict[str, str] = {
     "plan_replay._SCHEMA": "table definitions",
     "picks.HISTORY_DAYS": "how much history a build loads, enough for every window",
     "picks._SCHEMA": "table definitions",
+    "value_replay.GROUPS": "which record groups the value test reads",
+    "value_replay.HORIZONS": "the signal replay's horizons, read back",
+    "value_replay.FACTS_URL": "a source address",
+    "value_replay._SCHEMA": "table definitions",
+    "value_replay._RUNS_SCHEMA": "table definitions",
+    "value_replay.BUCKETS": "the names of the value buckets",
+    "verdict.ACTIONS": "the words a verdict uses for each measured bucket",
+    "verdict.MISREAD_SIC": "a caveat on the value shown; changes no verdict or pick",
+    "verdict._CARDS": "a per-day cache of filings",
 }
 
 SIGNALS = "breadth.signals"
@@ -120,6 +129,26 @@ SIGNAL_DECLARED: dict[str, dict[str, Kind]] = {
         "MAX_FILING_LAG_DAYS": Kind.MODEL,
     },
 }
+
+
+VALUE = "breadth.value"
+
+# How a pick record is valued as of its day (``value_replay``). Its own
+# ruleset: changing it re-versions the value test, not the signals.
+VALUE_DECLARED: dict[str, dict[str, Kind]] = {
+    "value_replay": {"MAX_PERIOD_AGE_DAYS": Kind.MODEL},
+}
+
+
+def value_rules() -> RuleStamp:
+    """The version of the value test, with the signals it reads folded in."""
+    from advisor.breadth import value_replay
+
+    declared = {"signals.version": (signal_rules().version, Kind.MODEL)}
+    for mod, names in VALUE_DECLARED.items():
+        for name, kind in names.items():
+            declared[f"{mod}.{name}"] = (getattr(value_replay, name), kind)
+    return stamp(VALUE, declared)
 
 
 def signal_rules(t=None) -> RuleStamp:

@@ -25,6 +25,8 @@ from advisor.breadth import plan_replay as breadth_plan_replay
 from advisor.breadth import ruleset as breadth_ruleset
 from advisor.breadth import signals as breadth_signals
 from advisor.breadth import universe as breadth_universe
+from advisor.breadth import value_replay as breadth_value_replay
+from advisor.breadth import verdict as breadth_verdict
 from advisor.entry import distress, exits, freshness, health, proposal, sheet, zone
 from advisor.entry import ruleset as entry_ruleset
 from advisor.learning.rules import Kind
@@ -191,7 +193,8 @@ def test_breadth_declarations_exist():
         for name in names:
             assert hasattr(BREADTH_MODULES[label], name), f"{label}.{name}"
     modules = {**BREADTH_MODULES, **SIGNAL_MODULES}
-    for label, names in breadth_ruleset.SIGNAL_DECLARED.items():
+    both = {**breadth_ruleset.SIGNAL_DECLARED, **breadth_ruleset.VALUE_DECLARED}
+    for label, names in both.items():
         for name in names:
             assert hasattr(modules[label], name), f"{label}.{name}"
     for key in breadth_ruleset.NOT_RULES:
@@ -207,12 +210,15 @@ SIGNAL_MODULES = {
     "insiders": breadth_insiders,
     "picks": breadth_picks,
     "plan_replay": breadth_plan_replay,
+    "value_replay": breadth_value_replay,
+    "verdict": breadth_verdict,
 }
 
 
 @pytest.mark.parametrize("label,module", SIGNAL_MODULES.items())
 def test_breadth_signal_constants_are_declared_or_not_rules(label, module):
     declared = set(breadth_ruleset.SIGNAL_DECLARED.get(label, {}))
+    declared |= set(breadth_ruleset.VALUE_DECLARED.get(label, {}))
     known = {f"{label}.{n}" for n in declared} | set(breadth_ruleset.NOT_RULES)
     missing = {f"{label}.{c}" for c in constants(module)} - known
     assert not missing, f"declare in breadth/ruleset.py or list in NOT_RULES: {sorted(missing)}"
