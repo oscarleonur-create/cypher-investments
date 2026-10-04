@@ -1235,7 +1235,7 @@ export interface PicksResponse {
 /** One thing to do now (`entry/actionables.py`): a verb, one line, one or two bullets. */
 export interface Actionable {
   id: string;
-  verb: "SELL" | "TRIM" | "DECIDE" | "READ" | "BUY";
+  verb: "SELL" | "DECIDE" | "READ" | "BUY";
   symbol: string;
   section: "book" | "tracking";
   title: string;

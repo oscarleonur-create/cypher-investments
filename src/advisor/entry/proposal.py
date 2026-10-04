@@ -154,7 +154,7 @@ class Action(StrEnum):
     CANNOT_SAY = "CANNOT_SAY"  # no price, or neither a zone nor a setup to judge by
     # Held names (``entry.exits``): the strongest exit call wins; none is HOLD.
     EXIT = "EXIT"  # sell all: past its stop, or a filing that ends the case
-    TRIM = "TRIM"  # sell part: above the 20% book limit
+    TRIM = "TRIM"  # sell part: above the 20% book limit. Not issued since 2026-10-04
     REVIEW = "REVIEW"  # answer it: a broken thesis rule, rich P/S, an auditor change
     HOLD = "HOLD"  # held, no exit call; the reasons say where it stands
 

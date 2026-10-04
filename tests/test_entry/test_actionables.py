@@ -114,36 +114,14 @@ class TestHeld:
         assert build([prop("CRDO", Action.HOLD)], book(pos("CRDO"))) == []
 
 
-class TestTrim:
-    def test_sized_from_the_book_as_it_is_now(self):
-        # 11 shares at $158.78 on a $8,148 book: 21.4%; one share brings it to 19.5%.
+class TestNoTrim:
+    """The user removed the 20% trim (2026-10-04); proposals recorded before still say TRIM."""
+
+    def test_a_recorded_trim_is_not_an_action(self):
+        # SPCX on 10-02: TRIM at 21.4% of the book, recorded before the rule went.
         b = book(pos("SPCX", qty=11, cost=128.16, price=158.78), net_liq=8_148.0)
-        [a] = build([prop("SPCX", Action.TRIM, exits=[call("TRIM", "concentration", shares=1)])], b)
-        assert a.verb == "TRIM" and a.shares == 1
-        assert a.title == "TRIM SPCX — sell 1 share (~$158.78)"
-        assert a.bullets == [
-            "21.4% of the book against your 20% limit; selling 1 brings it to 19.5%"
-        ]
-
-    def test_sold_since_is_gone(self):
-        b = book(pos("SPCX", qty=10, price=158.78), net_liq=8_148.0)  # 19.5%
-        assert build([prop("SPCX", Action.TRIM, exits=[call("TRIM", "concentration")])], b) == []
-
-    @pytest.mark.parametrize("notional,expect", [(2_000.0, None), (2_000.01, 1)])
-    def test_exactly_at_the_limit_is_no_trim(self, notional, expect):
-        h = A.Holding(symbol="X", quantity=20, cost=1.0, price=notional / 20, notional=notional)
-        got = A.trim_size(h, 10_000.0)
-        assert (got is None) if expect is None else (got[0] == expect)
-
-    def test_no_net_liq_or_no_price_cannot_size(self):
-        h = A.Holding(symbol="X", quantity=20, cost=1.0, price=None, notional=3_000.0)
-        assert A.trim_size(h, 10_000.0) is None
-        h = A.Holding(symbol="X", quantity=20, cost=1.0, price=150.0, notional=3_000.0)
-        assert A.trim_size(h, 0.0) is None
-
-    def test_never_more_than_held(self):
-        h = A.Holding(symbol="X", quantity=2, cost=1.0, price=5_000.0, notional=10_000.0)
-        assert A.trim_size(h, 10_000.0)[0] == 2
+        p = prop("SPCX", Action.TRIM, exits=[call("TRIM", "concentration", shares=1)])
+        assert build([p], b) == []
 
 
 class TestDecide:
@@ -177,13 +155,13 @@ class TestDecide:
         )
         assert a.subject["observed"] == 0.83 and a.subject["worse_is"] == "UP"
 
-    def test_each_review_is_its_own_decision_and_a_trim_stands_beside_them(self):
+    def test_each_review_is_its_own_decision_and_a_recorded_trim_is_not(self):
         b = book(pos("SPCX", qty=11, price=158.78), net_liq=8_148.0)
         calls = [call("TRIM", "concentration"), call("REVIEW", "rich", "r"),
                  call("REVIEW", "news (unconfirmed)", "one outlet says so")]  # fmt: skip
         got = build([prop("SPCX", Action.TRIM, exits=calls)], b)
-        assert [a.verb for a in got] == ["TRIM", "DECIDE", "DECIDE"]
-        assert got[2].title == "DECIDE SPCX — keep or sell: a news report to answer"
+        assert [a.verb for a in got] == ["DECIDE", "DECIDE"]
+        assert got[1].title == "DECIDE SPCX — keep or sell: a news report to answer"
 
     def test_no_cost_says_nothing_about_the_position(self):
         b = book(pos("X", cost=0.0))
@@ -360,7 +338,7 @@ class TestPicks:
         assert build([], picks=None) == []
 
 
-def test_order_is_sell_trim_decide_read_buy_and_book_first():
+def test_order_is_sell_decide_read_buy_and_book_first():
     b = book(pos("CCXI"), pos("SPCX", qty=30, price=100.0), pos("COHR"), pos("NBIS"),
              net_liq=10_000.0)  # fmt: skip
     proposals = [
@@ -373,7 +351,7 @@ def test_order_is_sell_trim_decide_read_buy_and_book_first():
     ]
     got = build(proposals, b)
     assert [(a.verb, a.symbol) for a in got] == [
-        ("SELL", "CCXI"), ("TRIM", "SPCX"), ("DECIDE", "COHR"), ("READ", "NBIS"),
+        ("SELL", "CCXI"), ("DECIDE", "COHR"), ("READ", "NBIS"),
         ("BUY", "AMZN"),
     ]  # fmt: skip
     for a in got:
@@ -431,7 +409,7 @@ class TestAnswers:
 
     def test_a_decision_on_another_subject_does_not_answer(self):
         it = item({"kind": "ACTIONABLE", "id": "act:SELL:stop"}, answers=["DONE"])
-        other = {"act:TRIM": decision("act:TRIM", Verdict.DISMISSED)}
+        other = {"act:DECIDE:rich": decision("act:DECIDE:rich", Verdict.DISMISSED)}
         assert A.answered(it, other, NOW.date()) is None
 
     def test_keep_needs_a_reason(self):
@@ -450,8 +428,8 @@ class TestAnswers:
         ]
 
     def test_done_records_the_reading_and_its_direction(self):
-        it = item({"kind": "ACTIONABLE", "id": "act:TRIM", "observed": 0.214, "worse_is": "UP"},
-                  answers=["DONE"])  # fmt: skip
+        subject = {"kind": "ACTIONABLE", "id": "act:SELL:stop", "observed": 0.214, "worse_is": "UP"}
+        it = item(subject, answers=["DONE"])
         [d] = A.decision_for(it, "DONE")
         assert d.subject_kind is SubjectKind.ACTIONABLE and d.verdict is Verdict.ACTED
         assert d.observed == 0.214 and d.worse_is is Direction.UP
