@@ -154,7 +154,6 @@ class TestKinds:
             "MAX_TOTAL_RISK",
             "THESIS_BONUS",
             "MAX_TOTAL_RISK_THESIS",
-            "BOOK_LIMIT",
         ):
             assert kinds[f"proposal.{name}"] is Kind.DECIDED, name
         assert kinds["zone.WINDOW_DAYS"] is Kind.DECIDED

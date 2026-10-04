@@ -141,13 +141,15 @@ class TestTheUsersOwnDecision:
 
 
 class TestArithmeticOnly:
-    def test_a_position_over_the_limit_proposes_the_trim_that_returns_to_it(self, store):
-        """22.1% against a 20% limit: arithmetic, not judgement."""
+    def test_a_heavy_position_proposes_no_trim(self, store):
+        """22.1% of the book: no limit since the user removed the 20% (2026-10-04)."""
         big = book(pos("SPCX", qty=11, entry=128.16, price=152.64), net_liq=7_890.0)
-        rationale, card = rationale_for(store, "SPCX", big)
-        assert rationale.proposed.source is ActionSource.ARITHMETIC
-        assert "20%" in rationale.proposed.text
-        assert "share" in rationale.proposed.size
+        rationale, _ = rationale_for(store, "SPCX", big)
+        assert (
+            rationale.proposed is None or rationale.proposed.source is not ActionSource.ARITHMETIC
+        )
+        position = next(s for s in rationale.steps if s.label == "position")
+        assert position.bearing.value == "CONTEXT"
 
     def test_a_position_inside_the_limit_proposes_no_trim(self, store):
         small = book(pos("AAOI", qty=2, entry=129.31, price=104.90), net_liq=7_890.0)

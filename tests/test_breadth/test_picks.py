@@ -342,10 +342,12 @@ class TestEntryPlan:
         assert plan(plan_pick(), net_liq=0.0)["size"]["note"] == "no book on file: no size"
         assert "already held" in plan(plan_pick(held=True))["size"]["note"]
 
-    def test_size_is_capped_at_the_book_limit(self):
-        pl = plan(plan_pick(), sigma=0.001)  # stop at the 8% floor: 2% risk = 25% of the book
+    def test_size_is_not_capped_at_a_share_of_the_book(self):
+        # The user removed the 20% book limit (2026-10-04): at the 8% stop floor, 2% risk
+        # is 25% of the book, and that is the size.
+        pl = plan(plan_pick(), sigma=0.001)
         assert pl["stop_pct"] == pytest.approx(0.08)
-        assert pl["size"]["shares"] == 20 and "20% book limit" in pl["size"]["note"]
+        assert pl["size"]["shares"] == 25 and "book limit" not in pl["size"]["note"]
 
     def test_one_share_above_the_budget_is_said(self):
         pl = plan(plan_pick(price=5000.0), measured=5000.0, net_liq=8000.0)

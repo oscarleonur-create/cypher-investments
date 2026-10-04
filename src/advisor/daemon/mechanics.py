@@ -36,7 +36,9 @@ class MechanicsLimits(BaseModel):
 
     equity_stop_pct: float = -0.08  # -8% from entry
     profit_target_pct: float = 0.25  # +25% from entry on equity
-    concentration_pct: float = 0.20  # one underlying > 20% of net liq
+    # One underlying above this share of net liq. None: no limit — the user removed
+    # the 20% (2026-10-04, "quitemos esa regla"), so no CONCENTRATION_WARNING fires.
+    concentration_pct: float | None = None
     size_change_pct: float = 0.05  # ignore quantity drift below 5%
     drawdown_warn_pct: float = -0.20  # deep-loss review threshold
 
@@ -155,7 +157,7 @@ def state_events(book: BookSnapshot, *, limits: MechanicsLimits | None = None) -
 
     # Concentration is a book-level property, measured per underlying across
     # accounts rather than per position.
-    if book.net_liq > 0:
+    if book.net_liq > 0 and limits.concentration_pct is not None:
         for underlying, notional in book.exposure_by_underlying().items():
             weight = notional / book.net_liq
             if weight >= limits.concentration_pct:

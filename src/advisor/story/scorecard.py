@@ -299,12 +299,12 @@ def _threshold_rows(store: DaemonStore, symbol: str) -> list[Row]:
         )
 
     # The book's own limit, not the holder's claim — shown because it is the
-    # other line a position can cross.
-    if book and book.net_liq:
+    # other line a position can cross. None since the user removed it (2026-10-04).
+    limit = MechanicsLimits().concentration_pct
+    if book and book.net_liq and limit is not None:
         held = [p for p in book.positions if p.underlying.upper() == symbol]
         if held:
             weight = sum(p.signed_notional for p in held) / book.net_liq
-            limit = MechanicsLimits().concentration_pct
             rows.append(
                 Row(
                     label=f"Position weight ≤ {_pct(limit)}",

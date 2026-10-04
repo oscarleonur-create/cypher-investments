@@ -178,13 +178,11 @@ class TestThresholds:
         store.save_claim("SPCX", claim(None, None, ["FILING_RESULTS"]))
         assert build_scorecard(store, "SPCX", consensus_loader=lambda *_: None).thresholds == []
 
-    @pytest.mark.parametrize("weight, status", [(0.206, "TRIPPED"), (0.20, "OK"), (0.12, "OK")])
-    def test_the_book_limit_at_and_around_the_line(self, store, weight, status):
+    @pytest.mark.parametrize("weight", [0.206, 0.20, 0.12])
+    def test_no_book_limit_row(self, store, weight):
+        # The user removed the 20% limit (2026-10-04): a weight is no threshold.
         store.save_book(spcx_book(weight))
-        row = labels(build_scorecard(store, "SPCX", consensus_loader=lambda *_: None).thresholds)[
-            "Position weight ≤ 20.0%"
-        ]
-        assert row.status == status
+        assert build_scorecard(store, "SPCX", consensus_loader=lambda *_: None).thresholds == []
 
     def test_not_held_has_no_weight_row(self, store):
         assert build_scorecard(store, "SPCX", consensus_loader=lambda *_: None).thresholds == []

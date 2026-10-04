@@ -121,7 +121,10 @@ def build_rationale(
                     f"{weight * 100:.1f}% of the book"
                 ),
                 bearing=(
-                    Bearing.AGAINST if abs(weight) > limits.concentration_pct else Bearing.CONTEXT
+                    Bearing.AGAINST
+                    if limits.concentration_pct is not None
+                    and abs(weight) > limits.concentration_pct
+                    else Bearing.CONTEXT
                 ),
             )
         )
@@ -264,7 +267,8 @@ def _propose(store, symbol, position, card, limits) -> ProposedAction | None:
     # Second source: arithmetic the user's own limit implies.
     if position is not None:
         weight = _weight(position, card)
-        if weight is not None and abs(weight) > limits.concentration_pct:
+        limit = limits.concentration_pct
+        if weight is not None and limit is not None and abs(weight) > limit:
             excess = (abs(weight) - limits.concentration_pct) / abs(weight)
             return ProposedAction(
                 source=ActionSource.ARITHMETIC,

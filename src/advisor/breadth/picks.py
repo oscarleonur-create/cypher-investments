@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -430,12 +429,7 @@ def entry_plan(
         size = {"note": "no book on file: no size"}
     else:
         shares, notional = EP._size(net_liq, EP.POSITION_RISK, entry, stop)
-        room = EP.BOOK_LIMIT * net_liq
         note = f"{EP.POSITION_RISK:.0%} of ${net_liq:,.0f} net liq at risk to the stop"
-        if notional > room:
-            shares = math.floor(room / entry)
-            notional = shares * entry
-            note += f"; capped at the {EP.BOOK_LIMIT:.0%} book limit"
         if shares == 0:
             note += f"; one share (${entry:,.2f}) is more than that allows"
         size = {"shares": shares, "notional": notional, "risk_pct": EP.POSITION_RISK,

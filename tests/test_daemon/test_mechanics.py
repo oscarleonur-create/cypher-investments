@@ -118,13 +118,19 @@ class TestStandingConditions:
         b = state_events(book(pos(price=70.0), at=tuesday))[0]
         assert a.dedup_hash() == b.dedup_hash()
 
-    def test_concentration_uses_summed_exposure_across_accounts(self):
+    def test_no_concentration_warning_by_default(self):
+        """The user removed the 20% limit (2026-10-04): 25% of the book raises nothing."""
+        b = book(pos(qty=25, price=100.0), net_liq=10_000.0)
+        assert [e for e in state_events(b) if e.kind == "CONCENTRATION_WARNING"] == []
+
+    def test_a_limit_set_explicitly_uses_summed_exposure_across_accounts(self):
         b = book(
             pos(account="A", qty=15, price=100.0),
             pos(account="B", qty=10, price=100.0),
             net_liq=10_000.0,
         )  # 2500 combined = 25%
-        conc = [e for e in state_events(b) if e.kind == "CONCENTRATION_WARNING"]
+        limits = MechanicsLimits(concentration_pct=0.20)
+        conc = [e for e in state_events(b, limits=limits) if e.kind == "CONCENTRATION_WARNING"]
         assert len(conc) == 1
         assert conc[0].payload["weight"] == 0.25
 
