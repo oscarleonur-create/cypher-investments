@@ -28,8 +28,6 @@ import type {
   Thesis,
   ThesisInput,
   ThesisSummary,
-  SystemStatus,
-  TrackRow,
   WatchlistResponse,
   PriceRange,
   CompanyOverview,
@@ -171,8 +169,6 @@ export const api = {
   actionables: () => get<ActionablesResponse>("/api/actionables"),
   answerActionable: (id: string, answer: string, note = "") =>
     post<{ id: string }>("/api/actionables/answer", { id, answer, note }),
-  trackingBoard: () => get<{ asof: string; rows: TrackRow[] }>("/api/tracking/board"),
-  trackingStatus: () => get<SystemStatus>("/api/tracking/status"),
   breadthPicks: (day?: string) =>
     get<PicksResponse>(`/api/breadth/picks${day ? `?day=${encodeURIComponent(day)}` : ""}`),
   refreshPicks: () => post<{ job_id: string }>("/api/breadth/picks/refresh"),
