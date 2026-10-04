@@ -127,6 +127,12 @@ NOT_RULES: dict[str, str] = {
     "halts._NS": "the feed's XML namespace",
     "google_news.SEARCH_URL": "where the search is sent",
     "google_news.DISTRESS_TITLE": "the compiled form of DISTRESS_TITLE_PATTERN",
+    "actionables.ORDER": "display order of the verbs",
+    "actionables.PROPOSAL_DAYS": "how far back proposals are read; only the newest session counts",
+    "actionables.READ_BLOCKER": "the proposal's own blocker text for a tier-A event",
+    "actionables.PICK_VERDICTS": "the user's choice (2026-10-04): which pick verdicts are buys",
+    "actionables.ANSWERS": "a map from an answer to the decision verdict it records",
+    "actionables.REVIEW_TITLES": "display text per review rule",
 }
 
 

@@ -27,7 +27,7 @@ from advisor.breadth import signals as breadth_signals
 from advisor.breadth import universe as breadth_universe
 from advisor.breadth import value_replay as breadth_value_replay
 from advisor.breadth import verdict as breadth_verdict
-from advisor.entry import distress, exits, freshness, health, proposal, sheet, zone
+from advisor.entry import actionables, distress, exits, freshness, health, proposal, sheet, zone
 from advisor.entry import ruleset as entry_ruleset
 from advisor.learning.rules import Kind
 from advisor.news import google_news, halts
@@ -65,6 +65,7 @@ ENTRY_MODULES = {
     "names": company_names,
     "freshness": freshness,
     "health": health,
+    "actionables": actionables,
 }
 
 

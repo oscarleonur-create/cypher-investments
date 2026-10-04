@@ -1231,3 +1231,28 @@ export interface PicksResponse {
   live_records?: Record<string, number>;
   caveats: string[];
 }
+
+/** One thing to do now (`entry/actionables.py`): a verb, one line, one or two bullets. */
+export interface Actionable {
+  id: string;
+  verb: "SELL" | "TRIM" | "DECIDE" | "READ" | "BUY";
+  symbol: string;
+  section: "book" | "tracking";
+  title: string;
+  bullets: string[];
+  answers: ("KEEP" | "DONE" | "SKIP")[];
+  asof: string;
+  source: string;
+  shares: number | null;
+  entry: number | null;
+  stop: number | null;
+  target: number | null;
+  weight: number | null;
+}
+
+export interface ActionablesResponse {
+  asof: string;
+  book_asof: string | null;
+  items: Actionable[];
+  answered: { id: string; title: string; why: string }[];
+}

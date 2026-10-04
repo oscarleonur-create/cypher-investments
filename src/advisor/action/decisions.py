@@ -71,6 +71,9 @@ VERDICT_TEXT: dict[Verdict, str] = {
 class SubjectKind(StrEnum):
     CLAIM = "CLAIM"
     EVENT = "EVENT"
+    # An actionable's situation (``entry.actionables``): a sell, trim, buy or
+    # review answered from the Actions tab rather than from a card.
+    ACTIONABLE = "ACTIONABLE"
 
 
 class Direction(StrEnum):
