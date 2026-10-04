@@ -38,6 +38,7 @@ import type {
   DepthStatus,
   NewsJudgment,
   NewsSummary,
+  ActionablesResponse,
 } from "./types";
 
 async function get<T>(url: string): Promise<T> {
@@ -167,6 +168,9 @@ export const api = {
       by_symbol: { symbol: string; divergences: number; explained: number }[];
     }>("/api/daemon/coverage"),
 
+  actionables: () => get<ActionablesResponse>("/api/actionables"),
+  answerActionable: (id: string, answer: string, note = "") =>
+    post<{ id: string }>("/api/actionables/answer", { id, answer, note }),
   trackingBoard: () => get<{ asof: string; rows: TrackRow[] }>("/api/tracking/board"),
   trackingStatus: () => get<SystemStatus>("/api/tracking/status"),
   breadthPicks: (day?: string) =>
