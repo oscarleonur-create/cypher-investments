@@ -92,6 +92,7 @@ NOT_RULES: dict[str, str] = {
     "verdict.ACTIONS": "the words a verdict uses for each measured bucket",
     "verdict.MISREAD_SIC": "a caveat on the value shown; changes no verdict or pick",
     "verdict._CARDS": "a per-day cache of filings",
+    "sim._SCHEMA": "the table the sims are stored in",
 }
 
 SIGNALS = "breadth.signals"

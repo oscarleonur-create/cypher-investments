@@ -24,6 +24,7 @@ from advisor.breadth import picks as breadth_picks
 from advisor.breadth import plan_replay as breadth_plan_replay
 from advisor.breadth import ruleset as breadth_ruleset
 from advisor.breadth import signals as breadth_signals
+from advisor.breadth import sim as breadth_sim
 from advisor.breadth import universe as breadth_universe
 from advisor.breadth import value_replay as breadth_value_replay
 from advisor.breadth import verdict as breadth_verdict
@@ -213,6 +214,7 @@ SIGNAL_MODULES = {
     "plan_replay": breadth_plan_replay,
     "value_replay": breadth_value_replay,
     "verdict": breadth_verdict,
+    "sim": breadth_sim,
 }
 
 

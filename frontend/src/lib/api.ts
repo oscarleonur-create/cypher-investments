@@ -38,6 +38,7 @@ import type {
   DepthStatus,
   NewsJudgment,
   NewsSummary,
+  SimsResponse,
   ActionablesResponse,
 } from "./types";
 
@@ -176,6 +177,9 @@ export const api = {
   breadthPicks: (day?: string) =>
     get<PicksResponse>(`/api/breadth/picks${day ? `?day=${encodeURIComponent(day)}` : ""}`),
   refreshPicks: () => post<{ job_id: string }>("/api/breadth/picks/refresh"),
+  sims: () => get<SimsResponse>("/api/breadth/sims"),
+  addSim: (symbol: string, day?: string) =>
+    post<{ sim: unknown }>("/api/breadth/sims", { symbol, day }),
   evaluatePosition: (symbol: string) =>
     post<{ job_id: string }>(`/api/breadth/evaluate/${encodeURIComponent(symbol)}`),
   depthStatus: (symbols: string[]) =>

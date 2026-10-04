@@ -1,9 +1,18 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
-import type { Pick, PickCell, PickPlan, PickVerdict, PicksResponse, ReplayWindow } from "@/lib/types";
+import type {
+  Pick,
+  PickCell,
+  PickPlan,
+  PickVerdict,
+  PicksResponse,
+  ReplayWindow,
+  SimRow,
+  SimsResponse,
+} from "@/lib/types";
 import { useJob } from "@/lib/useJob";
 import { cn, fmtEt, fmtPct, fmtUsd, pnlColor } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -247,7 +256,132 @@ function Verdict({ v }: { v: PickVerdict }) {
   );
 }
 
-function PickCard({ p, depth }: { p: Pick; depth?: DepthStatus }) {
+/** Follow a pick in the sim: the system enters at the live price now and calls the exit. */
+function AddToSim({ symbol, day, inSim }: { symbol: string; day: string; inSim: boolean }) {
+  const qc = useQueryClient();
+  const m = useMutation({
+    mutationFn: () => api.addSim(symbol, day),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["breadth", "sims"] }),
+  });
+  if (inSim) return <Badge variant="muted">in sim</Badge>;
+  return (
+    <span className="inline-flex items-center gap-2">
+      <Button size="sm" variant="outline" onClick={() => m.mutate()} disabled={m.isPending}>
+        {m.isPending ? "Adding…" : "Add to sim"}
+      </Button>
+      {m.error && <span className="text-xs text-neg">{(m.error as Error).message}</span>}
+    </span>
+  );
+}
+
+function SimTable({ rows, open }: { rows: SimRow[]; open: boolean }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr>
+            <Th>Symbol</Th>
+            <Th>Added</Th>
+            <Th className="text-right">Entry</Th>
+            <Th className="text-right">Stop</Th>
+            {open ? (
+              <>
+                <Th className="text-right">Last close</Th>
+                <Th className="text-right">Return</Th>
+                <Th className="text-right">Sessions</Th>
+                <Th>Out by</Th>
+              </>
+            ) : (
+              <>
+                <Th>Exit</Th>
+                <Th className="text-right">Price</Th>
+                <Th className="text-right">Return</Th>
+                <Th className="text-right">Held</Th>
+              </>
+            )}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.id} className="border-t border-border">
+              <td className="py-1.5">
+                <Link to={`/ticker/${r.symbol}`} className="font-semibold hover:text-accent">
+                  {r.symbol}
+                </Link>{" "}
+                <span className="text-xs text-muted">{r.pick.verdict ?? ""}</span>
+              </td>
+              <td className="text-xs text-muted">{fmtEt(r.added_at)}</td>
+              <td className="text-right tnum">{exactUsd(r.entry)}</td>
+              <td className="text-right tnum">{r.stop != null ? exactUsd(r.stop) : "—"}</td>
+              {open ? (
+                <>
+                  <td className="text-right tnum">{r.last != null ? exactUsd(r.last) : "—"}</td>
+                  <td className={cn("text-right tnum", pnlColor(r.unrealized ?? 0))}>
+                    {r.unrealized != null ? fmtPct(r.unrealized, { sign: true }) : "—"}
+                  </td>
+                  <td className="text-right tnum">{r.sessions_in ?? 0}/20</td>
+                  <td className="text-xs">{r.exit_by}</td>
+                </>
+              ) : (
+                <>
+                  <td className="text-xs">
+                    {r.status === "STOP" ? "stopped" : "20 sessions"} · {r.exit_day}
+                  </td>
+                  <td className="text-right tnum">
+                    {r.exit_price != null ? exactUsd(r.exit_price) : "—"}
+                  </td>
+                  <td className={cn("text-right tnum", pnlColor(r.ret ?? 0))}>
+                    {r.ret != null ? fmtPct(r.ret, { sign: true }) : "—"}
+                  </td>
+                  <td className="text-right tnum">{r.held}</td>
+                </>
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** The picks you chose to follow: entered at the click, exited by the plan's stop or day 20. */
+function SimSection({ sims }: { sims?: SimsResponse }) {
+  if (!sims || (sims.open.length === 0 && sims.closed.length === 0)) return null;
+  const r = sims.record;
+  return (
+    <Section
+      title="Sim"
+      right={
+        r.n > 0 ? (
+          <span className="text-xs text-muted tnum">
+            {r.n} closed · mean {fmtPct(r.mean ?? 0, { sign: true })} · {r.won}/{r.n} up ·{" "}
+            {r.stopped} stopped · {(r.held ?? 0).toFixed(1)} sessions held
+          </span>
+        ) : undefined
+      }
+    >
+      <div className="space-y-4">
+        <p className="text-xs text-muted">
+          Entered at the live price when added; out at the first open or low at the stop (the
+          plan&apos;s 2·σ·√10), else at the close of the 20th session. Read from the nightly
+          daily bars.
+        </p>
+        {sims.open.length > 0 && <SimTable rows={sims.open} open />}
+        {sims.closed.length > 0 && <SimTable rows={sims.closed} open={false} />}
+      </div>
+    </Section>
+  );
+}
+
+function PickCard({
+  p,
+  depth,
+  sim,
+}: {
+  p: Pick;
+  depth?: DepthStatus;
+  sim?: { day: string; inSim: boolean };
+}) {
   return (
     <Card>
       <CardContent className="space-y-3 pt-4">
@@ -259,6 +393,7 @@ function PickCard({ p, depth }: { p: Pick; depth?: DepthStatus }) {
                 {p.symbol}
               </Link>
               {p.held && <Badge variant="muted">held</Badge>}
+              {sim && <AddToSim symbol={p.symbol} day={sim.day} inSim={sim.inSim} />}
               {p.families.map((f) => (
                 <Badge key={f} variant={FAMILY[f].variant} title={FAMILY[f].hint}>
                   {FAMILY[f].label}
@@ -465,6 +600,8 @@ export default function Picks() {
   const latest = data?.days[0]?.day;
   const isLatest = !!data?.day && data.day === latest;
   const symbols = (data?.picks ?? []).map((p) => p.symbol);
+  const sims = useQuery({ queryKey: ["breadth", "sims"], queryFn: api.sims, refetchInterval: 300_000 });
+  const simmed = new Set((sims.data?.open ?? []).map((s) => s.symbol));
   const depth = useDepthStatus(symbols);
 
   return (
@@ -512,6 +649,8 @@ export default function Picks() {
       {q.isLoading && <div className="text-sm text-muted">Loading…</div>}
       {q.error && <div className="text-sm text-neg">{String((q.error as Error).message)}</div>}
 
+      <SimSection sims={sims.data} />
+
       {data && (
         <>
           <Evidence data={data} />
@@ -526,7 +665,12 @@ export default function Picks() {
           ) : (
             <div className="space-y-3">
               {data.picks.map((p) => (
-                <PickCard key={p.symbol} p={p} depth={depth.data?.status[p.symbol]} />
+                <PickCard
+                  key={p.symbol}
+                  p={p}
+                  depth={depth.data?.status[p.symbol]}
+                  sim={data.day ? { day: data.day, inSim: simmed.has(p.symbol) } : undefined}
+                />
               ))}
             </div>
           )}

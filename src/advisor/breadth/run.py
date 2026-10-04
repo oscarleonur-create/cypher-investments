@@ -172,6 +172,11 @@ def run_sync(
                     db_path, store, rows, day, now, fetch_company, insider_fetch
                 )
 
+            # The sims you chose to follow: exits read from the bars just stored.
+            from advisor.breadth import sim
+
+            summary["sims"] = sim.update_open(store.conn)
+
             summary["ok"] = not rate_limited
             return summary
         finally:
