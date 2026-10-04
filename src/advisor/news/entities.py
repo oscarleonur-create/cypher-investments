@@ -63,6 +63,9 @@ AMBIGUOUS_TICKERS: frozenset[str] = frozenset(
         "UP",
         "US",
         "WE",
+        # Wolfspeed. Found 2026-10-04: the daily sweep matched "HARTFORD WOLF PACK"
+        # (a hockey team) on the bare token.
+        "WOLF",
         "Y",
     }
 )

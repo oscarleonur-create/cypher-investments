@@ -164,6 +164,15 @@ def build_registry() -> JobRegistry:
     )
     reg.register(
         Job(
+            name="news_sweep",
+            # Every watched name, before the 08:30 judge reads (news.sweep).
+            trigger=DailyAt(time(8, 0), trading_days_only=False, grace_hours=6.0),
+            handler=handlers.run_news_sweep,
+            description="the day's news for every held, watchlist and Swing name",
+        )
+    )
+    reg.register(
+        Job(
             name="news_judge",
             trigger=DailyAt(time(8, 30), trading_days_only=False, grace_hours=12.0),
             handler=handlers.run_news_judge,

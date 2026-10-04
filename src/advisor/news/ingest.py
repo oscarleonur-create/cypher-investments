@@ -317,6 +317,8 @@ REASON_KEYWORDS: dict[str, str] = {
     # Two short queries rather than one long one (keywords, never sentences).
     "DISTRESS": "bankruptcy default delisting",
     "DISTRESS_PROBE": "fraud investigation restructuring",
+    # The daily sweep over the whole universe (news.sweep, user decision 2026-10-04).
+    "DAILY_NEWS": "stock news",
 }
 DEFAULT_KEYWORDS = "stock news"
 

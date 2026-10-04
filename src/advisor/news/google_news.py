@@ -80,8 +80,8 @@ def domain(url: str | None) -> str:
     return ".".join(labels[-2:])
 
 
-def distress_query(symbol: str, company: str | None, website: str | None = None) -> str:
-    """One boolean query: the company's names, and the distress terms."""
+def who(symbol: str, company: str | None) -> str:
+    """The company as a query term: its reviewed names, else its core name, and the ticker."""
     listed = query_names(symbol)
     names = [f'"{n}"' if " " in n else n for n in listed]
     if not listed:
@@ -91,8 +91,12 @@ def distress_query(symbol: str, company: str | None, website: str | None = None)
     if not is_ambiguous(symbol) or not names:
         names.append(symbol.upper())
     names = list(dict.fromkeys(names))
-    who = names[0] if len(names) == 1 else f"({' OR '.join(names)})"
-    return f"{who} ({' OR '.join(DISTRESS_TERMS)})"
+    return names[0] if len(names) == 1 else f"({' OR '.join(names)})"
+
+
+def distress_query(symbol: str, company: str | None, website: str | None = None) -> str:
+    """One boolean query: the company's names, and the distress terms."""
+    return f"{who(symbol, company)} ({' OR '.join(DISTRESS_TERMS)})"
 
 
 def _http_get(url: str) -> str:
