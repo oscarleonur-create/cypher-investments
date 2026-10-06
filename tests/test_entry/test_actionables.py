@@ -169,6 +169,155 @@ class TestDecide:
         assert a.bullets == ["auditor"]
 
 
+class TestResults:
+    """A held name's results within the entry guard's sessions: hold through, or cut before.
+
+    Figures are SPCX's of 2026-09-24 (as in the scorecard's tests): 25.4%
+    required at $147.60, +91.9% delivered, consensus FY2027 $108.3bn — met,
+    the years to 2036 need 12.8% a year.
+    """
+
+    @staticmethod
+    def spcx(**kw):
+        from advisor.valuation.implied import undiscounted_expectations
+        from advisor.valuation.models import ValuationSnapshot
+
+        base = undiscounted_expectations(1.885e12, 31.256e9, terminal_multiple=25, fcf_margin=0.25)
+        return ValuationSnapshot(**{
+            "symbol": "SPCX", "asof": date(2026, 9, 24), "price": 147.60,
+            # Shares such that the price reproduces the stored EV: the item re-prices.
+            "shares_outstanding": 1.885e12 / 147.60, "market_cap": 1.885e12, "net_cash": None,
+            "enterprise_value": 1.885e12, "revenue_runrate": 31.256e9, "ev_to_revenue": 60.3,
+            "source_accession": "0001628280-26-052535", "period_end": date(2026, 6, 30),
+            "revenue_yoy": 0.9194, "scenarios": [base], **kw})  # fmt: skip
+
+    @staticmethod
+    def consensus(fy2027=108.3e9):
+        from advisor.valuation.consensus import Consensus, RevenueEstimate
+
+        return Consensus(symbol="SPCX", asof=NOW, years=[
+            RevenueEstimate(label="FY2026", fiscal_year_end=date(2026, 12, 31), avg=44.8e9),
+            RevenueEstimate(label="FY2027", fiscal_year_end=date(2027, 12, 31), avg=fy2027,
+                            analysts=19),
+        ])  # fmt: skip
+
+    FEATURES = {"required_low": 0.254, "required_high": 0.254, "delivered_growth": 0.9194,
+                "consensus_growth": 0.832}  # fmt: skip
+
+    def results(self, day, *, features=None, action=Action.HOLD, exits=(), held=True,
+                expectations="spcx", now=NOW):  # fmt: skip
+        f = {**self.FEATURES, "next_earnings": day, **(features or {})}
+        b = book(pos("SPCX", qty=11, cost=128.16, price=147.60)) if held else book()
+        exp = {"SPCX": (self.spcx(), self.consensus())} if expectations == "spcx" else expectations
+        p = prop("SPCX", action, price=147.60, features=f, exits=exits)
+        return A.build([p], b, None, {}, now, exp)
+
+    def test_the_decision_states_the_bar_and_what_is_left_after_the_consensus(self):
+        [a] = self.results("2026-10-08")
+        assert a.verb == "DECIDE" and a.section == "book" and a.answers == ["KEEP"]
+        assert a.id == "SPCX:DECIDE:results:2026-10-08"
+        assert a.title == "DECIDE SPCX — hold through results on 10-08, or cut before"
+        assert a.bullets == [
+            "Results Thu 10-08, in 4 sessions: at $147.60 the price requires 25.4% a year "
+            "for 10 years",
+            "Revenue grew +91.9% last reported; consensus +83.2% a year to FY2027; "
+            "if FY2027 is met, the years to 2036 need 12.8% a year",
+        ]
+        assert a.subject == {"kind": "ACTIONABLE", "id": "act:DECIDE:results:2026-10-08",
+                             "observed": 0.254, "worse_is": "UP"}  # fmt: skip
+        assert "results date from the yfinance calendar" in a.source
+
+    def test_the_remaining_growth_is_the_scorecards_own_arithmetic(self, tmp_path):
+        from advisor.daemon.store import DaemonStore
+        from advisor.story.scorecard import build_scorecard
+
+        store = DaemonStore(tmp_path / "research.db")
+        store.save_valuation(self.spcx())
+        card = build_scorecard(store, "SPCX", consensus_loader=lambda *_: self.consensus())
+        store.close()
+        row = next(r for r in card.expectations if r.label == "If FY2027 holds")
+        _, end, lo, hi = A.remaining_after(self.spcx(), self.consensus(), 147.60)
+        assert row.value == f"{lo:.1%}/yr" and lo == hi and end == 2036
+
+    @pytest.mark.parametrize("day,shown", [
+        ("2026-10-09", True),    # exactly the guard's 5 sessions: Mon..Fri
+        ("2026-10-12", False),   # the sixth
+    ])  # fmt: skip
+    def test_the_window_is_the_entry_guards(self, day, shown):
+        assert bool(self.results(day)) is shown
+
+    def test_results_today_still_ask(self):
+        [a] = self.results("2026-10-02")
+        assert a.bullets[0].startswith("Results Fri 10-02, today:")
+
+    def test_over_a_weekend_monday_is_the_next_session(self):
+        sat = datetime(2026, 10, 3, 11, 0, tzinfo=ET)
+        [a] = self.results("2026-10-05", now=sat)
+        assert a.bullets[0].startswith("Results Mon 10-05, next session:")
+
+    def test_a_date_already_past_is_not_due(self):
+        # A proposal built Thursday for Thursday's results, read on Friday.
+        assert self.results("2026-10-01") == []
+
+    @pytest.mark.parametrize("raw", [None, "", "soon", "2026-13-01"])
+    def test_no_date_or_an_unreadable_one_is_nothing(self, raw):
+        assert self.results(raw) == []
+
+    def test_a_proposal_built_before_the_date_was_recorded_is_nothing(self):
+        p = prop("SPCX", Action.HOLD, features=self.FEATURES)
+        assert build([p], book(pos("SPCX"))) == []
+
+    def test_only_held_names(self):
+        assert self.results("2026-10-08", held=False, action=Action.IN_ZONE) == []
+
+    def test_a_sell_makes_it_moot(self):
+        got = self.results("2026-10-08", action=Action.EXIT, exits=[call("EXIT", "stop")])
+        assert [a.verb for a in got] == ["SELL"]
+
+    def test_it_stands_beside_a_review(self):
+        got = self.results("2026-10-08", action=Action.REVIEW,
+                           exits=[call("REVIEW", "rich", "r")])  # fmt: skip
+        assert [a.id for a in got] == ["SPCX:DECIDE:rich", "SPCX:DECIDE:results:2026-10-08"]
+
+    def test_no_valuation_says_so_and_keeps_what_is_known(self):
+        f = {"required_low": None, "required_high": None, "consensus_growth": None}
+        [a] = self.results("2026-10-08", features=f, expectations={})
+        assert a.bullets == [
+            "Results Thu 10-08, in 4 sessions: no valuation on file, so what the price "
+            "requires cannot be stated",
+            "Revenue grew +91.9% last reported",
+        ]
+        assert a.subject["observed"] is None and a.subject["worse_is"] == "NEITHER"
+
+    def test_nothing_but_the_date_is_still_a_decision(self):
+        f = dict.fromkeys(self.FEATURES)
+        [a] = self.results("2026-10-08", features=f, expectations={})
+        assert len(a.bullets) == 1
+
+    def test_a_consensus_that_pays_for_the_price_says_revenue_could_shrink(self):
+        # $301.6bn needed by mid-2036 from $400bn at the end of 2027: (301.6/400)^(1/8.5) - 1.
+        exp = {"SPCX": (self.spcx(), self.consensus(fy2027=400e9))}
+        [a] = self.results("2026-10-08", expectations=exp)
+        assert a.bullets[1].endswith("if FY2027 is met, revenue could shrink 3.3% a year to 2036")
+
+    def test_kept_it_returns_only_on_a_materially_higher_bar(self):
+        [a] = self.results("2026-10-08")
+        sid = a.subject["id"]
+        [kept] = A.decision_for(a, "KEEP", "AI segment carries it")
+        assert A.answered(a, {sid: kept}, NOW.date()).endswith(": AI segment carries it")
+        [ran] = self.results("2026-10-08", features={"required_high": 0.254 * 1.11})
+        assert A.answered(ran, {sid: kept}, NOW.date()) is None
+
+    def test_next_quarters_results_ask_again(self):
+        [a] = self.results("2026-10-08")
+        [kept] = A.decision_for(a, "KEEP", "fine")
+        [later] = self.results("2026-10-08", features={})
+        later = later.model_copy(
+            update={"subject": {**later.subject, "id": "act:DECIDE:results:2027-01-07"}}
+        )
+        assert A.answered(later, {kept.subject_id: kept}, NOW.date()) is None
+
+
 class TestBuyAndRead:
     def test_an_enter_is_a_buy_with_size_and_stop(self):
         p = prop("AMZN", Action.ENTER, legs=[leg()], triggers=["crossed into its zone today"])
@@ -480,3 +629,20 @@ class TestStoredAndServed:
             r = c.post(url, json={"id": "COHR:DECIDE:rich", "answer": "KEEP", "note": "again"})
             assert r.status_code == 404
             assert c.post(url, json={"id": "nope", "answer": "DONE"}).status_code == 404
+
+    def test_load_reads_valuation_and_consensus_from_the_store_never_the_network(self, tmp_path):
+        from advisor.daemon.store import DaemonStore
+        from advisor.entry.store import EntryStore
+
+        path = tmp_path / "research.db"
+        daemon, entries = DaemonStore(path), EntryStore(path)
+        daemon.save_book(book(pos("SPCX", qty=11, cost=128.16, price=147.60)))
+        daemon.save_valuation(TestResults.spcx())
+        daemon.save_consensus("SPCX", TestResults.consensus().model_dump_json())
+        f = {**TestResults.FEATURES, "next_earnings": "2026-10-08"}
+        entries.add(prop("SPCX", Action.HOLD, price=147.60, features=f))
+        daemon.close()
+        entries.close()
+        [item] = A.load(path, NOW)["items"]
+        assert item["id"] == "SPCX:DECIDE:results:2026-10-08"
+        assert item["bullets"][1].endswith("the years to 2036 need 12.8% a year")

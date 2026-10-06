@@ -10,7 +10,8 @@ Nothing here makes a new call. Each actionable restates one the system
 already made under its own rules, in one line and one or two bullets:
 
     SELL    held: the proposal's EXIT (its stop from cost, a filing, a report, a halt)
-    DECIDE  held: a REVIEW (a thesis rule broke, P/S rich, a filing or report to answer)
+    DECIDE  held: a REVIEW (a thesis rule broke, P/S rich, a filing or report to answer);
+            results due within the entry guard's sessions: hold through them or cut before
     READ    a sized buy that waits only on reading today's tier-A event
     BUY     a watched name's ENTER or ADD; a pick on its first day, before that
             session closes (the entry the replays measured), whose verdict is
@@ -24,6 +25,14 @@ waits on results, a pick past its first session (the plan replay measured
 later entries at about zero) and a pick verdict of WAIT, UNPROVEN or CAN'T
 VALUE. Calls on names no longer held (TE's EXIT after it was sold) are dropped
 against the book.
+
+**Results.** A held name's results are the one date its price is tested
+against the business, so they are a decision with a deadline: hold through
+them or cut before. The item states what the price requires, what the
+business delivered and what the consensus expects — and, if the consensus is
+met, what the years after it must still deliver. Arithmetic on stored
+numbers, never a call on which way the results go: the answer is the
+holder's.
 
 **Answers.** A SELL or BUY closes on its own when the book shows it
 done; DONE quiets it for the grace the decisions module allows. KEEP on a
@@ -41,7 +50,7 @@ from datetime import date, datetime, timedelta
 
 from pydantic import BaseModel, Field
 
-from advisor.entry.proposal import Proposal, position_stop_pct
+from advisor.entry.proposal import Proposal, current_params, position_stop_pct
 
 ORDER = {"SELL": 0, "DECIDE": 1, "READ": 2, "BUY": 3}
 PROPOSAL_DAYS = 10  # how far back proposals are read; only the newest session's are used
@@ -249,6 +258,122 @@ def _decide(p: Proposal, h: Holding, call: dict, claims: list[tuple[str, str]]) 
     )
 
 
+def _pct_range(low: float, high: float) -> str:
+    return f"{low:.1%}" if high - low < 0.0005 else f"{low:.1%} to {high:.1%}"
+
+
+def _when(n: int) -> str:
+    return "today" if n == 0 else "next session" if n == 1 else f"in {n} sessions"
+
+
+def remaining_after(
+    valuation, consensus, price: float | None
+) -> tuple[str, int, float, float] | None:
+    """If the last consensus year is met: (its label, the horizon's year, the
+    lowest and highest growth a year the years after it still need). Pure.
+
+    The same arithmetic as the scorecard's "If FY holds" row, at ``price``,
+    across the margins the company offers. None when any input is missing.
+    """
+    from advisor.valuation.consensus import remaining_cagr
+    from advisor.valuation.margins import required_range
+
+    base = valuation.base_case() if valuation is not None else None
+    if base is None or consensus is None or not consensus.years:
+        return None
+    start = valuation.revenue_base or valuation.revenue_runrate
+    if not start or start <= 0:
+        return None
+    last = consensus.years[-1]
+    horizon_end = valuation.period_end + timedelta(days=round(base.years * 365.25))
+    readings, _ = required_range(valuation, price)
+    got = [
+        remaining_cagr(start * (1 + r.required) ** base.years, horizon_end, last) for r in readings
+    ]
+    cagrs = sorted(g[0] for g in got if g)
+    if not cagrs:
+        return None
+    return last.label, horizon_end.year, cagrs[0], cagrs[-1]
+
+
+def results_due(p: Proposal, today: date) -> tuple[date, int] | None:
+    """The proposal's next results date and the sessions to it, when within the
+    entry guard's window from ``today``. Pure.
+
+    The same window that stops a new entry stops being a time to deliberate:
+    a date already past (the proposal was built before it) is not due.
+    """
+    from advisor.entry.sheet import sessions_until
+
+    raw = (p.features or {}).get("next_earnings")
+    if not raw:
+        return None
+    try:
+        day = date.fromisoformat(str(raw))
+    except ValueError:
+        return None
+    if day < today:
+        return None
+    n = sessions_until(today, day)
+    return (day, n) if n <= current_params().earnings_guard_sessions else None
+
+
+def _results(
+    p: Proposal, h: Holding, due: tuple[date, int], valuation=None, consensus=None
+) -> Actionable:
+    from advisor.valuation.dcf import YEARS
+
+    day, n = due
+    f = p.features or {}
+    low, high = f.get("required_low"), f.get("required_high")
+    price = p.price or h.price
+    years = (
+        valuation.base_case().years if valuation is not None and valuation.base_case() else YEARS
+    )
+    head = f"Results {day.strftime('%a %m-%d')}, {_when(n)}"
+    if low is not None and high is not None:
+        at = f"at {_money(price)} " if price else ""
+        first = f"{head}: {at}the price requires {_pct_range(low, high)} a year for {years} years"
+    else:
+        first = f"{head}: no valuation on file, so what the price requires cannot be stated"
+    parts = []
+    if f.get("delivered_growth") is not None:
+        parts.append(f"revenue grew {f['delivered_growth']:+.1%} last reported")
+    if f.get("consensus_growth") is not None:
+        label = consensus.years[-1].label if consensus is not None and consensus.years else ""
+        parts.append(
+            f"consensus {f['consensus_growth']:+.1%} a year" + (f" to {label}" if label else "")
+        )
+    rest = remaining_after(valuation, consensus, price)
+    if rest is not None:
+        label, end, lo, hi = rest
+        if hi < 0:  # met, the estimate alone pays for the price at every margin
+            parts.append(f"if {label} is met, revenue could shrink {-hi:.1%} a year to {end}")
+        else:
+            parts.append(f"if {label} is met, the years to {end} need {_pct_range(lo, hi)} a year")
+    bullets = [first]
+    if parts:
+        bullets.append("; ".join(parts)[:1].upper() + "; ".join(parts)[1:])
+    return Actionable(
+        id=f"{h.symbol}:DECIDE:results:{day.isoformat()}",
+        verb="DECIDE",
+        symbol=h.symbol,
+        section="book",
+        title=f"DECIDE {h.symbol} — hold through results on {day.strftime('%m-%d')}, or cut before",
+        bullets=bullets,
+        answers=["KEEP"],
+        asof=p.built_at,
+        source=_source(p) + "; results date from the yfinance calendar",
+        # Kept at one bar, it asks again only if the price runs to a materially higher one.
+        subject={
+            "kind": "ACTIONABLE",
+            "id": f"act:DECIDE:results:{day.isoformat()}",
+            "observed": high,
+            "worse_is": "UP" if high is not None else "NEITHER",
+        },
+    )
+
+
 def _leg(p: Proposal):
     legs = sorted(p.legs, key=lambda g: g.horizon != "position")
     return legs[0] if legs else None
@@ -434,12 +559,18 @@ def build(
     picks: dict | None,
     claims: dict[str, list[tuple[str, str]]],
     now: datetime,
+    expectations: dict[str, tuple] | None = None,
 ) -> list[Actionable]:
     """Every actionable, in order: SELL, DECIDE, READ, BUY. Pure.
 
     ``claims``: per symbol, the thesis claims as (id, text), to answer a
-    broken rule on the claim itself.
+    broken rule on the claim itself. ``expectations``: per symbol, the stored
+    (valuation, consensus) a results DECIDE does its arithmetic on.
     """
+    from advisor.daemon import market_calendar as mc
+
+    today = mc.to_et(now).date()
+    expectations = expectations or {}
     held = holdings(book)
     net_liq = book.net_liq if book is not None else 0.0
     out: list[Actionable] = []
@@ -454,6 +585,9 @@ def build(
             for c in calls:
                 if c.get("action") == "REVIEW":
                     out.append(_decide(p, h, c, claims.get(sym, [])))
+            due = results_due(p, today)
+            if due is not None:
+                out.append(_results(p, h, due, *expectations.get(sym, (None, None))))
             if action == "ADD" and not _added_since(p, h):
                 item = _buy(p, held=True)
             elif action == "WAIT":
@@ -542,6 +676,7 @@ def load(db_path, now: datetime) -> dict:
     """The actionables over the stores in ``db_path``, and the ones already answered."""
     from pathlib import Path
 
+    from advisor.daemon import market_calendar as mc
     from advisor.daemon.store import DaemonStore
     from advisor.entry.store import EntryStore
     from advisor.thesis.repo import load_thesis
@@ -556,7 +691,11 @@ def load(db_path, now: datetime) -> dict:
             if any(c.get("rule") == "thesis" for c in p.exits or []):
                 thesis = load_thesis(daemon, sym)
                 claims[sym] = [(c.id, c.text) for c in (thesis.claims if thesis else []) if c.id]
-        items = build(proposals, book, _picks(db_path), claims, now)
+        expectations = {}
+        for sym, p in newest_session(proposals).items():
+            if results_due(p, mc.to_et(now).date()) is not None:
+                expectations[sym] = (daemon.load_latest_valuation(sym), _consensus(daemon, sym))
+        items = build(proposals, book, _picks(db_path), claims, now, expectations)
         decided = {sym: daemon.latest_decisions(sym) for sym in {a.symbol for a in items}}
     finally:
         entries.close()
@@ -585,3 +724,11 @@ def _picks(db_path) -> dict | None:
         return None
     with BreadthStore(path) as store:
         return latest_picks(store, history=1)
+
+
+def _consensus(store, symbol: str):
+    """The stored consensus, however old: the tab never fetches (the daemon's jobs do)."""
+    from advisor.valuation.consensus import Consensus
+
+    raw = store.load_consensus(symbol)
+    return Consensus.model_validate_json(raw) if raw else None

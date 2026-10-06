@@ -167,6 +167,11 @@ class TestProposalFeatures:
         assert f["held"] is True and f["weight"] == 0.07 and f["thesis"] == "intact"
         assert f["delivered_growth"] == 0.11 and f["consensus_growth"] == 0.13
         assert f["required_low"] == 0.05 and f["required_high"] == 0.11
+        assert f["next_earnings"] is None
+
+    def test_the_results_date_is_recorded_as_a_date(self):
+        f = build_proposal(sheet(next_earnings=date(2026, 11, 3)), net_liq=10_000).features
+        assert f["next_earnings"] == "2026-11-03"
 
     def test_nothing_known_is_none_not_zero(self):
         s = Sheet(symbol="NBIS", built_at=ENTRY_NOW)

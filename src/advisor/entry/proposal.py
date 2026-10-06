@@ -296,6 +296,8 @@ def features_of(sheet: Sheet) -> dict[str, float | int | bool | str | None]:
         "required_low": c.low if c else None,
         "required_high": c.high if c else None,
         "stale": ",".join(s.input for s in sheet.stale) or None,
+        # The date itself, so a later reader can count sessions from its own today.
+        "next_earnings": sheet.next_earnings.isoformat() if sheet.next_earnings else None,
     }
 
 
