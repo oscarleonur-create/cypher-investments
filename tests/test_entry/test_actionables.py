@@ -769,3 +769,105 @@ class TestStoredAndServed:
         [item] = A.load(path, NOW)["items"]
         assert item["id"] == "SPCX:DECIDE:results:2026-10-08"
         assert item["bullets"][1].endswith("the years to 2036 need 12.8% a year")
+
+
+class TestGroups:
+    """A correlated group, decided as one bet, only before a dated macro event."""
+
+    @staticmethod
+    def risk(*, hedge=True, risk_share=0.499):
+        from advisor.risk.book import BookRisk, Group, Hedge, NameRisk
+
+        members = ["AAOI", "COHR", "CRDO", "DRAM", "NBIS"]
+        return BookRisk(
+            asof=datetime(2026, 10, 27, 16, 45, tzinfo=ET), net_liq=8_262.0, invested=0.536,
+            sessions=120, daily_vol=0.0224, two_week=1_170.0,  # measured the day before
+            names=[NameRisk(symbol=s, weight=0.05, vol=0.06, risk_share=risk_share / 5 + i / 100,
+                            sessions=120) for i, s in enumerate(members)],
+            groups=[Group(
+                members=members, weight=0.244, risk_share=risk_share, correlation=0.57,
+                two_week=704.0,
+                hedge=Hedge(etf="SMH", beta=0.377, r2=0.651, notional=3_114.7, shares=5,
+                            price=625.03) if hedge else None,
+                hedge_note="" if hedge else "the best fit, SMH, explains only 31% of its daily "
+                                            "moves: no hedge fits")],
+        )  # fmt: skip
+
+    def test_before_the_midterms_the_group_is_one_decision_with_its_hedge(self):
+        [a] = A.group_decisions(self.risk(), date(2026, 10, 28))
+        assert a.verb == "DECIDE" and a.symbol == "BOOK" and a.section == "book"
+        assert a.id == "BOOK:DECIDE:group:NBIS:2026-11-03"  # the member carrying the most risk
+        assert a.title == (
+            "DECIDE BOOK — AAOI, COHR, CRDO, DRAM, NBIS as one bet: hedge or carry it through "
+            "the US midterm elections on 11-03 (in 4 sessions)"
+        )
+        assert a.bullets == [
+            "AAOI, COHR, CRDO, DRAM, NBIS correlate 0.57 on average: 24.4% of net liq carrying "
+            "50% of the book's risk; a 2σ two-week move is ~$704",
+            "Hedge: short 5 shares of SMH (~$3,125) or SMH puts on that notional; SMH explains "
+            "65% of the group's daily moves",
+        ]
+        assert a.answers == ["KEEP"] and a.subject["worse_is"] == "UP"
+        assert a.subject["observed"] == 0.499
+
+    def test_the_frontend_strips_verb_and_symbol_from_the_title(self):
+        import re
+
+        [a] = A.group_decisions(self.risk(), date(2026, 10, 28))
+        rest = re.sub(r"^\S+\s+\S+\s+—\s+", "", a.title)  # Actions.tsx
+        assert rest.startswith("AAOI, COHR, CRDO, DRAM, NBIS as one bet")
+
+    def test_no_hedge_says_why(self):
+        [a] = A.group_decisions(self.risk(hedge=False), date(2026, 10, 28))
+        assert a.bullets[1] == (
+            "No hedge: the best fit, SMH, explains only 31% of its daily moves: no hedge fits"
+        )
+
+    @pytest.mark.parametrize("today", [date(2026, 10, 26), date(2026, 11, 4)])
+    def test_no_event_within_the_window_is_no_decision(self, today):
+        assert A.group_decisions(self.risk(), today) == []
+
+    def test_no_reading_or_no_group_is_nothing(self):
+        assert A.group_decisions(None, date(2026, 10, 28)) == []
+        bare = self.risk().model_copy(update={"groups": []})
+        assert A.group_decisions(bare, date(2026, 10, 28)) == []
+
+    def test_kept_it_returns_only_when_the_group_carries_materially_more(self):
+        [a] = A.group_decisions(self.risk(), date(2026, 10, 28))
+        [kept] = A.decision_for(a, "KEEP", "cash is 46% of the book")
+        sid = a.subject["id"]
+        [same] = A.group_decisions(self.risk(risk_share=0.52), date(2026, 10, 29))
+        assert A.answered(same, {sid: kept}, date(2026, 10, 29))
+        [more] = A.group_decisions(self.risk(risk_share=0.56), date(2026, 10, 29))
+        assert A.answered(more, {sid: kept}, date(2026, 10, 29)) is None
+
+    def test_load_reads_the_stored_reading_and_answers_under_book(self, tmp_path):
+        from advisor.daemon.store import DaemonStore
+        from advisor.risk.book import save_risk
+
+        path = tmp_path / "research.db"
+        DaemonStore(path).close()
+        save_risk(path, self.risk())
+        now = datetime(2026, 10, 28, 10, 0, tzinfo=ET)
+        [item] = A.load(path, now)["items"]
+        assert item["symbol"] == "BOOK" and item["id"].startswith("BOOK:DECIDE:group:")
+        daemon = DaemonStore(path)
+        try:
+            for d in A.decision_for(A.Actionable(**item), "KEEP", "carry it"):
+                daemon.record_decision(d)
+        finally:
+            daemon.close()
+        out = A.load(path, now)
+        assert out["items"] == [] and out["answered"][0]["why"].endswith(": carry it")
+
+    def test_a_stale_reading_is_not_todays_book(self, tmp_path):
+        from advisor.daemon.store import DaemonStore
+        from advisor.risk.book import save_risk
+
+        path = tmp_path / "research.db"
+        DaemonStore(path).close()
+        save_risk(path, self.risk())  # measured 10-27
+        on_time = datetime(2026, 10, 31, 10, 0, tzinfo=ET)  # 4 days on: a weekend, still read
+        assert [i["symbol"] for i in A.load(path, on_time)["items"]] == ["BOOK"]
+        late = datetime(2026, 11, 2, 10, 0, tzinfo=ET)  # 6 days: the daemon was down
+        assert A.load(path, late)["items"] == []

@@ -144,6 +144,16 @@ async def exposure() -> dict:
         store.close()
 
 
+@router.get("/book-risk")
+async def book_risk() -> dict:
+    """The book's risk as last measured: each name's share, correlated groups, their hedges."""
+    from advisor.research.config import get_settings
+    from advisor.risk.book import latest_risk
+
+    risk = latest_risk(get_settings().db_path)
+    return {"risk": risk.model_dump(mode="json") if risk is not None else None}
+
+
 @router.get("/sources")
 async def sources(
     symbol: str | None = None,

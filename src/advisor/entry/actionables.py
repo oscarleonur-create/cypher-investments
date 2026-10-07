@@ -12,7 +12,9 @@ already made under its own rules, in one line and one or two bullets:
     SELL    held: the proposal's EXIT (its stop from cost, a filing, a report, a halt)
     DECIDE  held: a REVIEW (a thesis rule broke, P/S rich, a filing or report to answer);
             results due within the entry guard's sessions: hold through them or cut before;
-            results just reported: keep or sell, with the bar before and after them
+            results just reported: keep or sell, with the bar before and after them;
+            a group of held names that move as one bet, before a dated macro event
+            within the entry guard's sessions: hedge it or carry it through
     READ    a sized buy that waits only on reading today's tier-A event
     BUY     a watched name's ENTER or ADD; a pick on its first day, before that
             session closes (the entry the replays measured), whose verdict is
@@ -42,6 +44,12 @@ quarter is in the filings read yet. "Before" is the last call made before the
 results day — and only a date that call still listed counts, so a date the
 calendar moved is never mistaken for results that happened.
 
+**Groups.** Names that correlate as one bet (``risk.book``) are decided as
+one, and only before a dated macro event (``macro.calendar``): a deadline is
+what makes it an action. The item says what the group weighs, what share of
+the book's risk it carries, and the hedge measured for it — named, never
+staged. It is listed under ``BOOK``, not a ticker.
+
 **Answers.** A SELL or BUY closes on its own when the book shows it
 done; DONE quiets it for the grace the decisions module allows. KEEP on a
 thesis DECIDE records a decision on the claims themselves — the same answer
@@ -65,6 +73,7 @@ PROPOSAL_DAYS = 10  # how far back proposals are read; only the newest session's
 READ_BLOCKER = "a tier-A event on this name today"
 PICK_VERDICTS = ("ENTER", "TRADE ONLY")
 AFTER_RESULTS_SESSIONS = 3  # sessions after the results day the reading is asked for
+BOOK = "BOOK"  # the symbol a book-level actionable is listed and answered under
 # An answer, and the decision verdict it is recorded as.
 ANSWERS = {"KEEP": "ACKNOWLEDGED", "DONE": "ACTED", "SKIP": "DISMISSED"}
 
@@ -489,6 +498,66 @@ def _after(p: Proposal, h: Holding, day: date, before: Proposal, n: int) -> Acti
     )
 
 
+def group_decisions(risk, today: date) -> list[Actionable]:
+    """A DECIDE per correlated group before each macro event within the window. Pure.
+
+    ``risk``: the stored ``risk.book.BookRisk``, or None.
+    """
+    from advisor.macro.calendar import upcoming
+
+    if risk is None or not risk.groups:
+        return []
+    out = []
+    for day, label, n in upcoming(today, current_params().earnings_guard_sessions):
+        when = "today" if n == 0 else "next session" if n == 1 else f"in {n} sessions"
+        for g in risk.groups:
+            top = max(
+                (x for x in risk.names if x.symbol in g.members), key=lambda x: x.risk_share
+            ).symbol
+            first = (
+                f"{g.label} correlate {g.correlation:.2f} on average: {g.weight:.1%} of net liq "
+                f"carrying {g.risk_share:.0%} of the book's risk; a 2σ two-week move is "
+                f"~${g.two_week:,.0f}"
+            )
+            if g.hedge is not None:
+                h = g.hedge
+                second = (
+                    f"Hedge: short {_shares(h.shares)} of {h.etf} (~${h.shares * h.price:,.0f}) "
+                    f"or {h.etf} puts on that notional; {h.etf} explains {h.r2:.0%} of the "
+                    "group's daily moves"
+                )
+            else:
+                second = f"No hedge: {g.hedge_note}"
+            out.append(
+                Actionable(
+                    id=f"{BOOK}:DECIDE:group:{top}:{day.isoformat()}",
+                    verb="DECIDE",
+                    symbol=BOOK,
+                    section="book",
+                    title=(
+                        f"DECIDE {BOOK} — {g.label} as one bet: hedge or carry it through "
+                        f"{label} on {day.strftime('%m-%d')} ({when})"
+                    ),
+                    bullets=[first, second],
+                    answers=["KEEP"],
+                    asof=risk.asof,
+                    source=(
+                        f"book risk of {risk.asof.strftime('%m-%d %H:%M')} ET, "
+                        f"{risk.sessions} sessions of daily returns"
+                    ),
+                    weight=g.weight,
+                    # Kept at one share of the risk, it asks again if the group grows into more.
+                    subject={
+                        "kind": "ACTIONABLE",
+                        "id": f"act:DECIDE:group:{top}:{day.isoformat()}",
+                        "observed": g.risk_share,
+                        "worse_is": "UP",
+                    },
+                )
+            )
+    return out
+
+
 def _leg(p: Proposal):
     legs = sorted(p.legs, key=lambda g: g.horizon != "position")
     return legs[0] if legs else None
@@ -729,8 +798,14 @@ def build(
             item.weight = h.notional / net_liq
     if picks:
         out.extend(pick_buys(picks, set(held), now))
-    out.sort(key=lambda a: (ORDER[a.verb], a.section != "book", -(a.weight or 0.0), a.symbol))
-    return out
+    return ordered(out)
+
+
+def ordered(items: list[Actionable]) -> list[Actionable]:
+    """SELL, DECIDE, READ, BUY; the book first; the larger weight first. Pure."""
+    return sorted(
+        items, key=lambda a: (ORDER[a.verb], a.section != "book", -(a.weight or 0.0), a.symbol)
+    )
 
 
 def answered(item: Actionable, decided: dict, today: date) -> str | None:
@@ -817,6 +892,10 @@ def load(db_path, now: datetime) -> dict:
             if results_due(p, mc.to_et(now).date()) is not None:
                 expectations[sym] = (daemon.load_latest_valuation(sym), _consensus(daemon, sym))
         items = build(proposals, book, _picks(db_path), claims, now, expectations)
+        from advisor.risk.book import latest_risk
+
+        today = mc.to_et(now).date()
+        items = ordered(items + group_decisions(latest_risk(db_path, today), today))
         decided = {sym: daemon.latest_decisions(sym) for sym in {a.symbol for a in items}}
     finally:
         entries.close()

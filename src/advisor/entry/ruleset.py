@@ -133,6 +133,7 @@ NOT_RULES: dict[str, str] = {
     "actionables.ANSWERS": "a map from an answer to the decision verdict it records",
     "actionables.REVIEW_TITLES": "display text per review rule",
     "actionables.AFTER_RESULTS_SESSIONS": "how long a reported quarter is asked about: display",
+    "actionables.BOOK": "the symbol a book-level actionable is listed and answered under",
 }
 
 
