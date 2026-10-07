@@ -95,7 +95,7 @@ function Evaluation({ p }: { p: EntryProposal }) {
         <div className="text-xs text-muted">What it could not see: {p.gaps.join("; ")}.</div>
       )}
       <div className="text-xs text-muted">
-        Recorded in the proposals ledger (Tracking tab) and judged by what the price does next. No
+        Recorded in the proposals ledger and judged by what the price does next. No
         order is placed.
       </div>
     </div>

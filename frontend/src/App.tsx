@@ -1,4 +1,4 @@
-import { Link, NavLink, Route, Routes } from "react-router-dom";
+import { Link, Navigate, NavLink, Route, Routes } from "react-router-dom";
 import { LineChart } from "lucide-react";
 import Actions from "./pages/Actions";
 import Picks from "./pages/Picks";
@@ -7,7 +7,6 @@ import Signals from "./pages/Signals";
 import Ticker from "./pages/Ticker";
 import Theses from "./pages/Theses";
 import ThesisEditor from "./pages/ThesisEditor";
-import Tracking from "./pages/Tracking";
 import Watchlist from "./pages/Watchlist";
 import { useQuotes } from "./lib/useQuotes";
 import { cn } from "./lib/utils";
@@ -48,9 +47,6 @@ export default function App() {
             <NavLink to="/picks" className={tabClass}>
               Picks
             </NavLink>
-            <NavLink to="/tracking" className={tabClass}>
-              Tracking
-            </NavLink>
             <NavLink to="/theses" className={tabClass}>
               Theses
             </NavLink>
@@ -75,7 +71,8 @@ export default function App() {
           <Route path="/signals" element={<Signals />} />
           <Route path="/watchlist" element={<Watchlist quotes={quotes} />} />
           <Route path="/picks" element={<Picks />} />
-          <Route path="/tracking" element={<Tracking quotes={quotes} />} />
+          {/* Tracking was folded away (2026-10-04): Signals is the one view. */}
+          <Route path="/tracking" element={<Navigate to="/signals" replace />} />
           <Route path="/theses" element={<Theses />} />
           <Route path="/theses/new" element={<ThesisEditor />} />
           <Route path="/theses/:id" element={<ThesisEditor />} />
