@@ -619,6 +619,38 @@ async def run_distress_sweep(ctx: JobContext) -> JobResult:
     return JobResult(job="distress_sweep", ok=bool(readings) or not errors, detail=detail)
 
 
+async def run_news_sweep(ctx: JobContext) -> JobResult:
+    """Daily: the day's news for every watched name — held, watchlist, Swing (``news.sweep``).
+
+    Before the news agent's 08:30 read, so what it finds is judged the same
+    morning. Every day: news does not wait for a session.
+    """
+    import asyncio
+
+    book = ctx.store.load_latest_book()
+    if book is None:
+        return JobResult(job="news_sweep", ok=True, detail="no book snapshot stored")
+    symbols, universe_errors = await _research_symbols(book)
+
+    def _run(db_path, symbols):
+        from advisor.daemon.store import DaemonStore
+        from advisor.news.sweep import sweep_universe
+
+        store = DaemonStore(db_path)
+        try:
+            return sweep_universe(store, symbols, names=_company_name, websites=_company_website)
+        finally:
+            store.close()
+
+    result = await asyncio.to_thread(_run, ctx.store.db_path, symbols)
+    errors = list(universe_errors) + result.errors
+    detail = result.detail()
+    if errors:
+        detail += f"; {len(errors)} error(s): {errors[0]}"
+    logger.info("news_sweep: %s", detail)
+    return JobResult(job="news_sweep", ok=bool(result.found) or not errors, detail=detail)
+
+
 def _with_scanner_store(db_path, fn, now):
     """Open, use and close a ScannerStore entirely within the calling thread."""
     from advisor.scanner.store import ScannerStore

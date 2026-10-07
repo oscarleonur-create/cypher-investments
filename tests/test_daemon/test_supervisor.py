@@ -60,6 +60,7 @@ class TestRegistry:
             "trading_halts",
             "scan_outcomes",
             "learning_sweep",
+            "news_sweep",
             "news_judge",
             "news_judge_close",
             "picks_intraday",
