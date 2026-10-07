@@ -8,7 +8,7 @@ would turn a 60-second poll into a rate-limit problem.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -257,12 +257,20 @@ class TestSymbolDetail:
         assert client.get("/api/daemon/symbol/aaoi").json()["symbol"] == "AAOI"
 
     def test_timeline_and_events_are_scoped_to_the_symbol(self, client):
-        client.store.save_source_item(source_item())
+        # Dated relative to now: the timeline reads a trailing window, and a fixed
+        # date (2026-08-21) fell out of it on 2026-10-07.
+        recent = datetime.now(timezone.utc) - timedelta(days=1)
+        client.store.save_source_item(source_item(published_at=recent))
         client.store.emit(filing_event(symbol="AAOI"))
         client.store.emit(filing_event(dedup_key="z", symbol="CRDO"))
         body = client.get("/api/daemon/symbol/AAOI").json()
         assert len(body["timeline"]) == 1
         assert {e["symbol"] for e in body["events"]} == {"AAOI"}
+
+    def test_an_item_older_than_the_window_is_not_on_the_timeline(self, client):
+        old = datetime.now(timezone.utc) - timedelta(days=400)
+        client.store.save_source_item(source_item(published_at=old))
+        assert client.get("/api/daemon/symbol/AAOI").json()["timeline"] == []
 
     def test_the_window_is_bounded(self, client):
         assert client.get("/api/daemon/symbol/AAOI?days=9999").status_code == 422
