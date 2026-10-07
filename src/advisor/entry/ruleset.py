@@ -132,6 +132,7 @@ NOT_RULES: dict[str, str] = {
     "actionables.PICK_VERDICTS": "the user's choice (2026-10-04): which pick verdicts are buys",
     "actionables.ANSWERS": "a map from an answer to the decision verdict it records",
     "actionables.REVIEW_TITLES": "display text per review rule",
+    "actionables.AFTER_RESULTS_SESSIONS": "how long a reported quarter is asked about: display",
 }
 
 

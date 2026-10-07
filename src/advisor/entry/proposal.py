@@ -293,6 +293,8 @@ def features_of(sheet: Sheet) -> dict[str, float | int | bool | str | None]:
         "thesis": sheet.thesis,
         "delivered_growth": c.delivered if c else None,
         "consensus_growth": c.consensus if c else None,
+        # When it was read: a day's cache can predate results that came since.
+        "consensus_asof": c.consensus_asof.isoformat() if c and c.consensus_asof else None,
         "required_low": c.low if c else None,
         "required_high": c.high if c else None,
         "stale": ",".join(s.input for s in sheet.stale) or None,
