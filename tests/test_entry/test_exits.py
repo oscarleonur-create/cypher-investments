@@ -6,7 +6,7 @@ from datetime import date, datetime
 
 import pytest
 from advisor.daemon import market_calendar as mc
-from advisor.entry.exits import exit_calls, strongest
+from advisor.entry.exits import SEVERITY, exit_calls, strongest
 from advisor.entry.proposal import Action, build_proposal, position_stop_pct
 from advisor.entry.sheet import EventLine, Holding, Move, Sheet
 from advisor.entry.store import EntryStore
@@ -167,23 +167,16 @@ class TestReviews:
         assert "[short history]" in c.why
 
 
-class TestConcentration:
-    def test_spcx_trim_back_to_twenty_percent(self):
-        """SPCX 2026-09-25: 11 shares at $148.68, 20.55% of $7,957.51 → sell 1."""
-        s = held(price=148.68, cost=128.18, qty=11, weight=11 * 148.68 / NET_LIQ)
-        (c,) = exit_calls(s, net_liq=NET_LIQ)[0]
-        assert c.action == "TRIM" and c.shares == 1
-        assert "20.6% of the book" in c.why and "brings it to 18.7%" in c.why
+class TestNoConcentrationTrim:
+    """The user removed the 20% trim (2026-10-04): a name's weight is not a reason to sell."""
 
-    def test_exactly_at_the_limit_is_not_a_trim(self):
-        assert exit_calls(held(weight=0.20), net_liq=NET_LIQ)[0] == []
+    @pytest.mark.parametrize("weight", [0.2055, 0.5, 0.9])
+    def test_a_heavy_position_gets_no_exit_call(self, weight):
+        s = held(price=148.68, cost=128.18, qty=11, weight=weight)
+        assert exit_calls(s, net_liq=NET_LIQ)[0] == []
 
-    def test_no_net_liq_no_trim(self):
-        assert exit_calls(held(weight=0.5), net_liq=0)[0] == []
-
-    def test_trim_never_sells_more_than_held(self):
-        (c,) = exit_calls(held(weight=0.9, qty=1), net_liq=NET_LIQ)[0]
-        assert c.shares == 1
+    def test_trim_is_no_longer_a_severity(self):
+        assert "TRIM" not in SEVERITY and strongest([]) is None
 
 
 class TestProposal:
@@ -192,7 +185,7 @@ class TestProposal:
         calls, _, _ = exit_calls(
             held(price=60.0, weight=0.3, thesis="broken", broken=["x"]), net_liq=NET_LIQ
         )
-        assert {c.action for c in calls} == {"EXIT", "TRIM", "REVIEW"}
+        assert {c.action for c in calls} == {"EXIT", "REVIEW"}
         assert strongest(calls) == "EXIT"
 
     def test_exit_replaces_an_add_and_drops_its_legs(self):
@@ -206,10 +199,10 @@ class TestProposal:
         assert p.exits[0]["shares"] == 10
 
     def test_held_without_a_zone_is_still_judged(self):
-        """SPCX has no zone (59 sessions); its concentration must still be seen."""
+        """SPCX has no zone (59 sessions); at 20.6% of the book it is a HOLD, not a TRIM."""
         s = held(price=148.68, cost=128.18, qty=11, weight=0.2055)
         p = build_proposal(s, net_liq=NET_LIQ)
-        assert p.action is Action.TRIM
+        assert p.action is Action.HOLD and any("volatility stop" in r.text for r in p.reasons)
 
     def test_quiet_holding_is_hold_with_reasons(self):
         p = build_proposal(held(z=zone(pct=0.5), earnings=date(2026, 10, 2)), net_liq=NET_LIQ)
@@ -251,7 +244,7 @@ class TestRationaleIsRequired:
             filings=[filing(["1.03", "4.01"])],
         )
         calls, _, _ = exit_calls(s, net_liq=NET_LIQ)
-        assert len(calls) == 6
+        assert len(calls) == 5  # stop, two filings, thesis, rich; no trim at 30% (2026-10-04)
         for c in calls:
             assert c.why and c.evidence and c.would_change
 

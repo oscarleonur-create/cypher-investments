@@ -187,12 +187,16 @@ class TestActions:
         assert p.action is Action.ENTER and leg.shares == 0
         assert any("smallest position exceeds" in n for n in leg.notes)
 
-    def test_one_share_larger_than_the_room_is_not_being_at_the_limit(self):
-        """Not held, yet one $2,000 share is more than 20% of a $7,966 book."""
+    def test_a_large_share_is_sized_by_risk_alone(self):
+        """One $2,000 share is 25% of a $7,966 book: only the risk budget sizes it (2026-10-04)."""
+        # 8% stop: one share risks $160 against a 2% budget of $159 — none, and it says why.
         p = build_proposal(mk(ENTERED, OUT, price=2000.0, sigma=0.005), net_liq=7_966.0)
         (leg,) = p.legs
-        assert leg.shares == 0 and any("left under the 20%" in n for n in leg.notes)
-        assert not any("already" in b for b in p.blockers)
+        assert leg.shares == 0 and any("2% budget of $159" in n for n in leg.notes)
+        assert not any("20%" in n for n in leg.notes) and not p.blockers
+        # A larger book fits it: no share of the book caps it.
+        (leg,) = build_proposal(mk(ENTERED, OUT, price=2000.0, sigma=0.005), net_liq=9_000.0).legs
+        assert leg.shares == 1
 
     def test_no_zone_no_setup_cannot_say(self):
         assert build_proposal(mk(None, None), net_liq=NET_LIQ).action is Action.CANNOT_SAY
@@ -254,18 +258,19 @@ class TestLimitsAndBlockers:
         p = build_proposal(mk(ENTERED, OUT), net_liq=NET_LIQ, reading=reading("AT_RISK"))
         assert p.action is Action.WAIT and p.stance == "AT_RISK"
 
-    def test_book_limit_caps_the_add(self):
+    def test_an_add_is_not_capped_by_the_weight_held(self):
         held = Holding(quantity=10, weight=0.19, unrealized=0.0)
         p = build_proposal(
             mk(zone(pct=0.1, above=9), OUT, sigma=0.01, holding=held), net_liq=NET_LIQ
         )
         (leg,) = p.legs
-        assert leg.notional <= 0.01 * NET_LIQ + 1e-6 and "20% book limit" in leg.notes[0]
+        assert leg.notional > 0.01 * NET_LIQ and not any("book limit" in n for n in leg.notes)
 
-    def test_at_the_limit_no_add(self):
-        held = Holding(quantity=10, weight=0.20, unrealized=0.0)
+    @pytest.mark.parametrize("weight", [0.20, 0.35])
+    def test_a_heavy_holding_can_still_add(self, weight):
+        held = Holding(quantity=10, weight=weight, unrealized=0.0)
         p = build_proposal(mk(ENTERED, OUT, holding=held), net_liq=NET_LIQ)
-        assert p.legs == [] and "20% limit" in p.blockers[0]
+        assert p.action is Action.ADD and p.legs and not p.blockers
 
     def test_unknown_net_liq_still_decides_but_does_not_size(self):
         p = build_proposal(mk(ENTERED, OUT), net_liq=None)

@@ -54,7 +54,7 @@ class TestValidate:
         "param",
         [
             "proposal.TRADE_RISK",
-            "proposal.BOOK_LIMIT",
+            "proposal.POSITION_RISK",
             "proposal.MAX_TOTAL_RISK",
             "zone.WINDOW_DAYS",
         ],

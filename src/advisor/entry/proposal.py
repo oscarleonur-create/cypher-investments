@@ -55,7 +55,7 @@ valuation more than ten days old earns no bonus. Exits are never held back.
 
 **Held names** are judged for their exit as well (``entry.exits``): EXIT
 past the stop from the purchase price or on a filing that ends the case,
-TRIM above the book limit, REVIEW for a broken thesis rule, a rich P/S or
+REVIEW for a broken thesis rule, a rich P/S or
 an auditor change, HOLD otherwise. The strongest call replaces the entry
 action. Every action but NONE, IN_ZONE and CANNOT_SAY carries its reasons.
 
@@ -90,7 +90,6 @@ MAX_TOTAL_RISK = 0.03
 # intact (no rule broken or standing) — one point more, up to 4% in total.
 THESIS_BONUS = 0.01
 MAX_TOTAL_RISK_THESIS = 0.04
-BOOK_LIMIT = 0.20  # MechanicsLimits.concentration_pct
 POSITION_STOP_MIN, POSITION_STOP_MAX = 0.08, 0.25
 # The position stop is two weeks of 2σ daily moves: 2·σ·√10.
 POSITION_STOP_SIGMAS = 2.0
@@ -112,7 +111,7 @@ class EntryParams:
     runs the code's own rules. A challenger (shadow) or an approved override
     passes its own, without touching the constants: the daemon runs jobs in
     threads, and a rule patched globally for one would be patched for all.
-    Risk budgets and the book limit are not here — they are the user's
+    Risk budgets are not here — they are the user's
     (``decided``) and never searchable.
     """
 
@@ -147,14 +146,15 @@ def current_params() -> EntryParams:
 
 class Action(StrEnum):
     ENTER = "ENTER"  # not held; at least one leg qualifies
-    ADD = "ADD"  # held; the position leg qualifies within the book limit
+    ADD = "ADD"  # held; the position leg qualifies
     IN_ZONE = "IN_ZONE"  # acceptable price, nothing happened today
     WAIT = "WAIT"  # a leg would qualify, but something must be read first
     NONE = "NONE"  # out of zone and no setup
     CANNOT_SAY = "CANNOT_SAY"  # no price, or neither a zone nor a setup to judge by
     # Held names (``entry.exits``): the strongest exit call wins; none is HOLD.
     EXIT = "EXIT"  # sell all: past its stop, or a filing that ends the case
-    TRIM = "TRIM"  # sell part: above the 20% book limit
+    TRIM = "TRIM"  # sell part: above the 20% book limit. Not issued since 2026-10-04,
+    # when the user removed the limit; kept so older proposals read
     REVIEW = "REVIEW"  # answer it: a broken thesis rule, rich P/S, an auditor change
     HOLD = "HOLD"  # held, no exit call; the reasons say where it stands
 
@@ -399,7 +399,6 @@ def build_proposal(
         p.gaps.append(f"no thesis bonus: {bonus_stale[0].text}")
     cap = MAX_TOTAL_RISK_THESIS if thesis_bonus else MAX_TOTAL_RISK
 
-    weight = sheet.holding.weight if sheet.holding else 0.0
     held = sheet.holding is not None
     sigma = m.sigma
     sized = bool(net_liq and net_liq > 0)
@@ -448,28 +447,9 @@ def build_proposal(
                 ],
                 target=z.p80_price,
             )
-            at_limit = held and weight >= BOOK_LIMIT
-            if sized and not at_limit:
-                room = max(BOOK_LIMIT - weight, 0.0) * net_liq
-                if room < m.price:
-                    # Not at the limit: one share is simply larger than the room
-                    # left under it (a $2,000 share on a $7,966 book).
-                    leg.notes.append(
-                        f"one share (${m.price:,.0f}) is more than the ${room:,.0f} left "
-                        "under the 20% book limit"
-                    )
-                    leg.shares, leg.notional = 0, 0.0
-                elif notional > room:
-                    capped = math.floor(room / m.price)
-                    leg.notes.append(
-                        f"capped from {shares} to {capped} shares by the 20% book limit"
-                    )
-                    leg.shares, leg.notional = capped, capped * m.price
-            if at_limit:
-                p.blockers.append(f"already {weight:.1%} of the book, at the 20% limit")
-            else:
-                unfilled_note(leg)
-                p.legs.append(leg)
+            # No cap at a share of the book: the user removed the 20% limit (2026-10-04).
+            unfilled_note(leg)
+            p.legs.append(leg)
 
     # Trade leg.
     if sheet.candidates and sigma:

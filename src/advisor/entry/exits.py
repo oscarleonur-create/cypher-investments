@@ -1,4 +1,4 @@
-"""Exit calls for a held name: EXIT, TRIM or REVIEW, each with its rationale.
+"""Exit calls for a held name: EXIT or REVIEW, each with its rationale.
 
 The entry engine said when to buy; nothing said when to sell. The book's
 alarms fired (``STOP_BREACHED`` at a fixed -8%, ``DEEP_DRAWDOWN`` at -20%,
@@ -18,7 +18,8 @@ decisions (2026-09-26):
   keeps the position with a reason, or sells.
 - **P/S at or above its two-year 80th percentile is a REVIEW** with the
   numbers, not an automatic trim.
-- **Above the 20% book limit is a TRIM** back to it: the book's own rule.
+- ~~Above the 20% book limit is a TRIM~~ — removed by the user (2026-10-04): the
+  weight of a name is no longer a reason to sell it.
 
 Every call carries why, the evidence with its source, and what would change
 it. A call without a rationale is not a call (``EntryStore.add`` refuses it).
@@ -35,14 +36,14 @@ it. A call without a rationale is not a call (``EntryStore.add`` refuses it).
 
 from __future__ import annotations
 
-import math
-
 from pydantic import BaseModel, Field
 
-from advisor.entry.proposal import BOOK_LIMIT, Reason, position_stop_pct
+from advisor.entry.proposal import Reason, position_stop_pct
 
 # The strongest call wins the proposal's action.
-SEVERITY = {"EXIT": 3, "TRIM": 2, "REVIEW": 1}
+# No TRIM: the user removed the 20% concentration trim (2026-10-04, "quitemos esa
+# regla"). Action.TRIM stays so older proposals still read.
+SEVERITY = {"EXIT": 3, "REVIEW": 1}
 
 RICH_PERCENTILE = 0.80
 
@@ -63,8 +64,8 @@ REVIEW_KINDS = {"FILING_AUDITOR_CHANGE": "changed its certifying accountant"}
 
 
 class ExitCall(BaseModel):
-    action: str  # EXIT | TRIM | REVIEW
-    rule: str  # stop | filing | thesis | rich | concentration
+    action: str  # EXIT | REVIEW (TRIM on proposals recorded before 2026-10-04)
+    rule: str  # stop | filing | halt | news | thesis | rich
     why: str
     evidence: list[Reason] = Field(default_factory=list)
     would_change: str
@@ -344,27 +345,6 @@ def exit_calls(sheet, *, net_liq: float | None) -> tuple[list[ExitCall], list[Re
                     "a quarter whose revenue brings the multiple back under its 80th "
                     "percentile, or a reason the business now deserves more than it did"
                 ),
-            )
-        )
-
-    # The book's concentration limit.
-    if net_liq and net_liq > 0 and h.weight > BOOK_LIMIT:
-        excess = (h.weight - BOOK_LIMIT) * net_liq
-        shares = min(math.ceil(excess / m.price), int(h.quantity))
-        after = (h.weight * net_liq - shares * m.price) / net_liq
-        calls.append(
-            ExitCall(
-                action="TRIM",
-                rule="concentration",
-                why=(
-                    f"{h.weight:.1%} of the book against the 20% limit; selling {shares} "
-                    f"(${shares * m.price:,.0f}) brings it to {after:.1%}"
-                ),
-                evidence=[
-                    Reason(text=f"net liq ${net_liq:,.2f}", source="TastyTrade balances"),
-                ],
-                would_change="a price fall or a larger book that brings the weight under 20%",
-                shares=shares,
             )
         )
 

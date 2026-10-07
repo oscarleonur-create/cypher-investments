@@ -24,7 +24,6 @@ DECLARED: dict[str, dict[str, Kind]] = {
         "MAX_TOTAL_RISK": Kind.DECIDED,
         "THESIS_BONUS": Kind.DECIDED,
         "MAX_TOTAL_RISK_THESIS": Kind.DECIDED,
-        "BOOK_LIMIT": Kind.DECIDED,
         "POSITION_STOP_MIN": Kind.THRESHOLD,
         "POSITION_STOP_MAX": Kind.THRESHOLD,
         "POSITION_STOP_SIGMAS": Kind.THRESHOLD,

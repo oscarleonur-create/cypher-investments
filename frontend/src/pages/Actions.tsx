@@ -10,7 +10,6 @@ import { Card, CardContent } from "@/components/ui/card";
 /** Each verb's colour: selling red, deciding amber, buying green. */
 const VERB: Record<Actionable["verb"], { tone: string; bar: string }> = {
   SELL: { tone: "text-neg", bar: "border-l-neg" },
-  TRIM: { tone: "text-warn", bar: "border-l-warn" },
   DECIDE: { tone: "text-warn", bar: "border-l-warn" },
   READ: { tone: "text-accent", bar: "border-l-accent" },
   BUY: { tone: "text-pos", bar: "border-l-pos" },

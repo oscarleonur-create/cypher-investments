@@ -10,21 +10,22 @@ Nothing here makes a new call. Each actionable restates one the system
 already made under its own rules, in one line and one or two bullets:
 
     SELL    held: the proposal's EXIT (its stop from cost, a filing, a report, a halt)
-    TRIM    held: above the 20% book limit, sized from the book as it is now
     DECIDE  held: a REVIEW (a thesis rule broke, P/S rich, a filing or report to answer)
     READ    a sized buy that waits only on reading today's tier-A event
     BUY     a watched name's ENTER or ADD; a pick on its first day, before that
             session closes (the entry the replays measured), whose verdict is
             ENTER or TRADE ONLY
 
-What is left out is left out on purpose: HOLD, NONE, IN_ZONE (an acceptable
+What is left out is left out on purpose: a TRIM (the user removed the 20%
+concentration trim, 2026-10-04; one recorded before still reads TRIM and is
+not shown), HOLD, NONE, IN_ZONE (an acceptable
 price, no reason to act today), a WAIT with nothing sized behind it or that
 waits on results, a pick past its first session (the plan replay measured
 later entries at about zero) and a pick verdict of WAIT, UNPROVEN or CAN'T
 VALUE. Calls on names no longer held (TE's EXIT after it was sold) are dropped
 against the book.
 
-**Answers.** A SELL, TRIM or BUY closes on its own when the book shows it
+**Answers.** A SELL or BUY closes on its own when the book shows it
 done; DONE quiets it for the grace the decisions module allows. KEEP on a
 thesis DECIDE records a decision on the claims themselves — the same answer
 the thesis card takes, which is what stops the proposal from asking. KEEP on
@@ -35,15 +36,14 @@ percentile for a rich price), so it returns only if that worsens materially.
 from __future__ import annotations
 
 import hashlib
-import math
 import re
 from datetime import date, datetime, timedelta
 
 from pydantic import BaseModel, Field
 
-from advisor.entry.proposal import BOOK_LIMIT, Proposal, position_stop_pct
+from advisor.entry.proposal import Proposal, position_stop_pct
 
-ORDER = {"SELL": 0, "TRIM": 1, "DECIDE": 2, "READ": 3, "BUY": 4}
+ORDER = {"SELL": 0, "DECIDE": 1, "READ": 2, "BUY": 3}
 PROPOSAL_DAYS = 10  # how far back proposals are read; only the newest session's are used
 READ_BLOCKER = "a tier-A event on this name today"
 PICK_VERDICTS = ("ENTER", "TRADE ONLY")
@@ -53,7 +53,7 @@ ANSWERS = {"KEEP": "ACKNOWLEDGED", "DONE": "ACTED", "SKIP": "DISMISSED"}
 
 class Actionable(BaseModel):
     id: str  # symbol:subject — stable across rebuilds of the same situation
-    verb: str  # SELL | TRIM | DECIDE | READ | BUY
+    verb: str  # SELL | DECIDE | READ | BUY
     symbol: str
     section: str  # "book" (held) | "tracking"
     title: str
@@ -134,7 +134,7 @@ def newest_session(proposals: list[Proposal]) -> dict[str, Proposal]:
 
 def _source(p: Proposal) -> str:
     # A proposal is recorded once per session and action, so an hourly job
-    # that says TRIM again keeps the first row: the time is when it was first said.
+    # that says REVIEW again keeps the first row: the time is when it was first said.
     return (
         f"entry call of {p.session.strftime('%m-%d')}, first made {p.built_at.strftime('%H:%M')} ET"
     )
@@ -188,45 +188,6 @@ def _sell(p: Proposal, h: Holding, calls: list[dict]) -> Actionable:
             "observed": None,
             "worse_is": "NEITHER",
         },  # fmt: skip
-    )
-
-
-def trim_size(h: Holding, net_liq: float, limit: float = BOOK_LIMIT) -> tuple[int, float] | None:
-    """Shares to sell to bring the holding to the limit, and the weight after. Pure.
-
-    None when the holding is at or under the limit now — a TRIM the book has
-    already answered (sold, or a price fall, or a larger book).
-    """
-    if not net_liq or net_liq <= 0 or not h.price or h.price <= 0:
-        return None
-    if h.notional / net_liq <= limit:
-        return None
-    n = math.ceil((h.notional - limit * net_liq) / h.price - 1e-9)
-    n = min(max(n, 1), int(h.quantity))
-    return n, (h.notional - n * h.price) / net_liq
-
-
-def _trim(p: Proposal, h: Holding, net_liq: float) -> Actionable | None:
-    size = trim_size(h, net_liq)
-    if size is None:
-        return None
-    n, after = size
-    weight = h.notional / net_liq
-    return Actionable(
-        id=f"{h.symbol}:TRIM",
-        verb="TRIM",
-        symbol=h.symbol,
-        section="book",
-        title=f"TRIM {h.symbol} — sell {_shares(n)} (~{_money(n * h.price)})",
-        bullets=[
-            f"{weight:.1%} of the book against your {BOOK_LIMIT:.0%} limit; "
-            f"selling {n} brings it to {after:.1%}"
-        ],
-        answers=["DONE"],
-        asof=p.built_at,
-        source=_source(p),
-        shares=n,
-        subject={"kind": "ACTIONABLE", "id": "act:TRIM", "observed": weight, "worse_is": "UP"},
     )
 
 
@@ -474,7 +435,7 @@ def build(
     claims: dict[str, list[tuple[str, str]]],
     now: datetime,
 ) -> list[Actionable]:
-    """Every actionable, in order: SELL, TRIM, DECIDE, READ, BUY. Pure.
+    """Every actionable, in order: SELL, DECIDE, READ, BUY. Pure.
 
     ``claims``: per symbol, the thesis claims as (id, text), to answer a
     broken rule on the claim itself.
@@ -490,10 +451,6 @@ def build(
             if any(c.get("action") == "EXIT" for c in calls):
                 out.append(_sell(p, h, calls))
                 continue
-            if any(c.get("action") == "TRIM" for c in calls):
-                trim = _trim(p, h, net_liq)
-                if trim is not None:
-                    out.append(trim)
             for c in calls:
                 if c.get("action") == "REVIEW":
                     out.append(_decide(p, h, c, claims.get(sym, [])))
@@ -508,7 +465,7 @@ def build(
         elif action == "WAIT":
             item = _read(p, held=False)
         else:
-            item = None  # EXIT/TRIM/REVIEW/HOLD on a name no longer held, NONE, IN_ZONE
+            item = None  # EXIT/REVIEW/HOLD on a name no longer held, NONE, IN_ZONE
         if item is not None:
             out.append(item)
     for item in out:
