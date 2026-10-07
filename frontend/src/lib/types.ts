@@ -1099,3 +1099,33 @@ export interface ActionablesResponse {
   items: Actionable[];
   answered: { id: string; title: string; why: string }[];
 }
+
+/** A pick followed in the sim (`breadth/sim.py`): entered at the click, exited by the plan. */
+export interface SimRow {
+  id: string;
+  symbol: string;
+  pick_day: string;
+  added_at: string;
+  session: string;
+  entry: number;
+  entry_source: string;
+  stop: number | null;
+  stop_pct: number | null;
+  exit_by: string;
+  status: "OPEN" | "STOP" | "TIME";
+  exit_day: string | null;
+  exit_price: number | null;
+  ret: number | null;
+  held: number | null;
+  pick: { families?: string[]; verdict?: string | null; stage?: string | null };
+  last?: number | null;
+  last_day?: string | null;
+  unrealized?: number | null;
+  sessions_in?: number;
+}
+
+export interface SimsResponse {
+  open: SimRow[];
+  closed: SimRow[];
+  record: { n: number; mean?: number; won?: number; stopped?: number; held?: number };
+}

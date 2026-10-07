@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from advisor.api import deps
 
@@ -121,3 +122,58 @@ async def evaluation(symbol: str) -> dict:
     from advisor.breadth.position import latest_evaluation
 
     return {"proposal": await asyncio.to_thread(latest_evaluation, _db(), symbol)}
+
+
+def _sims() -> dict:
+    from advisor.breadth import sim
+    from advisor.breadth.store import BreadthStore, breadth_path
+
+    path = breadth_path(_db())
+    if not path.exists():
+        return {"open": [], "closed": [], "record": {"n": 0}}
+    with BreadthStore(path) as store:
+        return sim.listing(store.conn)
+
+
+@router.get("/sims")
+async def sims() -> dict:
+    """The picks you follow in the sim: open with their last close, closed with their exit."""
+    import asyncio
+
+    return await asyncio.to_thread(_sims)
+
+
+class SimInput(BaseModel):
+    symbol: str
+    day: str | None = None  # the picks list it is added from (default: the newest)
+
+
+@router.post("/sims")
+async def add_sim(body: SimInput) -> dict:
+    """Add a pick to the sim at the live price now. The system calls its exit."""
+    import asyncio
+
+    from advisor.breadth import sim
+    from advisor.daemon.market_calendar import now_et
+
+    symbol = body.symbol.upper()
+    listing = await asyncio.to_thread(_latest, body.day)
+    pick = next((p for p in listing.get("picks") or [] if p["symbol"].upper() == symbol), None)
+    if pick is None:
+        raise HTTPException(404, f"{symbol} is not a pick on {listing.get('day')}")
+    price, source = await sim.live_price(symbol)
+    if price is None:
+        raise HTTPException(503, f"{symbol}: {source}")
+
+    def _add():
+        from advisor.breadth.store import BreadthStore, breadth_path
+
+        row = sim.new_sim(pick, listing["day"], price, source, now_et())
+        with BreadthStore(breadth_path(_db())) as store:
+            return sim.add(store.conn, row)
+
+    try:
+        row = await asyncio.to_thread(_add)
+    except sim.SimError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"sim": {k: v for k, v in row.items() if k != "pick_json"}}
