@@ -168,6 +168,7 @@ class TestProposalFeatures:
         assert f["delivered_growth"] == 0.11 and f["consensus_growth"] == 0.13
         assert f["required_low"] == 0.05 and f["required_high"] == 0.11
         assert f["next_earnings"] is None
+        assert f["consensus_asof"] is None  # the context says when only if a consensus was read
 
     def test_the_results_date_is_recorded_as_a_date(self):
         f = build_proposal(sheet(next_earnings=date(2026, 11, 3)), net_liq=10_000).features

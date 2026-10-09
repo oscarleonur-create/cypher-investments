@@ -11,7 +11,8 @@ already made under its own rules, in one line and one or two bullets:
 
     SELL    held: the proposal's EXIT (its stop from cost, a filing, a report, a halt)
     DECIDE  held: a REVIEW (a thesis rule broke, P/S rich, a filing or report to answer);
-            results due within the entry guard's sessions: hold through them or cut before
+            results due within the entry guard's sessions: hold through them or cut before;
+            results just reported: keep or sell, with the bar before and after them
     READ    a sized buy that waits only on reading today's tier-A event
     BUY     a watched name's ENTER or ADD; a pick on its first day, before that
             session closes (the entry the replays measured), whose verdict is
@@ -33,6 +34,13 @@ business delivered and what the consensus expects — and, if the consensus is
 met, what the years after it must still deliver. Arithmetic on stored
 numbers, never a call on which way the results go: the answer is the
 holder's.
+
+After the results, for ``AFTER_RESULTS_SESSIONS`` sessions, the same name
+asks again with the evidence they brought: the price and what it requires,
+before and after; the consensus, before and after; and whether the new
+quarter is in the filings read yet. "Before" is the last call made before the
+results day — and only a date that call still listed counts, so a date the
+calendar moved is never mistaken for results that happened.
 
 **Answers.** A SELL or BUY closes on its own when the book shows it
 done; DONE quiets it for the grace the decisions module allows. KEEP on a
@@ -56,6 +64,7 @@ ORDER = {"SELL": 0, "DECIDE": 1, "READ": 2, "BUY": 3}
 PROPOSAL_DAYS = 10  # how far back proposals are read; only the newest session's are used
 READ_BLOCKER = "a tier-A event on this name today"
 PICK_VERDICTS = ("ENTER", "TRADE ONLY")
+AFTER_RESULTS_SESSIONS = 3  # sessions after the results day the reading is asked for
 # An answer, and the decision verdict it is recorded as.
 ANSWERS = {"KEEP": "ACKNOWLEDGED", "DONE": "ACTED", "SKIP": "DISMISSED"}
 
@@ -374,6 +383,112 @@ def _results(
     )
 
 
+def reported(history: list[Proposal], today: date) -> tuple[date, Proposal, int] | None:
+    """The results a name reported within ``AFTER_RESULTS_SESSIONS`` before ``today``:
+    (their day, the last call before that day, sessions since). Pure.
+
+    ``history``: one symbol's proposals, any sessions. A date counts only if
+    the last call built before it still listed it: one the calendar moved
+    later was never a report.
+    """
+    from advisor.entry.sheet import sessions_until
+
+    best = None
+    for raw in {(p.features or {}).get("next_earnings") for p in history}:
+        try:
+            day = date.fromisoformat(str(raw))
+        except ValueError:
+            continue
+        if day >= today:
+            continue
+        n = sessions_until(day, today)
+        if not 1 <= n <= AFTER_RESULTS_SESSIONS:
+            continue
+        prior = [p for p in history if p.session < day]
+        if not prior or not any(p.session > day for p in history):
+            continue  # nothing called before it, or nothing since: no before and after
+        last = max(prior, key=lambda p: (p.session, p.built_at))
+        if (last.features or {}).get("next_earnings") != day.isoformat():
+            continue  # rescheduled before it came
+        if best is None or day > best[0]:
+            best = (day, last, n)
+    return best
+
+
+def _read_on(raw) -> date | None:
+    """The ET date of a stored ISO timestamp, or None. Pure."""
+    from advisor.daemon import market_calendar as mc
+
+    try:
+        return mc.to_et(datetime.fromisoformat(str(raw))).date() if raw else None
+    except ValueError:
+        return None
+
+
+def _range_of(f: dict) -> str | None:
+    low, high = f.get("required_low"), f.get("required_high")
+    return _pct_range(low, high) if low is not None and high is not None else None
+
+
+def _after(p: Proposal, h: Holding, day: date, before: Proposal, n: int) -> Actionable:
+    f, b = p.features or {}, before.features or {}
+    since = f"since {before.session.strftime('%m-%d')}"
+    first = f"Results of {day.strftime('%a %m-%d')}"
+    if p.price and before.price:
+        first += (
+            f": {_money(before.price)} → {_money(p.price)} "
+            f"({p.price / before.price - 1:+.1%}) {since}"
+        )
+    now, was = _range_of(f), _range_of(b)
+    if now and was:
+        first += f"; the price requires {now} a year (was {was})"
+    elif now:
+        first += f"; the price requires {now} a year"
+    parts = []
+    c_now, c_was = f.get("consensus_growth"), b.get("consensus_growth")
+    read = _read_on(f.get("consensus_asof"))
+    if c_now is None:
+        pass
+    elif read is None:
+        parts.append(f"consensus {c_now:+.1%} a year (when it was read is not recorded)")
+    elif read <= day:
+        # The call read a cached estimate from before the results: no revision to show.
+        parts.append(
+            f"consensus {c_now:+.1%} a year, read {read.strftime('%m-%d')}: "
+            "not re-read since the results"
+        )
+    elif c_was is not None:
+        parts.append(f"consensus {c_was:+.1%} → {c_now:+.1%} a year")
+    else:
+        parts.append(f"consensus {c_now:+.1%} a year")
+    d_now, d_was = f.get("delivered_growth"), b.get("delivered_growth")
+    if d_now is not None and d_was is not None and abs(d_now - d_was) >= 0.0005:
+        parts.append(f"revenue grew {d_now:+.1%} in the new filing (was {d_was:+.1%})")
+    elif d_now is not None:
+        parts.append("the new quarter is not in the filings read yet")
+    bullets = [first]
+    if parts:
+        text = "; ".join(parts)
+        bullets.append(text[:1].upper() + text[1:])
+    return Actionable(
+        id=f"{h.symbol}:DECIDE:reported:{day.isoformat()}",
+        verb="DECIDE",
+        symbol=h.symbol,
+        section="book",
+        title=f"DECIDE {h.symbol} — keep or sell after its results of {day.strftime('%m-%d')}",
+        bullets=bullets,
+        answers=["KEEP"],
+        asof=p.built_at,
+        source=f"{_source(p)} against the call of {before.session.strftime('%m-%d')}",
+        subject={
+            "kind": "ACTIONABLE",
+            "id": f"act:DECIDE:reported:{day.isoformat()}",
+            "observed": f.get("required_high"),
+            "worse_is": "UP" if f.get("required_high") is not None else "NEITHER",
+        },
+    )
+
+
 def _leg(p: Proposal):
     legs = sorted(p.legs, key=lambda g: g.horizon != "position")
     return legs[0] if legs else None
@@ -573,6 +688,9 @@ def build(
     expectations = expectations or {}
     held = holdings(book)
     net_liq = book.net_liq if book is not None else 0.0
+    by_symbol: dict[str, list[Proposal]] = {}
+    for p in proposals:
+        by_symbol.setdefault(p.symbol.upper(), []).append(p)
     out: list[Actionable] = []
     for sym, p in newest_session(proposals).items():
         h = held.get(sym)
@@ -588,6 +706,9 @@ def build(
             due = results_due(p, today)
             if due is not None:
                 out.append(_results(p, h, due, *expectations.get(sym, (None, None))))
+            done = reported(by_symbol.get(sym, []), today)
+            if done is not None:
+                out.append(_after(p, h, *done))
             if action == "ADD" and not _added_since(p, h):
                 item = _buy(p, held=True)
             elif action == "WAIT":

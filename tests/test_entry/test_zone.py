@@ -215,6 +215,19 @@ class TestAbsolute:
     def test_no_snapshot(self):
         assert absolute_context(None, 100.0) is None
 
+    def test_the_consensus_carries_when_it_was_read(self):
+        from datetime import datetime
+
+        from advisor.daemon.market_calendar import MARKET_TZ
+        from advisor.valuation.consensus import Consensus, RevenueEstimate
+
+        read = datetime(2026, 10, 6, 9, 45, tzinfo=MARKET_TZ)
+        est = RevenueEstimate(label="FY2027", fiscal_year_end=date(2027, 12, 31), avg=5e9)
+        ctx = absolute_context(snapshot(), 100.0, consensus=Consensus(symbol="X", asof=read,
+                                                                      years=[est]))  # fmt: skip
+        assert ctx.consensus is not None and ctx.consensus_asof == read
+        assert absolute_context(snapshot(), 100.0).consensus_asof is None  # none read, no time
+
     def test_required_at_rejects_bad_inputs(self):
         sc = Scenario(terminal_multiple=25, fcf_margin=0.25, years=10)
         assert required_at(snapshot(revenue_runrate=None), 100, sc) is None

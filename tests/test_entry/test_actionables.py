@@ -318,6 +318,129 @@ class TestResults:
         assert A.answered(later, {kept.subject_id: kept}, NOW.date()) is None
 
 
+class TestReported:
+    """After the results: keep or sell, with the bar before and after them.
+
+    SPCX reports Tue 11-03. The last call before is Mon 11-02 at $171.92
+    (46.1% required, consensus +136.1%); the first after, Wed 11-04.
+    """
+
+    BEFORE = {"next_earnings": "2026-11-03", "required_low": 0.461, "required_high": 0.461,
+              "consensus_growth": 1.361, "delivered_growth": 0.537}  # fmt: skip
+    AFTER = {"next_earnings": "2027-02-02", "required_low": 0.50, "required_high": 0.50,
+             "consensus_growth": 1.40, "delivered_growth": 0.537,
+             "consensus_asof": "2026-11-04T09:30:00-05:00"}  # fmt: skip
+
+    def calls(self, *, before=None, after=None, after_day=date(2026, 11, 4), extra=()):
+        return [
+            prop("SPCX", Action.HOLD, session=date(2026, 11, 2), price=171.92,
+                 features={**self.BEFORE, **(before or {})}),
+            *extra,
+            prop("SPCX", Action.HOLD, session=after_day, price=190.0,
+                 features={**self.AFTER, **(after or {})}),
+        ]  # fmt: skip
+
+    def run(self, calls, now=datetime(2026, 11, 4, 14, 0, tzinfo=ET), held=True):
+        b = book(pos("SPCX", qty=11, cost=128.16, price=190.0)) if held else book()
+        return A.build(calls, b, None, {}, now)
+
+    def test_the_bar_and_the_consensus_before_and_after(self):
+        [a] = self.run(self.calls())
+        assert a.verb == "DECIDE" and a.answers == ["KEEP"]
+        assert a.id == "SPCX:DECIDE:reported:2026-11-03"
+        assert a.title == "DECIDE SPCX — keep or sell after its results of 11-03"
+        assert a.bullets == [
+            "Results of Tue 11-03: $171.92 → $190.00 (+10.5%) since 11-02; the price requires "
+            "50.0% a year (was 46.1%)",
+            "Consensus +136.1% → +140.0% a year; the new quarter is not in the filings read yet",
+        ]
+        assert a.source.endswith("against the call of 11-02")
+        assert a.subject["observed"] == 0.50 and a.subject["worse_is"] == "UP"
+
+    def test_a_new_filing_says_what_it_delivered(self):
+        [a] = self.run(self.calls(after={"delivered_growth": 0.70}))
+        assert a.bullets[1].endswith("revenue grew +70.0% in the new filing (was +53.7%)")
+
+    @pytest.mark.parametrize("day,now,shown", [
+        (date(2026, 11, 6), datetime(2026, 11, 6, 10, 0, tzinfo=ET), True),   # 3 sessions on
+        (date(2026, 11, 9), datetime(2026, 11, 9, 10, 0, tzinfo=ET), False),  # the 4th
+    ])  # fmt: skip
+    def test_it_is_asked_for_three_sessions(self, day, now, shown):
+        got = self.run(self.calls(after_day=day), now=now)
+        assert bool(got) is shown
+
+    def test_on_the_day_itself_it_is_still_before(self):
+        calls = [prop("SPCX", Action.HOLD, session=date(2026, 11, 3), price=171.0,
+                      features=self.BEFORE)]  # fmt: skip
+        [a] = self.run(calls, now=datetime(2026, 11, 3, 10, 0, tzinfo=ET))
+        assert a.id == "SPCX:DECIDE:results:2026-11-03"  # hold through or cut, not "after"
+
+    def test_a_date_moved_before_it_came_was_never_a_report(self):
+        # 10-30 listed 11-03; by 11-02 the calendar said 11-10.
+        early = prop("SPCX", Action.HOLD, session=date(2026, 10, 30), features=self.BEFORE)
+        calls = self.calls(before={"next_earnings": "2026-11-10"}, extra=[early])
+        calls[-1].features["next_earnings"] = "2026-11-10"
+        # Only the moved date's own "before" decision: 11-10 is four sessions out.
+        assert [a.id for a in self.run(calls)] == ["SPCX:DECIDE:results:2026-11-10"]
+
+    def test_no_call_before_the_day_is_nothing(self):
+        assert self.run(self.calls()[1:]) == []
+
+    def test_no_call_since_the_day_is_nothing(self):
+        # The daemon was down: the newest call is still Monday's.
+        assert self.run(self.calls()[:1], now=datetime(2026, 11, 4, 14, 0, tzinfo=ET)) == []
+
+    def test_only_held_names_and_a_sell_makes_it_moot(self):
+        assert self.run(self.calls(), held=False) == []
+        calls = self.calls()
+        calls[-1] = calls[-1].model_copy(
+            update={"action": Action.EXIT, "exits": [call("EXIT", "stop")]}
+        )
+        assert [a.verb for a in self.run(calls)] == ["SELL"]
+
+    def test_what_is_missing_is_left_out_not_invented(self):
+        gone = {"required_low": None, "required_high": None, "consensus_growth": None,
+                "delivered_growth": None}  # fmt: skip
+        [a] = self.run(self.calls(before=gone, after={"required_low": None,
+                                                      "required_high": None}))  # fmt: skip
+        assert a.bullets == [
+            "Results of Tue 11-03: $171.92 → $190.00 (+10.5%) since 11-02",
+            "Consensus +140.0% a year; the new quarter is not in the filings read yet",
+        ]
+        assert a.subject["observed"] is None and a.subject["worse_is"] == "NEITHER"
+
+    def test_a_consensus_read_before_the_results_is_not_a_revision(self):
+        # PENG, 2026-10-07: the 09:45 call read a cached estimate from before the 10-06 report.
+        [a] = self.run(self.calls(after={"consensus_asof": "2026-11-03T08:00:00-05:00"}))
+        assert a.bullets[1].startswith(
+            "Consensus +140.0% a year, read 11-03: not re-read since the results"
+        )
+
+    def test_a_consensus_with_no_read_time_says_so(self):
+        [a] = self.run(self.calls(after={"consensus_asof": None}))
+        assert a.bullets[1].startswith("Consensus +140.0% a year (when it was read is not")
+
+    def test_the_read_time_is_taken_in_new_york(self):
+        # 01:00 UTC on 11-04 is still 11-03 in New York: before the results.
+        [a] = self.run(self.calls(after={"consensus_asof": "2026-11-04T01:00:00+00:00"}))
+        assert "not re-read since the results" in a.bullets[1]
+
+    @pytest.mark.parametrize("raw", [None, "", "soon"])
+    def test_an_unreadable_date_in_the_history_is_ignored(self, raw):
+        noise = prop("SPCX", Action.HOLD, session=date(2026, 10, 29),
+                     features={"next_earnings": raw})  # fmt: skip
+        [a] = self.run(self.calls(extra=[noise]))
+        assert a.id == "SPCX:DECIDE:reported:2026-11-03"
+
+    def test_kept_it_stays_quiet_unless_the_bar_rises_materially(self):
+        [a] = self.run(self.calls())
+        [kept] = A.decision_for(a, "KEEP", "the AI segment beat")
+        sid = a.subject["id"]
+        assert A.answered(a, {sid: kept}, date(2026, 11, 5))
+        [higher] = self.run(self.calls(after={"required_high": 0.56}))
+        assert A.answered(higher, {sid: kept}, date(2026, 11, 5)) is None
+
+
 class TestBuyAndRead:
     def test_an_enter_is_a_buy_with_size_and_stop(self):
         p = prop("AMZN", Action.ENTER, legs=[leg()], triggers=["crossed into its zone today"])

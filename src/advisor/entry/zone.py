@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import logging
 import statistics
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from pydantic import BaseModel, Field
 
@@ -154,6 +154,7 @@ class Absolute(BaseModel):
     delivered: float | None = None  # revenue YoY, latest filing
     consensus: float | None = None  # annualised growth, run-rate -> last consensus year
     consensus_label: str = ""
+    consensus_asof: datetime | None = None  # when the consensus was read (a day's cache)
     stale: bool = False
     notes: list[str] = Field(default_factory=list)
 
@@ -219,6 +220,8 @@ def absolute_context(
     )
     ctx.delivered = snapshot.revenue_yoy
     ctx.consensus, ctx.consensus_label = consensus_growth(snapshot, consensus)
+    if ctx.consensus is not None:
+        ctx.consensus_asof = consensus.asof
     if ctx.stale:
         ctx.notes.append(f"the filing behind this is stale (period ending {snapshot.period_end})")
     return ctx
