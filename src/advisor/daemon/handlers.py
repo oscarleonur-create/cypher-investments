@@ -815,6 +815,38 @@ def _notify_expired(store, changes) -> int:
     return store.emit_many([expired_event(c) for c in changes])
 
 
+async def run_book_risk(ctx: JobContext) -> JobResult:
+    """After the close: the book's risk, its correlated groups and their hedges (``risk.book``).
+
+    One reading a day, stored; the Actions tab reads it and never prices anything.
+    """
+    import asyncio
+
+    def _run(db_path, now):
+        from advisor.daemon.store import DaemonStore
+        from advisor.risk.book import measure_book, save_risk
+
+        daemon = DaemonStore(db_path)
+        try:
+            book = daemon.load_latest_book()
+        finally:
+            daemon.close()
+        risk = measure_book(book, now)
+        if risk is not None:
+            save_risk(db_path, risk)
+        return risk
+
+    risk = await asyncio.to_thread(_run, ctx.store.db_path, ctx.now)
+    if risk is None:
+        return JobResult(job="book_risk", ok=True, detail="nothing to measure (no book or prices)")
+    groups = "; ".join(f"{g.label} {g.risk_share:.0%} of risk" for g in risk.groups) or "no groups"
+    detail = (
+        f"daily vol {risk.daily_vol:.2%} of net liq, 2σ two weeks ${risk.two_week:,.0f}; {groups}"
+    )
+    logger.info("book_risk: %s", detail)
+    return JobResult(job="book_risk", ok=True, detail=detail)
+
+
 async def run_rule_expiry(ctx: JobContext) -> JobResult:
     """Daily: every rule change whose evidence no sweep renewed expires; say which.
 

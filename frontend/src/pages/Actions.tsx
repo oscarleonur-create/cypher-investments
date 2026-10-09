@@ -35,9 +35,14 @@ function Item({ a }: { a: Actionable }) {
       <CardContent className="space-y-2 pt-4">
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
           <span className={cn("text-base font-bold tracking-wide", style.tone)}>{a.verb}</span>
-          <Link to={`/ticker/${a.symbol}`} className="text-base font-semibold hover:text-accent">
-            {a.symbol}
-          </Link>
+          {a.symbol === "BOOK" ? (
+            // A book-level decision (a correlated group): there is no ticker to open.
+            <span className="text-base font-semibold">Book</span>
+          ) : (
+            <Link to={`/ticker/${a.symbol}`} className="text-base font-semibold hover:text-accent">
+              {a.symbol}
+            </Link>
+          )}
           <span className="text-sm text-text">— {rest}</span>
         </div>
         <ul className="list-disc space-y-1 pl-5 text-sm text-text">

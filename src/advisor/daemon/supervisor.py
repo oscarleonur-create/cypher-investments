@@ -237,6 +237,16 @@ def build_registry() -> JobRegistry:
     )
     reg.register(
         Job(
+            name="book_risk",
+            # After the close's book snapshot (16:30); caught up before the next
+            # open if the laptop slept through it.
+            trigger=DailyAt(time(16, 45), grace_hours=16.0),
+            handler=handlers.run_book_risk,
+            description="the book's risk, its correlated groups and their hedges",
+        )
+    )
+    reg.register(
+        Job(
             name="rule_expiry",
             trigger=DailyAt(time(6, 40), trading_days_only=False, grace_hours=18.0),
             handler=handlers.run_rule_expiry,

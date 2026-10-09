@@ -69,6 +69,7 @@ class TestRegistry:
             "breadth_sync_dawn",
             "company_health",
             "rule_expiry",
+            "book_risk",
             "heartbeat",
         }
 

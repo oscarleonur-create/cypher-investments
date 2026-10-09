@@ -219,6 +219,64 @@ def daemon_events(
         store.close()
 
 
+@app.command("risk")
+def daemon_risk(
+    live: Annotated[bool, typer.Option("--live/--stored", help="Measure now, or read")] = False,
+    output: Annotated[str, typer.Option("--output", "-o")] = "table",
+) -> None:
+    """The book's risk: daily vol, each name's share, correlated groups and their hedges."""
+    from advisor.daemon.market_calendar import now_et
+    from advisor.research.config import get_settings
+    from advisor.risk.book import latest_risk, measure_book, save_risk
+
+    db_path = get_settings().db_path
+    if live:
+        store = _store()
+        try:
+            book = store.load_latest_book()
+        finally:
+            store.close()
+        risk = measure_book(book, now_et())
+        if risk is not None:
+            save_risk(db_path, risk)
+    else:
+        risk = latest_risk(db_path)
+    if risk is None:
+        console.print("[dim]No book risk yet — run [/dim]advisor daemon risk --live")
+        return
+    if output == "json":
+        output_json(risk.model_dump(mode="json"))
+        return
+    console.print(
+        f"\nBook risk as of {risk.asof:%Y-%m-%d %H:%M} — net liq ${risk.net_liq:,.0f}, "
+        f"{risk.invested:.0%} invested, {risk.sessions} sessions"
+    )
+    console.print(
+        f"Daily vol {risk.daily_vol:.2%} of net liq; a 2σ two-week move ${risk.two_week:,.0f} "
+        f"({risk.two_week_pct:.1%})"
+    )
+    for n in risk.names:
+        console.print(
+            f"  {n.symbol:6} {n.weight:6.1%} of net liq  {n.risk_share:6.1%} of risk  "
+            f"vol {n.vol:.2%}/day  ({n.sessions} sessions)"
+        )
+    for g in risk.groups:
+        console.print(
+            f"\n[bold]{g.label}[/bold] — correlate {g.correlation:.2f}: {g.weight:.1%} of net liq, "
+            f"{g.risk_share:.0%} of risk, 2σ two weeks ${g.two_week:,.0f}"
+        )
+        if g.hedge:
+            h = g.hedge
+            console.print(
+                f"  hedge: short {h.shares} {h.etf} (~${h.shares * h.price:,.0f}); "
+                f"explains {h.r2:.0%} of its daily moves"
+            )
+        else:
+            console.print(f"  no hedge: {g.hedge_note}")
+    for line in risk.excluded:
+        console.print(f"[yellow]left out: {line}[/yellow]")
+
+
 @app.command("exposure")
 def daemon_exposure(
     output: Annotated[Optional[str], typer.Option("--output", help="Output format")] = None,
