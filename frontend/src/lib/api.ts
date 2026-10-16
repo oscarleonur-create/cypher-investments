@@ -207,6 +207,8 @@ export const api = {
       `/api/research/${symbol}/price-history`
     ),
   refreshResearch: (symbol: string) => post<{ job_id: string }>(`/api/research/${symbol}/refresh`),
+  refreshDeepResearch: (symbol: string) =>
+    post<{ job_id: string }>(`/api/research/${symbol}/deep-research/refresh`),
   recommend: (symbol: string) =>
     post<ActionRecommendation>(`/api/research/${symbol}/recommend`),
   job: (id: string) => get<Job>(`/api/jobs/${id}`),

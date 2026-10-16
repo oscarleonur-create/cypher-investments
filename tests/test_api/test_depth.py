@@ -94,7 +94,9 @@ def test_all_failing_is_an_error():
     assert deps.get_job(job)["status"] == "error"
 
 
-def test_status_reads_news_and_reports(tmp_path):
+def test_status_reads_news_and_reports(tmp_path, monkeypatch):
+    # status_of reads the clock; pin it to NOW or the fixture expires (it did on 2026-10-15).
+    monkeypatch.setattr("advisor.daemon.market_calendar.now_et", lambda: NOW)
     db = tmp_path / "research.db"
     conn = sqlite3.connect(db)
     conn.executescript(

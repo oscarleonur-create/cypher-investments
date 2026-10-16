@@ -9,7 +9,7 @@ import { cn, fmtEt } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
-const DIRECTION: Record<string, "pos" | "neg" | "warn" | "muted"> = {
+export const DIRECTION: Record<string, "pos" | "neg" | "warn" | "muted"> = {
   POSITIVE: "pos",
   NEGATIVE: "neg",
   MIXED: "warn",
@@ -39,7 +39,7 @@ function JobLine({ job }: { job: ReturnType<typeof useJob>["job"] }) {
   );
 }
 
-function Judgment({ j }: { j: NewsJudgment }) {
+export function Judgment({ j }: { j: NewsJudgment }) {
   return (
     <li className="space-y-1 border-b border-border/50 pb-2 last:border-0">
       <div className="flex flex-wrap items-center gap-1.5 text-xs">

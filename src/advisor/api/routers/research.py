@@ -112,6 +112,59 @@ async def refresh_report(symbol: str) -> dict:
     return {"job_id": job_id}
 
 
+def refresh_deep_research(symbol: str, *, build=None, meta=None, db_path=None) -> dict:
+    """Rebuild only the report's deep research, in place. Returns its new fetched_at.
+
+    The full report is minutes of searches and model calls across a dozen
+    layers; the deep research is the part that goes stale first (SPCX's read
+    2026-09-28 on 2026-10-15, before an $8bn spectrum deal). The rest of the
+    report keeps its own date.
+    """
+    from advisor.research.store import ResearchStore
+
+    if build is None:
+        from advisor.research.deep_research import build_deep_research as build
+    if meta is None:
+        from advisor.research.report import _company_meta as meta
+
+    sym = symbol.upper()
+    store = ResearchStore(db_path or deps.db_path())
+    try:
+        report = store.load_latest_report(sym)
+        if report is None:
+            raise LookupError(f"no cached report for {sym}: build the full report first")
+        name, sector, industry = meta(sym)
+        fresh = build(sym, name, sector, industry, report.filings)
+        if fresh is None or not (fresh.abstract or fresh.what_they_do):
+            raise RuntimeError(f"deep research for {sym} came back empty; the old one is kept")
+        report.deep_research = fresh
+        store.save_report(report)
+        return {"fetched_at": fresh.fetched_at.isoformat()}
+    finally:
+        store.close()
+
+
+@router.post("/research/{symbol}/deep-research/refresh")
+async def refresh_deep(symbol: str) -> dict:
+    """Rebuild only the deep research (one cited brief) in the background; poll the job."""
+    import asyncio
+
+    sym = symbol.upper()
+    job_id = deps.new_job("deep_research", target=sym)
+
+    def _run() -> None:
+        try:
+            deps.update_job(job_id, message="reading filings, news and the company site…")
+            refresh_deep_research(sym)
+            deps.update_job(job_id, status="done", message="deep research ready")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("deep research refresh failed for %s", sym)
+            deps.update_job(job_id, status="error", error=str(exc), message="failed")
+
+    asyncio.create_task(asyncio.to_thread(_run))
+    return {"job_id": job_id}
+
+
 @router.get("/jobs/{job_id}")
 async def job_status(job_id: str) -> dict:
     job = deps.get_job(job_id)

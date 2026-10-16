@@ -6,7 +6,13 @@ import { EventRow, Lead, SourceBadge } from "@/components/daemon";
 
 /** What the daemon holds on one name: filings and news on a clock, the factor
  *  fit, and this symbol's share of each book-level bet. */
-export function TickerDaemonPanels({ symbol }: { symbol: string }) {
+export function TickerDaemonPanels({
+  symbol,
+  parts = ["timeline", "events", "factors"],
+}: {
+  symbol: string;
+  parts?: ("timeline" | "events" | "factors")[];
+}) {
   const { data, isLoading } = useQuery({
     queryKey: ["daemon", "symbol", symbol],
     queryFn: () => api.daemonSymbol(symbol),
@@ -17,6 +23,7 @@ export function TickerDaemonPanels({ symbol }: { symbol: string }) {
 
   return (
     <>
+      {parts.includes("timeline") && (
       <Section title="Filings & news" empty={!data.timeline.length}>
         <div>
           {data.timeline.map((row) => (
@@ -45,8 +52,9 @@ export function TickerDaemonPanels({ symbol }: { symbol: string }) {
           ))}
         </div>
       </Section>
+      )}
 
-      {data.events.length > 0 && (
+      {parts.includes("events") && data.events.length > 0 && (
         <Section title="Events">
           <div>
             {data.events.map((e) => (
@@ -56,6 +64,7 @@ export function TickerDaemonPanels({ symbol }: { symbol: string }) {
         </Section>
       )}
 
+      {parts.includes("factors") && (
       <Section
         title="Factor sensitivity"
         empty={!data.sensitivity}
@@ -116,6 +125,7 @@ export function TickerDaemonPanels({ symbol }: { symbol: string }) {
           </div>
         )}
       </Section>
+      )}
     </>
   );
 }

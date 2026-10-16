@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, RefreshCw } from "lucide-react";
@@ -5,12 +6,13 @@ import { api } from "@/lib/api";
 import type { ResearchReport } from "@/lib/types";
 import type { QuotesState } from "@/lib/useQuotes";
 import { useJob } from "@/lib/useJob";
-import { cn, fmtNum, fmtPct, fmtShares } from "@/lib/utils";
+import { cn, fmtEt, fmtNum, fmtPct, fmtShares } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Stat } from "@/components/common";
 import { AgentPanel } from "@/components/AgentPanel";
 import { TickerDaemonPanels } from "@/components/tickerDaemon";
+import { TickerNow } from "@/components/TickerNow";
 import { ReadingCard } from "@/components/ReadingCard";
 import { OverviewCard } from "@/components/OverviewCard";
 import { PriceRangeCard } from "@/components/PriceRangeCard";
@@ -35,9 +37,58 @@ import {
   TranscriptsPanel,
 } from "@/components/panels";
 
+const TABS = [
+  { id: "research", label: "Research" },
+  { id: "financials", label: "Financials" },
+  { id: "rules", label: "Thesis & rules" },
+  { id: "ask", label: "Ask" },
+] as const;
+type Tab = (typeof TABS)[number]["id"];
+
+/** Days since ``iso``, for saying how old a read is. */
+function age(iso?: string | null): number | null {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  return Number.isNaN(t) ? null : Math.floor((Date.now() - t) / 86_400_000);
+}
+
+function AgeLine({ label, iso }: { label: string; iso?: string | null }) {
+  const d = age(iso);
+  if (d == null) return <span className="text-xs text-muted">{label}: never built</span>;
+  return (
+    <span className={cn("text-xs", d > 7 ? "text-warn" : "text-muted")}>
+      {label} {fmtEt(iso)} · {d === 0 ? "today" : `${d} day${d === 1 ? "" : "s"} old`}
+    </span>
+  );
+}
+
+/** The deep research with its date, and a refresh of just that part. */
+function DeepResearchBlock({ sym, r, onDone }: { sym: string; r: ResearchReport; onDone: () => void }) {
+  const job = useJob(onDone);
+  const run = async () => job.start((await api.refreshDeepResearch(sym)).job_id);
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-3">
+        <AgeLine label="Deep research from" iso={r.deep_research?.fetched_at} />
+        <Button size="sm" variant="outline" onClick={run} disabled={job.running}>
+          <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", job.running && "animate-spin")} />
+          {job.running ? "Refreshing…" : "Refresh deep research"}
+        </Button>
+        {job.job && job.job.status !== "done" && (
+          <span className={cn("text-xs", job.job.status === "error" ? "text-neg" : "text-muted")}>
+            {job.job.status === "error" ? job.job.error : job.job.message}
+          </span>
+        )}
+      </div>
+      <DeepResearchPanel r={r} />
+    </div>
+  );
+}
+
 export default function Ticker({ quotes }: { quotes: QuotesState }) {
   const { symbol = "" } = useParams();
   const sym = symbol.toUpperCase();
+  const [tab, setTab] = useState<Tab>("research");
 
   const { data, isLoading, error, refetch } = useQuery<ResearchReport>({
     queryKey: ["research", sym],
@@ -54,121 +105,149 @@ export default function Ticker({ quotes }: { quotes: QuotesState }) {
   const q = quotes.quotes[sym];
   const md = data?.market_data;
 
+  const rebuildButton = (
+    <Button onClick={rebuild} disabled={job.running} variant="outline" size="sm">
+      <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", job.running && "animate-spin")} />
+      {job.running ? "Rebuilding…" : data ? "Rebuild full report" : "Build research now"}
+    </Button>
+  );
+
   return (
     <div className="space-y-5">
       {/* Header */}
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <Link to="/" className="inline-flex items-center gap-1 text-sm text-muted hover:text-text">
-            <ArrowLeft className="h-4 w-4" /> Portfolio
-          </Link>
-          <div className="mt-1 flex items-baseline gap-3">
-            <h1 className="text-2xl font-bold">{sym}</h1>
-            {q?.mid ? (
-              <span className="text-xl tnum">{fmtNum(q.mid)}</span>
-            ) : null}
-          </div>
-          {data?.business_model && (
-            <p className="mt-1 max-w-2xl text-sm text-muted">{data.business_model}</p>
-          )}
+      <div>
+        <Link to="/" className="inline-flex items-center gap-1 text-sm text-muted hover:text-text">
+          <ArrowLeft className="h-4 w-4" /> Portfolio
+        </Link>
+        <div className="mt-1 flex items-baseline gap-3">
+          <h1 className="text-2xl font-bold">{sym}</h1>
+          {q?.mid ? <span className="text-xl tnum">{fmtNum(q.mid)}</span> : null}
         </div>
-        <Button onClick={rebuild} disabled={job.running} variant="outline" size="sm">
-          <RefreshCw className={cn("h-4 w-4", job.running && "animate-spin")} />
-          Rebuild research
-        </Button>
+        {data?.business_model && (
+          <p className="mt-1 max-w-2xl text-sm text-muted">{data.business_model}</p>
+        )}
       </div>
 
-      {job.job && job.job.status !== "done" && (
-        <div className="text-xs text-muted">
-          {job.job.status === "error"
-            ? `Rebuild failed: ${job.job.error}`
-            : `Rebuilding… ${job.job.message}`}
-        </div>
-      )}
-
-      {/* Where the company stands today, first: a summary of everything below. */}
+      {/* Freshest first: where the company stands, then this week's news and filings. */}
       <OverviewCard symbol={sym} />
+      <TickerNow symbol={sym} />
 
-      {/* Market data strip */}
-      {md && (
-        <Card className="p-4">
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-            {/* A share count, not dollars. */}
-            <Stat label="Float" value={fmtShares(md.float_shares)} />
-            {/* Stored as a percentage already (12.07), not a fraction. */}
-            <Stat label="Short %" value={fmtPct(md.short_interest_pct, { scale: false })} />
-            <Stat label="Avg vol 10d" value={fmtNum(md.avg_volume_10d, 0)} />
-            <Stat
-              label="Days to cover"
-              value={md.days_to_cover ? fmtNum(md.days_to_cover) : "—"}
-            />
-          </div>
-        </Card>
-      )}
-
-      {/* Live price chart + fundamentals overlay; renders nothing until a
-          report is cached for this ticker (the endpoint 404s without one). */}
       <PriceChartPanel symbol={sym} quotes={quotes} />
 
-      {/* What the recent facts imply together; model prose behind a
-          numbers-must-trace gate. Outside the research block on purpose: it
-          reads the daemon's store, and SPCX — the largest holding — had no
-          cached research, so inside it the reading never showed. */}
-      <ReadingCard symbol={sym} />
-      {/* The one pricing view: value range + what the price assumes + why.
-          Outside the research block, like the reading: it reads the daemon's
-          valuation (or computes one from the filings), not the cached report. */}
-      <PriceRangeCard symbol={sym} />
-      <AnglesPanel symbol={sym} />
+      {/* What the price asks and what the facts imply: both from the daemon's
+          store, current on every read (not the cached report). */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <PriceRangeCard symbol={sym} />
+        <ReadingCard symbol={sym} />
+      </div>
 
-      {/* Interactive, tool-using research agent — always available on a ticker
-          page (it can work even before a full report has been built). */}
-      <AgentPanel symbol={sym} />
+      {/* Everything else, one tab at a time. */}
+      <div className="flex flex-wrap gap-1 border-b border-border">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={cn(
+              "-mb-px border-b-2 px-3 py-2 text-sm font-medium",
+              tab === t.id
+                ? "border-accent text-text"
+                : "border-transparent text-muted hover:text-text"
+            )}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
 
-      {isLoading ? (
-        <Card className="p-6 text-sm text-muted">Loading research…</Card>
-      ) : error ? (
-        <Card className="p-6">
-          <div className="text-sm text-muted">
-            {(error as Error).message}
-          </div>
-          <Button onClick={rebuild} disabled={job.running} className="mt-3" size="sm">
-            <RefreshCw className={cn("h-4 w-4", job.running && "animate-spin")} />
-            Build research now
-          </Button>
-        </Card>
-      ) : data ? (
+      {tab === "research" && (
         <div className="space-y-4">
-          {/* What the daemon last saw happen to this name, assembled from
-              stored rows. Renders nothing when there is no event yet. */}
-          <StoryCard symbol={sym} />
-          {/* Headline white-paper brief — full width */}
-          <DeepResearchPanel r={data} />
-          {/* On-demand BUY/SELL/INCREASE/DECREASE/HOLD recommendation, checks
-              the real position + cached research. Decision support only. */}
-          <RecommendationPanel symbol={sym} />
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <div className="space-y-4">
-            <MemoPanel r={data} />
-            <ThesisPanel r={data} />
-            <FinancialsPanel r={data} />
-            <RatiosPanel r={data} />
-            <TranscriptsPanel r={data} />
+          <div className="flex flex-wrap items-center gap-3">
+            <AgeLine label="Report built" iso={data?.created_at} />
+            {rebuildButton}
+            {job.job && job.job.status !== "done" && (
+              <span className={cn("text-xs", job.job.status === "error" ? "text-neg" : "text-muted")}>
+                {job.job.status === "error"
+                  ? `Rebuild failed: ${job.job.error}`
+                  : `Rebuilding (minutes)… ${job.job.message}`}
+              </span>
+            )}
           </div>
+          {isLoading ? (
+            <Card className="p-6 text-sm text-muted">Loading research…</Card>
+          ) : error ? (
+            <Card className="p-6 text-sm text-muted">{(error as Error).message}</Card>
+          ) : data ? (
+            <>
+              <DeepResearchBlock sym={sym} r={data} onDone={() => refetch()} />
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                <div className="space-y-4">
+                  <MemoPanel r={data} />
+                  <CatalystsPanel r={data} />
+                  <MoatPanel r={data} />
+                  <TranscriptsPanel r={data} />
+                </div>
+                <div className="space-y-4">
+                  <ThesisPanel r={data} />
+                  <EcosystemPanel r={data} />
+                  <KpiPanel r={data} />
+                  <SentimentPanel r={data} />
+                  <OptionsFlowPanel r={data} />
+                  <FilingsPanel r={data} />
+                </div>
+              </div>
+            </>
+          ) : null}
+        </div>
+      )}
+
+      {tab === "financials" && (
+        <div className="space-y-4">
+          {md && (
+            <Card className="p-4">
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                {/* A share count, not dollars. */}
+                <Stat label="Float" value={fmtShares(md.float_shares)} />
+                {/* Stored as a percentage already (12.07), not a fraction. */}
+                <Stat label="Short %" value={fmtPct(md.short_interest_pct, { scale: false })} />
+                <Stat label="Avg vol 10d" value={fmtNum(md.avg_volume_10d, 0)} />
+                <Stat
+                  label="Days to cover"
+                  value={md.days_to_cover ? fmtNum(md.days_to_cover) : "—"}
+                />
+              </div>
+            </Card>
+          )}
+          {data ? (
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <FinancialsPanel r={data} />
+              <RatiosPanel r={data} />
+            </div>
+          ) : (
+            <Card className="p-6 text-sm text-muted">No report yet. {rebuildButton}</Card>
+          )}
+          <TickerDaemonPanels symbol={sym} parts={["factors"]} />
+        </div>
+      )}
+
+      {tab === "rules" && (
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <div className="space-y-4">
             <ClaimsPanel symbol={sym} />
-            <TickerDaemonPanels symbol={sym} />
-            <KpiPanel r={data} />
-            <CatalystsPanel r={data} />
-            <MoatPanel r={data} />
-            <EcosystemPanel r={data} />
-            <OptionsFlowPanel r={data} />
-            <SentimentPanel r={data} />
-            <FilingsPanel r={data} />
+            <AnglesPanel symbol={sym} />
           </div>
+          <div className="space-y-4">
+            <StoryCard symbol={sym} />
+            <TickerDaemonPanels symbol={sym} parts={["events"]} />
           </div>
         </div>
-      ) : null}
+      )}
+
+      {tab === "ask" && (
+        <div className="space-y-4">
+          <AgentPanel symbol={sym} />
+          <RecommendationPanel symbol={sym} />
+        </div>
+      )}
     </div>
   );
 }
