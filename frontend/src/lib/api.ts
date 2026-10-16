@@ -38,6 +38,7 @@ import type {
   NewsSummary,
   SimsResponse,
   ActionablesResponse,
+  MorningRead,
 } from "./types";
 
 async function get<T>(url: string): Promise<T> {
@@ -167,6 +168,7 @@ export const api = {
       by_symbol: { symbol: string; divergences: number; explained: number }[];
     }>("/api/daemon/coverage"),
 
+  morning: () => get<MorningRead>("/api/morning"),
   actionables: () => get<ActionablesResponse>("/api/actionables"),
   answerActionable: (id: string, answer: string, note = "") =>
     post<{ id: string }>("/api/actionables/answer", { id, answer, note }),
