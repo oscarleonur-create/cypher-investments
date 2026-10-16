@@ -1129,3 +1129,49 @@ export interface SimsResponse {
   closed: SimRow[];
   record: { n: number; mean?: number; won?: number; stopped?: number; held?: number };
 }
+
+/** The morning read (`story/morning.py`): each holding, what changed since the close. */
+export interface MorningItem {
+  kind: "news" | "filing";
+  text: string;
+  source: string;
+  at: string;
+  url: string | null;
+  direction: string | null;
+  materiality: string | null;
+  also: string[];
+}
+
+export interface MorningCard {
+  symbol: string;
+  shares: number;
+  weight: number | null;
+  from_cost: number | null;
+  day_move: number | null;
+  day_move_on: string | null;
+  price: number | null;
+  call: string | null;
+  call_why: string | null;
+  call_at: string | null;
+  action: string | null;
+  answered: string | null;
+  new: MorningItem[];
+  more: number;
+  week: string | null;
+  week_net: string | null;
+  week_day: string | null;
+  results: string | null;
+  results_in: number | null;
+  watch: string | null;
+}
+
+export interface MorningRead {
+  asof: string;
+  since: string;
+  book_asof: string | null;
+  net_liq: number | null;
+  actions: string[];
+  macro: string[];
+  cards: MorningCard[];
+  watched: { symbol: string; item: MorningItem; more: number }[];
+}
